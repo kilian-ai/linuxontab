@@ -7,7 +7,7 @@
 #   remote_port  defaults to 22 (the port registered on the guest)
 #
 # One-liner:
-#   sh <(curl -sS https://www.traits.build/local/tunnel-listen.sh) CODE
+#   sh <(curl -sS https://linuxontab.com/local/tunnel-listen.sh) CODE
 #
 # Then in another terminal:
 #   ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@localhost
@@ -23,8 +23,8 @@ REMOTE_PORT="${3:-22}"
 
 # Override via env: TUNNEL_WS=ws://localhost:8787 sh tunnel-listen.sh CODE
 # Default to Fly (no daily quota); CF Worker kept as fallback for legacy codes.
-TUNNEL_WS="${TUNNEL_WS:-wss://traits-build-tunnel.fly.dev}"
-TUNNEL_WS_FALLBACK="wss://tunnel.traits.build"
+TUNNEL_WS="${TUNNEL_WS:-wss://linuxontab-tunnel.fly.dev}"
+TUNNEL_WS_FALLBACK="wss://tunnel.linuxontab.com"
 
 if ! command -v websocat >/dev/null 2>&1; then
     echo "[tunnel-listen] websocat not found — install via: brew install websocat" >&2

@@ -1,11 +1,11 @@
-name = "traits-build-relay"
+name = "linuxontab-relay"
 account_id = "266790f1b479dc950d5833befe740e29"
 main = "src/index.js"
 compatibility_date = "2024-09-23"
 workers_dev = true
 
 routes = [
-  { pattern = "relay.traits.build", custom_domain = true }
+  { pattern = "relay.linuxontab.com", custom_domain = true }
 ]
 
 [durable_objects]

@@ -3,10 +3,10 @@
 # Usage: tunnel-ssh.sh CODE [user] [port]
 #
 # One-liner (zsh-safe):
-#   sh <(curl -sS https://www.traits.build/local/tunnel-ssh.sh) CODE
+#   sh <(curl -sS https://linuxontab.com/local/tunnel-ssh.sh) CODE
 #
 # Or install + use:
-#   curl -sS https://www.traits.build/local/tunnel-ssh.sh -o ~/bin/tunnel-ssh && chmod +x ~/bin/tunnel-ssh
+#   curl -sS https://linuxontab.com/local/tunnel-ssh.sh -o ~/bin/tunnel-ssh && chmod +x ~/bin/tunnel-ssh
 #   tunnel-ssh CODE
 #
 # Requires: websocat, ssh
@@ -18,7 +18,7 @@ USER_AT="${2:-root}"
 PORT="${3:-22}"
 
 # Override via env: TUNNEL_WS=ws://localhost:8787 sh tunnel-ssh.sh CODE
-TUNNEL_WS="${TUNNEL_WS:-wss://traits-build-tunnel.fly.dev}"
+TUNNEL_WS="${TUNNEL_WS:-wss://linuxontab-tunnel.fly.dev}"
 
 if ! command -v websocat >/dev/null 2>&1; then
     echo "[tunnel-ssh] websocat not found — install via: brew install websocat" >&2

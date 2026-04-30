@@ -2,7 +2,7 @@
  * traits-build-tunnel — TCP port tunnel via WebSocket pairs
  *
  * Forks the FsBridge pattern from relay/src/index.js into a dedicated
- * worker so the running relay.traits.build is never touched.
+ * worker so the running relay.linuxontab.com is never touched.
  *
  * Routes:
  *   GET  /health
@@ -562,7 +562,7 @@ export default {
         token = await signToken(code, env.TUNNEL_SECRET);
       }
 
-      return json({ code, token, ports, relay: 'wss://tunnel.traits.build' });
+      return json({ code, token, ports, relay: 'wss://tunnel.linuxontab.com' });
     }
 
     // WS /port/guest?code=XXXX&port=22

@@ -860,7 +860,7 @@ async function _linuxTunnelWs(request) {
     });
     return json({
       error: 'Upgrade required',
-      hint: 'Use WebSocket at wss://relay.traits.build/x/sys',
+      hint: 'Use WebSocket at wss://relay.linuxontab.com/x/sys',
     }, 426);
   }
 
@@ -975,7 +975,7 @@ async function _wispTunnelWs(request) {
   if (!upgrade || upgrade.toLowerCase() !== 'websocket') {
     return json({
       error: 'Upgrade required',
-      hint: 'Use WebSocket (WISP protocol) at wss://relay.traits.build/wisp',
+      hint: 'Use WebSocket (WISP protocol) at wss://relay.linuxontab.com/wisp',
     }, 426);
   }
 

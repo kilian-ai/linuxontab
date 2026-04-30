@@ -2,9 +2,9 @@
 # tunnel-listen-ftp.sh — Open local FTP control + passive listeners to a tunnel code.
 #
 # USAGE FLOW:
-#   1. In guest shell: sh <(curl -sS https://www.traits.build/local/tunnel-up.sh) 21
+#   1. In guest shell: sh <(curl -sS https://linuxontab.com/local/tunnel-up.sh) 21
 #      → outputs pairing CODE (e.g., P52Y)
-#   2. On Mac: sh <(curl -sS https://www.traits.build/local/tunnel-listen-ftp.sh) P52Y
+#   2. On Mac: sh <(curl -sS https://linuxontab.com/local/tunnel-listen-ftp.sh) P52Y
 #      → opens local FTP listeners on 127.0.0.1:2121 + passive range
 #   3. In FTP client: Connect to 127.0.0.1 port 2121 (NOT port 21)
 #
@@ -18,7 +18,7 @@
 #   pasv_max = 30010
 #
 # One-liner:
-#   sh <(curl -sS https://www.traits.build/local/tunnel-listen-ftp.sh) CODE
+#   sh <(curl -sS https://linuxontab.com/local/tunnel-listen-ftp.sh) CODE
 #
 # FTP client settings (lftp, Transmit, FileZilla, etc):
 #   Host: 127.0.0.1
@@ -36,8 +36,8 @@ PASV_MIN="${4:-30000}"
 PASV_MAX="${5:-30010}"
 
 # Override via env: TUNNEL_WS=ws://localhost:8787 sh tunnel-listen-ftp.sh CODE
-TUNNEL_WS="${TUNNEL_WS:-wss://traits-build-tunnel.fly.dev}"
-TUNNEL_WS_FALLBACK="wss://tunnel.traits.build"
+TUNNEL_WS="${TUNNEL_WS:-wss://linuxontab-tunnel.fly.dev}"
+TUNNEL_WS_FALLBACK="wss://tunnel.linuxontab.com"
 
 if ! command -v websocat >/dev/null 2>&1; then
     echo "[tunnel-listen-ftp] websocat not found — install via: brew install websocat" >&2
@@ -115,7 +115,7 @@ fi
 if [ -n "$status_json" ]; then
     if ! ensure_remote_port_registered "$REMOTE_CTRL_PORT" "$status_json"; then
         echo "[tunnel-listen-ftp] relay code ${CODE} is missing control port ${REMOTE_CTRL_PORT} registration" >&2
-        echo "[tunnel-listen-ftp] re-run guest side: sh <(curl -sS https://www.traits.build/local/tunnel-up.sh) ${REMOTE_CTRL_PORT}" >&2
+        echo "[tunnel-listen-ftp] re-run guest side: sh <(curl -sS https://linuxontab.com/local/tunnel-up.sh) ${REMOTE_CTRL_PORT}" >&2
         exit 1
     fi
 
@@ -130,7 +130,7 @@ if [ -n "$status_json" ]; then
     if [ -n "$missing_pasv" ]; then
         echo "[tunnel-listen-ftp] relay code ${CODE} is missing passive ports:${missing_pasv}" >&2
         echo "[tunnel-listen-ftp] ls/mkdir/put/get will fail without passive registration" >&2
-        echo "[tunnel-listen-ftp] re-run guest side with updated script: sh <(curl -sS https://www.traits.build/local/tunnel-up.sh) ${REMOTE_CTRL_PORT}" >&2
+        echo "[tunnel-listen-ftp] re-run guest side with updated script: sh <(curl -sS https://linuxontab.com/local/tunnel-up.sh) ${REMOTE_CTRL_PORT}" >&2
         exit 1
     fi
 fi

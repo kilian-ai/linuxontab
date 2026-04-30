@@ -3,14 +3,14 @@
 # unregister the cached pairing code.
 #
 # Usage (in-guest):
-#   wget -qO- https://www.traits.build/local/tunnel-down.sh | sh
+#   wget -qO- https://linuxontab.com/local/tunnel-down.sh | sh
 #
 # Equivalent to: tunnel-up.sh --reset (kept as a separate URL for
 # discoverability and shell-pipe ergonomics).
 
 set -u
 
-TUNNEL_BASE="${TUNNEL_BASE:-https://traits-build-tunnel.fly.dev}"
+TUNNEL_BASE="${TUNNEL_BASE:-https://linuxontab-tunnel.fly.dev}"
 TUNNEL_PID_FILE="${TUNNEL_PID_FILE:-/tmp/tunnel.pids}"
 TUNNEL_CODE_FILE="${TUNNEL_CODE_FILE:-/tmp/tunnel.code}"
 

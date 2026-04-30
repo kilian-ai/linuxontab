@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>~/public viewer — traits.build</title>
+<title>~/public viewer — LinuxOnTab</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -60,7 +60,7 @@
 </main>
 
 <script>
-const TUNNEL = "https://traits-build-tunnel.fly.dev";
+const TUNNEL = "https://linuxontab-tunnel.fly.dev";
 
 const $ = sel => document.querySelector(sel);
 const statusEl = $("#status");
@@ -205,7 +205,7 @@ async function loadDir(dir) {
     if (cgiOk) {
       li.textContent = "(empty)";
     } else if (!isListing) {
-      li.innerHTML = "index.html rendered →<br><span style='color:#6b7280;'>(listing unavailable: guest tunnel-up.sh is outdated — rerun <code style='color:#4ade80'>wget -qO- https://www.traits.build/local/tunnel-up.sh | sh</code> to enable /cgi-bin/ls)</span>";
+      li.innerHTML = "index.html rendered →<br><span style='color:#6b7280;'>(listing unavailable: guest tunnel-up.sh is outdated — rerun <code style='color:#4ade80'>wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh</code> to enable /cgi-bin/ls)</span>";
     } else {
       li.textContent = "(empty)";
     }

@@ -1,6 +1,0 @@
-*.iso filter=lfs diff=lfs merge=lfs -text
-*.wasm filter=lfs diff=lfs merge=lfs -text
-*.bin filter=lfs diff=lfs merge=lfs -text
-*.iso !text !filter !merge !diff
-*.wasm !text !filter !merge !diff
-*.bin !text !filter !merge !diff

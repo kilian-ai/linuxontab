@@ -1,11 +1,11 @@
-name = "traits-build-tunnel"
+name = "linuxontab-tunnel"
 account_id = "266790f1b479dc950d5833befe740e29"
 main = "src/index.js"
 compatibility_date = "2024-09-23"
 workers_dev = true
 
 routes = [
-  { pattern = "tunnel.traits.build", custom_domain = true }
+  { pattern = "tunnel.linuxontab.com", custom_domain = true }
 ]
 
 [durable_objects]

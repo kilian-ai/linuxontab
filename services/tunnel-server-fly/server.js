@@ -1,6 +1,6 @@
 // traits-tunnel-server — Node port of relay-tunnel CF Worker.
 //
-// Same endpoints as the Cloudflare Worker at tunnel.traits.build, minus
+// Same endpoints as the Cloudflare Worker at tunnel.linuxontab.com, minus
 // hibernation state handling (Node keeps everything in memory).
 //
 // Endpoints:
@@ -26,7 +26,7 @@ import { URL } from 'node:url';
 
 const PORT = parseInt(process.env.PORT || '8787', 10);
 const TUNNEL_SECRET = process.env.TUNNEL_SECRET || '';
-const TUNNEL_PUBLIC_URL = process.env.TUNNEL_PUBLIC_URL || ''; // e.g. wss://tunnel.traits.build
+const TUNNEL_PUBLIC_URL = process.env.TUNNEL_PUBLIC_URL || ''; // e.g. wss://tunnel.linuxontab.com
 
 // ── Token signing (HMAC-SHA256) ────────────────────────────────────────────
 

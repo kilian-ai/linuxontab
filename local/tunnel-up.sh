@@ -1,6 +1,6 @@
 #!/bin/sh
-# tunnel-up.sh — Expose local TCP ports through traits-build-tunnel.fly.dev
-# (CF Worker tunnel.traits.build kept as fallback in helper scripts)
+# tunnel-up.sh — Expose local TCP ports through linuxontab-tunnel.fly.dev
+# (CF Worker tunnel.linuxontab.com kept as fallback in helper scripts)
 # Usage: tunnel-up.sh [port1] [port2] ...
 # Defaults: sshd(22), public-http(8080 → ~/public), syncthing-sync(22000),
 #           syncthing-gui(8384)
@@ -11,11 +11,11 @@
 # Install: apk add --no-cache websocat curl
 #
 # After running, SSH access:
-#   sh <(curl -sS https://www.traits.build/local/tunnel-ssh.sh) CODE
+#   sh <(curl -sS https://linuxontab.com/local/tunnel-ssh.sh) CODE
 #
 # ~/public browsing (any HTTPS client):
-#   curl  https://traits-build-tunnel.fly.dev/port/http/CODE/8080/
-#   open  https://www.traits.build/#/viewer?code=CODE
+#   curl  https://linuxontab-tunnel.fly.dev/port/http/CODE/8080/
+#   open  https://linuxontab.com/#/viewer?code=CODE
 
 set -u
 
@@ -88,7 +88,7 @@ if [ "${DO_RESET:-0}" = "1" ]; then
         if [ -n "$old_code" ]; then
             echo "[tunnel] reset: unregistering $old_code"
             curl -sS --max-time 5 -X POST \
-                "${TUNNEL_BASE:-https://traits-build-tunnel.fly.dev}/port/unregister" \
+                "${TUNNEL_BASE:-https://linuxontab-tunnel.fly.dev}/port/unregister" \
                 -H 'Content-Type: application/json' \
                 -d "{\"code\":\"$old_code\"}" >/dev/null 2>&1 || true
         fi
@@ -107,7 +107,7 @@ if [ "${DO_RESET:-0}" = "0" ] && [ -s "$TUNNEL_CODE_FILE" ]; then
     cached_code=$(head -1 "$TUNNEL_CODE_FILE")
     if [ -n "$cached_code" ]; then
         cached_status=$(curl -sS --max-time 4 \
-            "${TUNNEL_BASE:-https://traits-build-tunnel.fly.dev}/port/status?code=$cached_code" \
+            "${TUNNEL_BASE:-https://linuxontab-tunnel.fly.dev}/port/status?code=$cached_code" \
             2>/dev/null)
         case "$cached_status" in
             *'"active":true'*)
@@ -130,7 +130,7 @@ fi
 track_pid() { printf '%s\n' "$1" >> "$TUNNEL_PID_FILE"; }
 
 # Override via env: TUNNEL_BASE=http://localhost:8787 sh tunnel-up.sh
-TUNNEL_BASE="${TUNNEL_BASE:-https://traits-build-tunnel.fly.dev}"
+TUNNEL_BASE="${TUNNEL_BASE:-https://linuxontab-tunnel.fly.dev}"
 # Derive default WS URL from TUNNEL_BASE (http→ws, https→wss).
 if [ -z "${TUNNEL_WS:-}" ]; then
     case "$TUNNEL_BASE" in
@@ -191,14 +191,14 @@ fi
 seed_hosts_via_doh() {
     # Skip if hostnames already resolve via real DNS (e.g. host has
     # working UDP/53). Cheap probe with a 1s timeout via busybox wget.
-    if wget -qO- --timeout=1 -t 1 https://www.traits.build/robots.txt \
+    if wget -qO- --timeout=1 -t 1 https://linuxontab.com/robots.txt \
             >/dev/null 2>&1; then
         return 0
     fi
     echo "[tunnel] DNS lookup failed — seeding /etc/hosts via DoH (1.1.1.1)"
     # Includes Alpine apk mirror so `apk add websocat` works post-seed.
-    local hosts="www.traits.build tunnel.traits.build relay.traits.build \
-traits-build-tunnel.fly.dev apptron-traits-build.fly.dev traits-build.fly.dev \
+    local hosts="linuxontab.com tunnel.linuxontab.com relay.linuxontab.com \
+linuxontab-tunnel.fly.dev linuxontab-net.fly.dev linuxontab-api.fly.dev \
 dl-cdn.alpinelinux.org"
     # Strip any previous block we wrote (in-place busybox sed).
     sed -i '/# traits-doh-begin/,/# traits-doh-end/d' /etc/hosts 2>/dev/null
@@ -655,16 +655,16 @@ echo ""
 for PORT in $PORTS; do
     if [ "$PORT" = "22" ]; then
         echo "  SSH (one-liner, shell-safe):"
-        echo "    sh <(curl -sS https://www.traits.build/local/tunnel-ssh.sh) ${CODE}"
+        echo "    sh <(curl -sS https://linuxontab.com/local/tunnel-ssh.sh) ${CODE}"
         echo ""
         echo "  Plain ssh/scp/sftp via local TCP listener:"
-        echo "    sh <(curl -sS https://www.traits.build/local/tunnel-listen.sh) ${CODE}"
+        echo "    sh <(curl -sS https://linuxontab.com/local/tunnel-listen.sh) ${CODE}"
         echo "    ssh  -p 2222 root@localhost"
         echo ""
     fi
     if [ "$PORT" = "8080" ]; then
         echo "  ~/public browser viewer:"
-        echo "    https://www.traits.build/#/viewer?code=${CODE}"
+        echo "    https://linuxontab.com/#/viewer?code=${CODE}"
         echo ""
         echo "  ~/public direct HTTP proxy:"
         echo "    curl ${TUNNEL_BASE}/port/http/${CODE}/8080/"
@@ -675,7 +675,7 @@ for PORT in $PORTS; do
         echo "    host: localhost (via local listener helper)"
         echo "    control port: 2121 -> guest:${PORT}"
         echo "    passive range exposed: ${FTP_PASV_MIN}-${FTP_PASV_MAX}"
-        echo "    sh <(curl -sS https://www.traits.build/local/tunnel-listen-ftp.sh) ${CODE} 2121 ${PORT} ${FTP_PASV_MIN} ${FTP_PASV_MAX}"
+        echo "    sh <(curl -sS https://linuxontab.com/local/tunnel-listen-ftp.sh) ${CODE} 2121 ${PORT} ${FTP_PASV_MIN} ${FTP_PASV_MAX}"
         echo ""
     fi
     echo "  WebSocket raw (port ${PORT}): '${TUNNEL_WS}/port/client?code=${CODE}&port=${PORT}'"
@@ -733,7 +733,7 @@ trap '
 # Inline retries: on register failure, try both endpoints up to N times
 # (with backoff) before giving up and waiting the full poll interval.
 RECLAIM_INTERVAL="${TUNNEL_RECLAIM_INTERVAL:-20}"
-TUNNEL_FALLBACK_BASE="${TUNNEL_FALLBACK_BASE:-https://tunnel.traits.build}"
+TUNNEL_FALLBACK_BASE="${TUNNEL_FALLBACK_BASE:-https://tunnel.linuxontab.com}"
 RECLAIM_TRIES="${TUNNEL_RECLAIM_TRIES:-3}"
 # Generous timeouts: Fly machines can cold-start for 15-25s after idle
 # auto-stop. The previous 8s budget guaranteed a timeout in that window.

@@ -960,7 +960,7 @@
   // bus before WISP sees the packet, answer DNS ourselves via /dns-query on
   // the relay, and inject a correctly framed Ethernet reply via net0-receive.
   function installDnsInterceptor(em) {
-    const DNS_ENDPOINT = 'https://relay.traits.build/dns-query';
+    const DNS_ENDPOINT = 'https://relay.linuxontab.com/dns-query';
 
     // Parse minimal fields from an outgoing Ethernet II frame to detect DNS.
     function parseOutgoingDns(buf) {
@@ -1134,7 +1134,7 @@
     // Network is always enabled (no checkbox). Route emulated NIC through
     // the Fly.io WISP relay so `apk add`, wget, etc. work.
     // Migrate legacy relay URLs to the Fly.io WISP endpoint. The Cloudflare
-    // Worker relay (wisps://relay.traits.build/wisp) cannot reach CF-fronted
+    // Worker relay (wisps://relay.linuxontab.com/wisp) cannot reach CF-fronted
     // hosts like api.openai.com due to CF's loopback-prevention block on
     // Worker→CF-IP connect(). The Fly.io backend uses tokio::net::TcpStream
     // and has no such restriction.
@@ -1146,16 +1146,16 @@
     try {
       const stored = localStorage.getItem('v86.relay-url') || '';
       if (stored && (
-        /relay\.traits\.build\/(x\/sys|x\/net|linux\/tunnel|wisp)\/?$/.test(stored) ||
-        /^wisps?:\/\/relay\.traits\.build\/wisp\/?$/.test(stored) ||
-        /^wss?:\/\/apptron-traits-build\.fly\.dev\/wisp\/?$/.test(stored)
+        /relay\.(traits\.build|linuxontab\.com)\/(x\/sys|x\/net|linux\/tunnel|wisp)\/?$/.test(stored) ||
+        /^wisps?:\/\/relay\.(traits\.build|linuxontab\.com)\/wisp\/?$/.test(stored) ||
+        /^wss?:\/\/(apptron-traits-build|linuxontab-net)\.fly\.dev\/wisp\/?$/.test(stored)
       )) {
-        localStorage.setItem('v86.relay-url', 'wisps://apptron-traits-build.fly.dev/wisp');
+        localStorage.setItem('v86.relay-url', 'wisps://linuxontab-net.fly.dev/wisp');
       }
     } catch(_) {}
     const relayUrl = new URLSearchParams(location.search).get('relay')
       || localStorage.getItem('v86.relay-url')
-      || 'wisps://apptron-traits-build.fly.dev/wisp';
+      || 'wisps://linuxontab-net.fly.dev/wisp';
     // v86 selects the backend from the URL scheme: wisp://, wisps:// →
     // WispNetworkAdapter (TCP tunneling); ws://, wss:// → legacy raw-Ethernet
     // NetworkAdapter; "fetch" → FetchNetworkAdapter. v86 only creates a NIC
@@ -1170,8 +1170,8 @@
       type: 'ne2k',
       relay_url: relayUrl,
       dns_method: 'doh',
-      doh_server: 'relay.traits.build',
-      cors_proxy: 'https://relay.traits.build/cors?url=',
+      doh_server: 'relay.linuxontab.com',
+      cors_proxy: 'https://relay.linuxontab.com/cors?url=',
     };
     if (doRestore) {
       const blob = await idbGet(snapKey);
@@ -1533,8 +1533,8 @@
       const dohSeedCmd =
         'sed -i "/# traits-doh-begin/,/# traits-doh-end/d" /etc/hosts 2>/dev/null\n' +
         '{ echo "# traits-doh-begin"; for h in ' +
-          'www.traits.build tunnel.traits.build relay.traits.build ' +
-          'traits-build-tunnel.fly.dev apptron-traits-build.fly.dev traits-build.fly.dev ' +
+          'linuxontab.com tunnel.linuxontab.com relay.linuxontab.com ' +
+          'linuxontab-tunnel.fly.dev linuxontab-net.fly.dev linuxontab-api.fly.dev ' +
           'dl-cdn.alpinelinux.org; do ' +
           'ip=$(wget -qO- --timeout=4 -t 1 ' +
             '"https://1.1.1.1/dns-query?name=${h}&type=A" ' +
@@ -2780,7 +2780,7 @@
         fStatus('1/3 installing social CLI…');
         fLog('social not found — downloading', 'info');
         const dl = await followRun(
-          'wget -O /usr/local/bin/social https://www.traits.build/local/social.sh && chmod +x /usr/local/bin/social',
+          'wget -O /usr/local/bin/social https://linuxontab.com/local/social.sh && chmod +x /usr/local/bin/social',
           { timeout: 90000 }
         );
         if (dl.exitCode !== 0) {
@@ -3054,10 +3054,10 @@
   const tunnelsLogEl       = $('tunnels-log');
 
   const TUNNEL_CMD_OVERRIDE_PREFIX = 'traits.tunnels.cmd.';
-  const TUNNEL_DEFAULT_CMD = 'sh <(curl -sS https://www.traits.build/local/tunnel-up.sh) 22 8080 22000 8384';
+  const TUNNEL_DEFAULT_CMD = 'sh <(curl -sS https://linuxontab.com/local/tunnel-up.sh) 22 8080 22000 8384';
   const TUNNEL_RELAY_ENDPOINTS = [
-    'https://traits-build-tunnel.fly.dev',
-    'https://tunnel.traits.build',
+    'https://linuxontab-tunnel.fly.dev',
+    'https://tunnel.linuxontab.com',
   ];
 
   function tnLog(line, cls) {

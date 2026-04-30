@@ -6,7 +6,7 @@ sessions. Used for local dev on the Mac and for production on Fly
 
 ## Endpoints
 
-Same as the Worker at `tunnel.traits.build`:
+Same as the Worker at `tunnel.linuxontab.com`:
 
 - `GET  /health`
 - `POST /port/register`          `{ code?, ports:[22,8080,...] }` → `{ code, token, ports, relay }`
@@ -26,11 +26,11 @@ node server.js       # listens on :8787 by default
 
 # guest (in same browser/host, pointed at local server):
 TUNNEL_BASE=http://localhost:8787 TUNNEL_WS=ws://localhost:8787 \
-  sh <(curl -sS https://www.traits.build/local/tunnel-up.sh)
+  sh <(curl -sS https://linuxontab.com/local/tunnel-up.sh)
 
 # client:
 TUNNEL_BASE=http://localhost:8787 \
-  sh <(curl -sS https://www.traits.build/local/tunnel-listen.sh) ARXN
+  sh <(curl -sS https://linuxontab.com/local/tunnel-listen.sh) ARXN
 ```
 
 ## Deploy to Fly
@@ -39,8 +39,8 @@ TUNNEL_BASE=http://localhost:8787 \
 cd tunnel-server
 fly launch --no-deploy          # one-time — edit fly.toml app name if needed
 fly deploy
-fly certs add tunnel.traits.build
-# Set DNS: tunnel.traits.build CNAME → traits-build-tunnel.fly.dev
+fly certs add tunnel.linuxontab.com
+# Set DNS: tunnel.linuxontab.com CNAME → linuxontab-tunnel.fly.dev
 ```
 
 ## Env

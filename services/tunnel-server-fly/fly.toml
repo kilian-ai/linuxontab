@@ -1,4 +1,4 @@
-app = "traits-build-tunnel"
+app = "linuxontab-tunnel"
 primary_region = "sjc"
 
 [build]
@@ -7,7 +7,7 @@ primary_region = "sjc"
 [env]
   PORT = "8787"
   # Public wss URL announced to clients — set to the custom domain once mapped:
-  # TUNNEL_PUBLIC_URL = "wss://tunnel.traits.build"
+  # TUNNEL_PUBLIC_URL = "wss://tunnel.linuxontab.com"
 
 [http_service]
   internal_port = 8787

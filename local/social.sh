@@ -9,7 +9,7 @@
 #   /mnt/host/following/.list             ← npubs you follow (one per line)
 #   /mnt/host/following/<npub>/           ← mirrored content from each followed user
 #
-# Crypto goes through traits-build.fly.dev REST (social.nostr trait).
+# Crypto goes through linuxontab-api.fly.dev REST (social.nostr trait).
 # Relay I/O via websocat. File mirror via wget.
 #
 # Usage:
@@ -25,13 +25,13 @@
 #   social.sh search <query>        # NIP-50 keyword search across relays (kind 0 profiles)
 #
 # Config (env overrides):
-#   SOCIAL_API     default: https://traits-build.fly.dev/traits/social/nostr
+#   SOCIAL_API     default: https://linuxontab-api.fly.dev/traits/social/nostr
 #   SOCIAL_RELAYS  default: wss://relay.damus.io wss://nos.lol wss://relay.nostr.band
 #   SOCIAL_HOME    default: auto (/mnt/host → current working directory)
 
 set -eu
 
-API="${SOCIAL_API:-https://traits-build.fly.dev/traits/social/nostr}"
+API="${SOCIAL_API:-https://linuxontab-api.fly.dev/traits/social/nostr}"
 API_CANDIDATES="${SOCIAL_API_CANDIDATES:-$API}"
 RELAYS="${SOCIAL_RELAYS:-wss://relay.damus.io wss://nos.lol wss://relay.nostr.band}"
 
@@ -253,7 +253,7 @@ cmd_tunnel_up() {
     live_code_file="${TUNNEL_CODE_FILE:-/tmp/tunnel.code}"
     live_code=""
     [ -s "$live_code_file" ] && live_code=$(head -1 "$live_code_file" 2>/dev/null | tr -dc 'A-Z0-9')
-    base_host="${SOCIAL_TUNNEL_BASE:-https://traits-build-tunnel.fly.dev}"
+    base_host="${SOCIAL_TUNNEL_BASE:-https://linuxontab-tunnel.fly.dev}"
 
     # Strict-check helper: returns 0 only if relay has a guest bridge on :8080
     # for the given code (active=true alone is not enough — the session can
@@ -325,7 +325,7 @@ cmd_tunnel_up() {
     # fresh guest can take 30-60s, so poll for the pairing code instead of
     # using a fixed sleep.
     tmp=$(mktemp /tmp/social-tunnel.XXXXXX)
-    sh -c "curl -sS https://www.traits.build/local/tunnel-up.sh | sh -s -- $ports" 2>&1 | tee "$tmp" &
+    sh -c "curl -sS https://linuxontab.com/local/tunnel-up.sh | sh -s -- $ports" 2>&1 | tee "$tmp" &
     tunnel_pid=$!
     code=""
     # Poll up to ~120s for the code. tunnel-up.sh emits:
@@ -346,7 +346,7 @@ cmd_tunnel_up() {
         rm -f "$tmp"
         return 1
     fi
-    base_url="${SOCIAL_TUNNEL_BASE:-https://traits-build-tunnel.fly.dev}/port/http/$code/8080"
+    base_url="${SOCIAL_TUNNEL_BASE:-https://linuxontab-tunnel.fly.dev}/port/http/$code/8080"
     prev_url=""
     [ -f "$TUNNEL_FILE" ] && prev_url=$(head -1 "$TUNNEL_FILE" 2>/dev/null)
     printf '%s\n' "$base_url" > "$TUNNEL_FILE"
@@ -430,7 +430,7 @@ cmd_publish() {
     if [ -n "$base" ] && [ "${SOCIAL_PUBLISH_SKIP_CHECK:-0}" != "1" ]; then
         cached_code=$(printf '%s' "$base" | sed -n 's|.*/port/http/\([A-Z0-9]\{4\}\)/.*|\1|p')
         if [ -n "$cached_code" ]; then
-            tbase="${SOCIAL_TUNNEL_BASE:-https://traits-build-tunnel.fly.dev}"
+            tbase="${SOCIAL_TUNNEL_BASE:-https://linuxontab-tunnel.fly.dev}"
             status=$(curl -sS --max-time 4 "$tbase/port/status?code=$cached_code" 2>/dev/null)
             # Strict: require an actual guest bridge on port 8080. The
             # session can survive past websocket drop and report
