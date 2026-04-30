@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>~/public viewer — traits.build</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0d10; color: #d5d8dc; }
+  header { padding: 10px 16px; border-bottom: 1px solid #1f2328; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  header .code { font-family: ui-monospace, Menlo, monospace; background: #161a20; color: #4ade80; padding: 2px 8px; border-radius: 4px; }
+  header input { flex: 0 1 160px; background: #161a20; border: 1px solid #2a2f36; color: #d5d8dc; padding: 4px 8px; border-radius: 4px; font-family: ui-monospace, Menlo, monospace; text-transform: uppercase; }
+  header button { background: #1f6feb; color: #fff; border: 0; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-weight: 600; }
+  header button:hover { background: #2a7df5; }
+  header .status { margin-left: auto; color: #8b949e; font-size: 13px; }
+  header .status.ok { color: #4ade80; }
+  header .status.err { color: #f87171; }
+  main { display: grid; grid-template-columns: 260px 1fr; height: calc(100vh - 46px); }
+  aside { border-right: 1px solid #1f2328; overflow: auto; padding: 6px 0; }
+  aside .path { padding: 6px 14px; color: #8b949e; font-family: ui-monospace, Menlo, monospace; font-size: 12px; border-bottom: 1px solid #1f2328; }
+  aside ul { list-style: none; margin: 0; padding: 6px 0; }
+  aside li a { display: block; padding: 5px 14px; color: #d5d8dc; text-decoration: none; font-family: ui-monospace, Menlo, monospace; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  aside li a:hover { background: #161a20; }
+  aside li a.active { background: #1f6feb22; color: #4ade80; border-left: 2px solid #4ade80; padding-left: 12px; }
+  aside li a.dir::before { content: "▸ "; color: #8b949e; }
+  aside li a.up::before { content: "↑ "; color: #8b949e; }
+  section { position: relative; background: #0b0d10; }
+  section iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+  section .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: #8b949e; padding: 24px; text-align: center; }
+  [hidden] { display: none !important; }
+  section .empty code { background: #161a20; padding: 2px 8px; border-radius: 4px; color: #4ade80; }
+  section .err { background: #1a1012; color: #f87171; padding: 24px; font-family: ui-monospace, Menlo, monospace; white-space: pre-wrap; }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #2a2f36; border-top-color: #4ade80; border-radius: 50%; animation: spin .7s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>~/public</h1>
+  <span class="code" id="code-label">—</span>
+  <input id="code-input" placeholder="CODE" maxlength="8" autocomplete="off">
+  <button id="connect-btn">Connect</button>
+  <a href="#" id="refresh-btn" style="color:#8b949e;text-decoration:none;font-size:13px;">↻ Refresh</a>
+  <span class="status" id="status">ready</span>
+</header>
+<main>
+  <aside>
+    <div class="path" id="path-label">/</div>
+    <ul id="file-list"></ul>
+  </aside>
+  <section>
+    <div class="empty" id="empty">
+      <div>No file selected</div>
+      <div>Pick a file from the list on the left.</div>
+    </div>
+    <iframe id="preview" hidden></iframe>
+  </section>
+</main>
+
+<script>
+const TUNNEL = "https://traits-build-tunnel.fly.dev";
+
+const $ = sel => document.querySelector(sel);
+const statusEl = $("#status");
+const listEl = $("#file-list");
+const emptyEl = $("#empty");
+const previewEl = $("#preview");
+const pathLabel = $("#path-label");
+const codeLabel = $("#code-label");
+const codeInput = $("#code-input");
+
+function setStatus(msg, cls = "") {
+  statusEl.textContent = msg;
+  statusEl.className = "status " + cls;
+}
+
+function proxyUrl(code, port, path) {
+  const p = path.startsWith("/") ? path : "/" + path;
+  return `${TUNNEL}/port/http/${code}/${port}${p}`;
+}
+
+// Parse busybox httpd auto-index HTML: <a href="name/">name/</a>
+// and <a href="name">name</a>. Returns [{name, isDir}, ...].
+function parseListing(html) {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const out = [];
+  doc.querySelectorAll("a[href]").forEach(a => {
+    const href = a.getAttribute("href");
+    if (!href || href.startsWith("?") || href.startsWith("#")) return;
+    // Skip absolute URLs and protocol/mailto links — not file entries
+    if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//")) return;
+    const decoded = decodeURIComponent(href);
+    // Skip parent links — we render our own up-link.
+    if (decoded === "../" || decoded === "..") return;
+    const isDir = decoded.endsWith("/");
+    const name = isDir ? decoded.slice(0, -1) : decoded;
+    if (!name || name.includes("/")) return;
+    out.push({ name, isDir, href });
+  });
+  // Dirs first, then files, both alpha-sorted.
+  out.sort((a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name));
+  return out;
+}
+
+// Detect BusyBox auto-index: <title>Index of /...</title>
+function isBusyboxAutoIndex(html) {
+  return /<title>\s*Index of\s/i.test(html);
+}
+
+let state = {
+  code: null,
+  dir: "/",            // guest-side relative path (always starts + ends with /)
+  selectedPath: null,  // currently-previewed file (absolute guest path)
+};
+
+async function loadDir(dir) {
+  if (!state.code) { setStatus("no code", "err"); return; }
+  state.dir = dir.endsWith("/") ? dir : dir + "/";
+  pathLabel.textContent = state.dir;
+  listEl.innerHTML = `<li style="padding:10px 14px;color:#8b949e;"><span class="spinner"></span> loading…</li>`;
+  setStatus("loading " + state.dir, "");
+
+  // Preferred path: tunnel-up.sh installs /cgi-bin/ls which returns JSON
+  // listing regardless of index.html presence. Fall back to auto-index
+  // parsing if CGI is unavailable (older tunnel-up.sh on the guest).
+  let entries = null;
+  let cgiOk = false;
+  try {
+    const cgiUrl = proxyUrl(state.code, 8080, "/cgi-bin/ls?dir=" + encodeURIComponent(state.dir));
+    const r = await fetch(cgiUrl, { headers: { accept: "application/json" } });
+    if (r.ok) {
+      const ct = r.headers.get("content-type") || "";
+      if (/json/i.test(ct) || ct === "") {
+        const data = await r.json();
+        if (Array.isArray(data.entries)) {
+          entries = data.entries.map(e => ({
+            name: e.name,
+            isDir: e.type === "dir",
+            href: e.name + (e.type === "dir" ? "/" : ""),
+          }));
+          entries.sort((a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name));
+          cgiOk = true;
+        }
+      }
+    }
+  } catch (_) { /* fall through to HTML parse */ }
+
+  let html = "";
+  let isListing = false;
+  if (!cgiOk) {
+    let resp;
+    try {
+      resp = await fetch(proxyUrl(state.code, 8080, state.dir), { headers: { accept: "text/html" } });
+    } catch (e) {
+      listEl.innerHTML = "";
+      setStatus("network error: " + e.message, "err");
+      return;
+    }
+    if (!resp.ok) {
+      listEl.innerHTML = "";
+      setStatus(`HTTP ${resp.status} ${resp.statusText || ""}`, "err");
+      return;
+    }
+    html = await resp.text();
+    isListing = isBusyboxAutoIndex(html);
+    entries = isListing ? parseListing(html) : [];
+  }
+  listEl.innerHTML = "";
+
+  // If the guest returned an index.html (not a listing) at the current dir,
+  // render it in the preview pane so the user sees their page immediately.
+  // Even when CGI provided a listing, still render index.html if present.
+  const hasIndex = cgiOk
+    ? entries.some(e => !e.isDir && e.name === "index.html")
+    : !isListing;
+  if (hasIndex && state.dir === "/" && !state.selectedPath) {
+    emptyEl.hidden = true;
+    previewEl.hidden = false;
+    previewEl.src = proxyUrl(state.code, 8080, state.dir);
+    state.selectedPath = state.dir + "index.html";
+  }
+
+  // Up-link (unless at root)
+  if (state.dir !== "/" && state.dir !== "") {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = "#";
+    a.className = "up";
+    a.textContent = "..";
+    a.onclick = (ev) => {
+      ev.preventDefault();
+      const parts = state.dir.replace(/\/+$/, "").split("/");
+      parts.pop();
+      loadDir(parts.join("/") + "/" || "/");
+    };
+    li.appendChild(a);
+    listEl.appendChild(li);
+  }
+
+  if (!entries.length) {
+    const li = document.createElement("li");
+    li.style.cssText = "padding:10px 14px;color:#8b949e;font-size:12px;line-height:1.5;";
+    if (cgiOk) {
+      li.textContent = "(empty)";
+    } else if (!isListing) {
+      li.innerHTML = "index.html rendered →<br><span style='color:#6b7280;'>(listing unavailable: guest tunnel-up.sh is outdated — rerun <code style='color:#4ade80'>wget -qO- https://www.traits.build/local/tunnel-up.sh | sh</code> to enable /cgi-bin/ls)</span>";
+    } else {
+      li.textContent = "(empty)";
+    }
+    listEl.appendChild(li);
+  }
+
+  for (const ent of entries) {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = "#";
+    a.className = ent.isDir ? "dir" : "file";
+    a.textContent = ent.name;
+    const fullPath = state.dir + ent.name + (ent.isDir ? "/" : "");
+    a.dataset.path = fullPath;
+    if (!ent.isDir && fullPath === state.selectedPath) a.classList.add("active");
+    a.onclick = (ev) => {
+      ev.preventDefault();
+      if (ent.isDir) {
+        loadDir(fullPath);
+      } else {
+        showFile(fullPath, a);
+      }
+    };
+    li.appendChild(a);
+    listEl.appendChild(li);
+  }
+  setStatus("ok (" + entries.length + " items)", "ok");
+}
+
+function showFile(path, linkEl) {
+  state.selectedPath = path;
+  listEl.querySelectorAll("a.active").forEach(a => a.classList.remove("active"));
+  if (linkEl) linkEl.classList.add("active");
+  emptyEl.hidden = true;
+  previewEl.hidden = false;
+  previewEl.src = proxyUrl(state.code, 8080, path);
+  setStatus("previewing " + path, "ok");
+}
+
+function connect(code) {
+  code = (code || "").toUpperCase().trim();
+  if (!/^[A-Z0-9]{3,8}$/.test(code)) { setStatus("invalid code", "err"); return; }
+  state.code = code;
+  state.selectedPath = null;
+  previewEl.hidden = true;
+  previewEl.src = "about:blank";
+  emptyEl.hidden = false;
+  codeLabel.textContent = code;
+  codeInput.value = code;
+  // Update URL hash so it's shareable.
+  const hash = `#/viewer?code=${code}`;
+  if (location.hash !== hash) history.replaceState(null, "", hash);
+  loadDir("/");
+}
+
+function readCodeFromUrl() {
+  // Accept either ?code=XXXX or #/viewer?code=XXXX
+  const sp = new URLSearchParams(location.search);
+  let code = sp.get("code");
+  if (!code && location.hash) {
+    const m = location.hash.match(/[?&]code=([A-Z0-9]+)/i);
+    if (m) code = m[1];
+  }
+  return code;
+}
+
+$("#connect-btn").onclick = () => connect(codeInput.value);
+codeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") connect(codeInput.value); });
+$("#refresh-btn").onclick = (e) => { e.preventDefault(); if (state.code) loadDir(state.dir); };
+
+const initial = readCodeFromUrl();
+if (initial) connect(initial);
+else setStatus("enter a pairing code above");
+</script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "name": "traits-tunnel-server",
+  "version": "1.0.0",
+  "description": "TCP port tunnel via WebSocket pairs — Node port of relay-tunnel CF Worker",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

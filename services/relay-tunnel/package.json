@@ -1,0 +1,13 @@
+{
+  "name": "traits-build-tunnel",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev --config ./wrangler.toml",
+    "deploy": "wrangler deploy --config ./wrangler.toml",
+    "status": "wrangler deployments list --config ./wrangler.toml"
+  },
+  "devDependencies": {
+    "wrangler": "^3"
+  }
+}

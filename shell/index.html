@@ -1,0 +1,3371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>v86 Standalone</title>
+<link rel="stylesheet" href="./xterm.css">
+<style>
+  :root { color-scheme: dark; }
+  html,body { margin:0; padding:0; background:#0b0d10; color:#d5d8dc; font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; height:100%; }
+  #wrap { display:flex; flex-direction:column; height:100vh; position:relative; }
+  #bar { padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  #bar b { color:#fff; }
+  #bar select, #bar button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 8px; font:inherit; cursor:pointer; }
+  #bar button:hover:not(:disabled) { background:#2d343d; }
+  #bar button:disabled { opacity:0.4; cursor:not-allowed; }
+  #bar .stat { color:#888; margin-left:auto; }
+  #term { flex:1; min-height:0; padding:6px 8px; background:#0b0d10; }
+  #term .xterm { height:100%; }
+  body.term-hidden #term { display:none; }
+  /* viewer overlay sits above #term, leaves bottom var(--term-h) for the terminal so it stays visible underneath */
+  #viewer-overlay { position:absolute; left:0; right:0; top:36px; bottom:var(--term-h, 45%); display:flex; flex-direction:column; background:#0b0d10; z-index:50; border-bottom:1px solid #2a2f36; }
+  body.term-hidden #viewer-overlay { bottom:0; border-bottom:0; }
+  #viewer-overlay[hidden] { display:none; }
+  /* draggable divider between viewer and terminal */
+  #viewer-divider { position:absolute; left:0; right:0; bottom:var(--term-h, 45%); height:8px; margin-bottom:-4px; cursor:row-resize; z-index:51; background:transparent; }
+  #viewer-divider::before { content:''; display:block; margin:3px auto 0; width:60px; height:2px; background:#3a424d; border-radius:2px; transition:background 0.15s; }
+  #viewer-divider:hover::before, body.dragging-divider #viewer-divider::before { background:#7a8392; }
+  #viewer-divider[hidden] { display:none; }
+  body.dragging-divider { cursor:row-resize; user-select:none; }
+  #viewer-bar { display:flex; gap:8px; align-items:center; padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; }
+  #viewer-bar input { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 8px; font:inherit; flex:0 1 320px; }
+  #viewer-bar button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
+  #viewer-bar button:hover { background:#2d343d; }
+  #viewer-body { flex:1; min-height:0; display:flex; }
+  #viewer-tree { width:280px; overflow:auto; border-right:1px solid #2a2f36; padding:6px 0; font-size:12px; }
+  #viewer-tree .row { padding:3px 12px; cursor:pointer; white-space:nowrap; user-select:none; }
+  #viewer-tree .row:hover { background:#1a1f25; }
+  #viewer-tree .row.sel { background:#22303f; color:#fff; }
+  #viewer-tree .dir::before { content:"▸ "; color:#7a8392; }
+  #viewer-tree .dir.open::before { content:"▾ "; color:#7a8392; }
+  #viewer-tree .file::before { content:"· "; color:#5a6371; }
+  #viewer-tree .indent-1 { padding-left:24px; } #viewer-tree .indent-2 { padding-left:36px; } #viewer-tree .indent-3 { padding-left:48px; } #viewer-tree .indent-4 { padding-left:60px; } #viewer-tree .indent-5 { padding-left:72px; }
+  #viewer-preview { flex:1; min-width:0; position:relative; background:#0b0d10; display:flex; flex-direction:column; }
+  #viewer-tabs { display:flex; gap:4px; padding:4px 8px; background:#161a1f; border-bottom:1px solid #2a2f36; align-items:center; font-size:11px; }
+  #viewer-tabs[hidden] { display:none; }
+  #viewer-tabs button { background:#222830; color:#aaa; border:1px solid #3a424d; border-radius:4px; padding:2px 10px; font:inherit; cursor:pointer; }
+  #viewer-tabs button:hover { background:#2d343d; }
+  #viewer-tabs button.vt-active { background:#2d3a4d; color:#fff; border-color:#4a5a73; }
+  #viewer-tabs button[hidden] { display:none; }
+  #viewer-tabs .vt-status { margin-left:auto; color:#7a8392; }
+  #viewer-stage { position:relative; flex:1; min-height:0; }
+  #viewer-stage > * { position:absolute; inset:0; }
+  #viewer-preview iframe { width:100%; height:100%; border:0; background:#fff; }
+  #viewer-editor { background:#1e1e1e; }
+  #viewer-empty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; }
+  #viewer-empty[hidden] { display:none !important; }
+  /* ── follow panel (side panel, leaves terminal visible) ── */
+  #follow-panel { position:absolute; right:0; top:36px; bottom:0; width:460px; max-width:55vw; display:flex; flex-direction:column; background:#0b0d10; border-left:1px solid #2a2f36; z-index:50; box-shadow:-4px 0 12px rgba(0,0,0,0.5); }
+  #follow-panel[hidden] { display:none; }
+  #follow-hdr { display:flex; gap:8px; align-items:center; padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; }
+  #follow-hdr button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
+  #follow-hdr button:hover:not(:disabled) { background:#2d343d; }
+  #follow-hdr button:disabled { opacity:0.4; cursor:not-allowed; }
+  #follow-body { flex:1; min-height:0; overflow:auto; padding:12px 14px; display:flex; flex-direction:column; gap:10px; font-size:12px; }
+  #follow-body .fp-section { background:#161a1f; border:1px solid #2a2f36; border-radius:6px; padding:10px 12px; }
+  #follow-body .fp-label { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:#7a8392; margin-bottom:6px; }
+  #follow-npub { font-size:11px; color:#4ade80; word-break:break-all; min-height:14px; }
+  #follow-status { font-size:11px; color:#7a8392; }
+  #follow-log { font-size:11px; line-height:1.45; max-height:300px; overflow:auto; background:#0b0d10; border:1px solid #2a2f36; border-radius:4px; padding:8px; font-family:'Menlo','Monaco','Consolas',monospace; }
+  #follow-log .fl-cmd { color:#7ab8f5; white-space:pre-wrap; word-break:break-all; }
+  #follow-log .fl-out { color:#aab2bc; white-space:pre-wrap; word-break:break-all; padding-left:8px; }
+  #follow-log .fl-ok  { color:#4ade80; }
+  #follow-log .fl-err { color:#f87171; }
+  #follow-log .fl-info { color:#7a8392; }
+  #follow-body button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; white-space:nowrap; }
+  #follow-body button:hover:not(:disabled) { background:#2d343d; }
+  #follow-body button:disabled { opacity:0.4; cursor:not-allowed; }
+  /* ── tunnels panel ── */
+  #tunnels-panel { position:absolute; right:0; top:36px; bottom:0; width:520px; max-width:60vw; display:flex; flex-direction:column; background:#0b0d10; border-left:1px solid #2a2f36; z-index:50; box-shadow:-4px 0 12px rgba(0,0,0,0.5); }
+  #tunnels-panel[hidden] { display:none; }
+  #tunnels-hdr { display:flex; gap:8px; align-items:center; padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; }
+  #tunnels-hdr button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
+  #tunnels-hdr button:hover:not(:disabled) { background:#2d343d; }
+  #tunnels-hdr button:disabled { opacity:0.4; cursor:not-allowed; }
+  #tunnels-body { flex:1; min-height:0; overflow:auto; padding:12px 14px; display:flex; flex-direction:column; gap:10px; font-size:12px; }
+  #tunnels-list { display:flex; flex-direction:column; gap:8px; }
+  #tunnels-list .tn-row { background:#161a1f; border:1px solid #2a2f36; border-radius:6px; padding:10px 12px; display:flex; flex-direction:column; gap:4px; }
+  #tunnels-list .tn-row.tn-empty { color:#7a8392; }
+  #tunnels-list .tn-code { color:#7ab8f5; font-weight:600; letter-spacing:0.04em; }
+  #tunnels-list .tn-meta { color:#aab2bc; word-break:break-all; }
+  #tunnels-list .tn-relay-ok { color:#4ade80; }
+  #tunnels-list .tn-relay-warn { color:#facc15; }
+  #tunnels-list .tn-relay-err { color:#f87171; }
+  #tunnels-list .tn-actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:4px; }
+  #tunnels-list .tn-actions button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:2px 10px; font:inherit; cursor:pointer; }
+  #tunnels-list .tn-actions button:hover:not(:disabled) { background:#2d343d; }
+  #tunnels-list .tn-actions button:disabled { opacity:0.4; cursor:not-allowed; }
+  #tunnels-list .tn-cmd { font-family:'Menlo','Monaco','Consolas',monospace; font-size:11px; color:#7a8392; word-break:break-all; }
+  #tunnels-log { font-size:11px; line-height:1.45; max-height:240px; overflow:auto; background:#0b0d10; border:1px solid #2a2f36; border-radius:4px; padding:8px; font-family:'Menlo','Monaco','Consolas',monospace; }
+  #tunnels-log .tl-cmd { color:#7ab8f5; white-space:pre-wrap; word-break:break-all; }
+  #tunnels-log .tl-out { color:#aab2bc; white-space:pre-wrap; word-break:break-all; padding-left:8px; }
+  #tunnels-log .tl-ok { color:#4ade80; }
+  #tunnels-log .tl-err { color:#f87171; }
+  #tunnels-log .tl-info { color:#7a8392; }
+  /* Always reserve scrollbar space so xterm's fit calculation doesn't
+     oscillate by 2 cols when a scrollbar appears/disappears. */
+  #term .xterm-viewport { background:#0b0d10 !important; overflow-y: scroll !important; }
+  #term .xterm-viewport::-webkit-scrollbar { width: 10px; }
+  #term .xterm-viewport::-webkit-scrollbar-track { background: #0b0d10; }
+  #term .xterm-viewport::-webkit-scrollbar-thumb { background: #2a3240; border-radius: 5px; }
+  .hint { color:#6b7380; }
+  .ok { color:#4ade80; }
+  .err { color:#f87171; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="bar">
+    <b>v86</b>
+    <label title="snapshot to boot/restore. Fresh-boot entries (★) start the ISO clean.">snapshot:
+      <select id="snap"></select>
+    </label>
+    <button id="boot">boot</button>
+    <button id="reset" disabled>reset</button>
+    <button id="save" disabled title="save into selected snapshot (or creates 'default' from a fresh-boot selection)">save</button>
+    <button id="restore" disabled>restore</button>
+    <button id="rename" disabled title="rename selected snapshot">rename</button>
+    <button id="clone" disabled title="clone selected snapshot — the clone becomes the active selection">clone</button>
+    <button id="clear" disabled title="delete selected snapshot">delete</button>
+    <label title="auto-save snapshot ~3s after any serial activity"><input type="checkbox" id="autosave"> auto-save</label>
+    <button id="viewer" disabled title="Browse the entire guest filesystem via serial shell (ls/cat). No relay or 9P mount needed.">viewer</button>
+    <button id="follow" disabled title="social — bootstraps social CLI, shows your npub, follow/sync/publish via guest CLI">social</button>
+    <button id="tunnels" disabled title="manage running tunnels (ports, codes, lifecycle, edit CLI)">tunnels</button>
+    <span id="status" class="hint">idle</span>
+    <span class="stat" id="stats"></span>
+  </div>
+  <div id="term"></div>
+  <div id="viewer-overlay" hidden>
+    <div id="viewer-bar">
+      <b>viewer</b>
+      <span class="hint" style="margin-left:6px">guest filesystem (serial-backed: ls / cat / base64)</span>
+      <input id="viewer-path" value="/" spellcheck="false" autocomplete="new-password" autocorrect="off" autocapitalize="off" name="viewer-path-noautofill" list="viewer-path-empty-list" title="absolute guest path — try /, /root, /etc, /mnt/host, /tmp">
+      <datalist id="viewer-path-empty-list"></datalist>
+      <button id="viewer-refresh" title="reload listing">refresh</button>
+      <span class="hint" id="viewer-status"></span>
+      <button id="viewer-fullscreen" style="margin-left:auto" title="hide terminal — full-screen viewer">⤢</button>
+      <button id="viewer-close" title="close viewer">close</button>
+    </div>
+    <div id="viewer-body">
+      <div id="viewer-tree"></div>
+      <div id="viewer-preview">
+        <div id="viewer-tabs" hidden>
+          <button id="viewer-tab-render" class="vt-active" data-tab="render">render</button>
+          <button id="viewer-tab-source" data-tab="source">source</button>
+          <button id="viewer-save" hidden title="save changes to guest file">save</button>
+          <span class="vt-status" id="viewer-tab-status"></span>
+        </div>
+        <div id="viewer-stage">
+          <div id="viewer-empty" class="hint">select a file on the left</div>
+          <iframe id="viewer-frame" hidden sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock"></iframe>
+          <div id="viewer-editor" hidden></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="viewer-divider" hidden title="drag to resize"></div>
+  <div id="follow-panel" hidden>
+    <div id="follow-hdr">
+      <b>social</b>
+      <span class="hint" style="margin-left:6px;font-size:11px">Nostr public-folder sharing</span>
+      <button id="follow-refresh" title="re-run bootstrap pipeline">refresh</button>
+      <button id="follow-close" style="margin-left:auto">close</button>
+    </div>
+    <div id="follow-body">
+      <div class="fp-section">
+        <div class="fp-label">your npub</div>
+        <div id="follow-npub"><span class="hint">(not loaded yet — click refresh)</span></div>
+        <div id="follow-status" style="margin-top:6px">idle</div>
+      </div>
+      <div class="fp-section">
+        <div class="fp-label">actions (placeholders)</div>
+        <div class="row-flex" style="display:flex;gap:6px;flex-wrap:wrap">
+          <button id="follow-action-follow" disabled title="follow an npub (auto-syncs files)">follow user…</button>
+          <button id="follow-action-sync" disabled title="re-sync all followed users">sync all</button>
+          <button id="follow-action-publish" disabled title="publish your public/ folder">publish</button>
+          <button id="follow-action-list" disabled title="show follow list">list following</button>
+          <button id="follow-action-search" disabled title="NIP-50 search">search</button>
+        </div>
+      </div>
+      <div class="fp-section">
+        <div class="fp-label">command log</div>
+        <div id="follow-log"></div>
+      </div>
+    </div>
+  </div>
+  <div id="tunnels-panel" hidden>
+    <div id="tunnels-hdr">
+      <b>tunnels</b>
+      <span class="hint" style="margin-left:6px;font-size:11px">running tunnel processes — guest /tmp/tunnel.* + relay status</span>
+      <button id="tunnels-refresh" title="re-scan guest + relay">refresh</button>
+      <button id="tunnels-close" style="margin-left:auto">close</button>
+    </div>
+    <div id="tunnels-body">
+      <div id="tunnels-list"></div>
+      <div id="tunnels-log"></div>
+    </div>
+  </div>
+</div>
+
+<script src="./libv86.js"></script>
+<script src="./xterm.js"></script>
+<script src="./xterm-addon-fit.js"></script>
+<script>
+(async () => {
+  const $ = id => document.getElementById(id);
+  const termEl = $('term'), snapEl = $('snap');
+  // sLog: console-only stub (original wrote into #social-log which is gone)
+  function sLog(msg, cls) { try { console.log('[social]', msg, cls || ''); } catch (_) {} }
+  const bootBtn = $('boot'), resetBtn = $('reset'), saveBtn = $('save');
+  const restoreBtn = $('restore'), clearBtn = $('clear');
+  const renameBtn = $('rename'), cloneBtn = $('clone');
+  const autosaveEl = $('autosave');
+  const statusEl = $('status'), statsEl = $('stats');
+
+  // ---- ISO catalog (was the old <select id="iso"> dropdown) ----
+  // First entry is the default fresh-boot ISO.
+  const ISO_CATALOG = [
+    { iso: 'alpine.iso',  label: 'alpine.iso (48 MB, apk + network)' },
+    { iso: 'linux4.iso',  label: 'linux4.iso (7.4 MB, busybox)' },
+    { iso: 'linux3.iso',  label: 'linux3.iso (8.2 MB)' },
+    { iso: 'linux.iso',   label: 'linux.iso (5.4 MB)' },
+  ];
+  const DEFAULT_ISO = ISO_CATALOG[0].iso;
+
+  // ---- xterm.js terminal ----
+  const term = new Terminal({
+    cursorBlink: true,
+    cursorStyle: 'block',
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+    fontSize: 13,
+    scrollback: 5000,
+    convertEol: false,
+    allowProposedApi: true,
+    theme: {
+      background: '#0b0d10',
+      foreground: '#d5d8dc',
+      cursor: '#d5d8dc',
+      cursorAccent: '#0b0d10',
+      selectionBackground: '#334155',
+      black: '#1e2229', red: '#f87171', green: '#4ade80', yellow: '#facc15',
+      blue: '#60a5fa', magenta: '#c084fc', cyan: '#22d3ee', white: '#d5d8dc',
+      brightBlack: '#3a424d', brightRed: '#fca5a5', brightGreen: '#86efac', brightYellow: '#fde047',
+      brightBlue: '#93c5fd', brightMagenta: '#d8b4fe', brightCyan: '#67e8f9', brightWhite: '#ffffff',
+    },
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(termEl);
+  setTimeout(() => { try { fit.fit(); } catch (_) {} }, 0);
+  const ro = new ResizeObserver(() => { try { fit.fit(); } catch (_) {} });
+  ro.observe(termEl);
+  window.addEventListener('resize', () => { try { fit.fit(); } catch (_) {} });
+
+  // When fit changes size, push *cols only* to the guest (serial has no WINCH).
+  // We deliberately don't push rows: every stty line consumes a row of scrollback,
+  // which can itself change xterm's row count → feedback loop. Cols is what
+  // matters for line wrapping in shells/ls/pipes; full-screen TUIs (vi/less/top)
+  // can set rows manually or ignore it.
+  // Deferred until `shellReady` — otherwise xterm's initial resize fires at the
+  // ISOLINUX `boot:` prompt and `stty` gets typed there, producing a visible
+  // "Loading stty... failed" error before Linux starts.
+  let sttyTimer = null, lastCols = 0, sentCols = 0, shellReady = false;
+  const pendingGuestCommands = [];
+  let flushingGuestCommands = false;
+  term.onResize(({ cols }) => {
+    lastCols = cols;
+    clearTimeout(sttyTimer);
+    sttyTimer = setTimeout(() => {
+      if (!emulator || !shellReady) return;
+      if (lastCols === sentCols) return;
+      sentCols = lastCols;
+      const cmd = `stty cols ${lastCols} 2>/dev/null\n`;
+      for (let i = 0; i < cmd.length; i++) emulator.serial0_send(cmd[i]);
+    }, 600);
+  });
+  let byteCount = 0;
+
+  const setStatus = (msg, cls) => { statusEl.textContent = msg; statusEl.className = cls || 'hint'; };
+
+  // Persist autosave toggle
+  autosaveEl.checked = localStorage.getItem('v86.autosave') === '1';
+  autosaveEl.onchange = () => {
+    localStorage.setItem('v86.autosave', autosaveEl.checked ? '1' : '0');
+    if (autosaveEl.checked && emulator) scheduleAutosave();
+  };
+
+  // ?iso= URL param selects a fresh-boot of the given ISO (no restore).
+  // Snapshot dropdown is populated dynamically (see populateSnapSelect).
+  const qsIso = new URLSearchParams(location.search).get('iso');
+  let initialFreshIso = DEFAULT_ISO;
+  if (qsIso && ISO_CATALOG.some(o => o.iso === qsIso)) initialFreshIso = qsIso;
+
+  // ---- Terminal output: xterm.js writes raw VT stream as-is ----
+  // v86 emits one byte at a time; we batch within a microtask so xterm.js
+  // parses multi-byte CSI sequences in a single write() rather than per byte.
+  let pendingBytes = [], pendingFlush = false;
+  let serialTextTail = '';
+  function pushByte(b) {
+    if (b === 10 || b === 13 || (b >= 32 && b <= 126)) {
+      serialTextTail = (serialTextTail + String.fromCharCode(b)).slice(-32768);
+    }
+    pendingBytes.push(b);
+    if (!pendingFlush) {
+      pendingFlush = true;
+      queueMicrotask(() => {
+        pendingFlush = false;
+        if (!pendingBytes.length) return;
+        const u8 = new Uint8Array(pendingBytes);
+        pendingBytes = [];
+        term.write(u8);
+      });
+    }
+  }
+
+  // ---- IndexedDB snapshot persistence ----
+  // Snapshot key is versioned by device topology. Bump SNAP_VER whenever
+  // the v86 cfg adds/removes/reorders devices (NIC, 9P filesystem, drives,
+  // etc.) — v86 serializes device state into the snapshot, and loading a
+  // snapshot taken with a different device set causes a silent boot hang.
+  // v2: added `filesystem: {}` (9P virtio share for in-page viewer).
+  //
+  // RESCUE FLAG: append `?legacy=1` to the URL to boot the pre-v2 device
+  // topology AND look up the unversioned `snap:<iso>` key. Use it to recover
+  // games/files saved in pre-9P snapshots — boot legacy, copy the file out
+  // (e.g. via tunnel, wget upload, or paste into a terminal), then reload
+  // without the flag.
+  const LEGACY_BOOT = new URLSearchParams(location.search).get('legacy') === '1';
+  const SNAP_VER = 'v2';
+  // Multi-named snapshots: snap:<iso>:<ver>:<name>. Legacy single-snapshot
+  // form (`snap:<iso>:<ver>`, no name suffix) is read transparently as the
+  // synthesized name "default" and migrated to the new scheme on first save
+  // or on populateSnapSelect() init.
+  const DEFAULT_SNAP_NAME = 'default';
+  const legacySnapKeyFor = iso => 'snap:' + iso + ':' + SNAP_VER;
+  const snapKeyFor = (iso, name) => {
+    if (LEGACY_BOOT) return 'snap:' + iso;
+    const n = (name == null || name === '') ? DEFAULT_SNAP_NAME : String(name);
+    return 'snap:' + iso + ':' + SNAP_VER + ':' + n;
+  };
+  // Parse a snapshot IDB key. Returns { iso, name } or null if not a
+  // recognized snapshot key. Handles both new (`snap:<iso>:v2:<name>`) and
+  // legacy (`snap:<iso>:v2` with no name, surfaced as DEFAULT_SNAP_NAME).
+  function parseSnapKey(key) {
+    if (typeof key !== 'string' || !key.startsWith('snap:')) return null;
+    const rest = key.slice(5); // strip "snap:"
+    // Find ":<SNAP_VER>" anchor (we only support current SNAP_VER in UI;
+    // older versioned keys are ignored to avoid topology mismatch).
+    const verTag = ':' + SNAP_VER;
+    const verIdx = rest.indexOf(verTag);
+    if (verIdx <= 0) return null;
+    const iso = rest.slice(0, verIdx);
+    const tail = rest.slice(verIdx + verTag.length);
+    if (tail === '') return { iso, name: DEFAULT_SNAP_NAME, legacy: true };
+    if (tail.startsWith(':')) return { iso, name: tail.slice(1), legacy: false };
+    return null;
+  }
+  const DB_NAME = 'v86-snapshots', DB_VER = 1, STORE = 'snaps';
+  function openDB() {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open(DB_NAME, DB_VER);
+      req.onupgradeneeded = () => req.result.createObjectStore(STORE);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  }
+  async function idbGet(key) {
+    const db = await openDB();
+    return new Promise((res, rej) => {
+      const req = db.transaction(STORE, 'readonly').objectStore(STORE).get(key);
+      req.onsuccess = () => res(req.result || null); req.onerror = () => rej(req.error);
+    });
+  }
+  async function idbPut(key, val) {
+    const db = await openDB();
+    return new Promise((res, rej) => {
+      const tx = db.transaction(STORE, 'readwrite');
+      tx.objectStore(STORE).put(val, key);
+      tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
+    });
+  }
+  async function idbDel(key) {
+    const db = await openDB();
+    return new Promise((res, rej) => {
+      const tx = db.transaction(STORE, 'readwrite');
+      tx.objectStore(STORE).delete(key);
+      tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
+    });
+  }
+  async function idbHas(key) { return (await idbGet(key)) != null; }
+  async function idbGetAllKeys() {
+    const db = await openDB();
+    return new Promise((res, rej) => {
+      const req = db.transaction(STORE, 'readonly').objectStore(STORE).getAllKeys();
+      req.onsuccess = () => res(req.result || []); req.onerror = () => rej(req.error);
+    });
+  }
+  async function idbCopy(srcKey, dstKey) {
+    const v = await idbGet(srcKey);
+    if (v == null) throw new Error('source snapshot missing');
+    await idbPut(dstKey, v);
+  }
+
+  // ---- Snapshot dropdown state ----
+  // Selection model: each <option> value is a snapshot IDB key
+  // (`snap:<iso>:v2:<name>`) or a fresh-boot pseudo-key (`fresh:<iso>`).
+  // parseSel(value) returns { iso, name|null, isFresh, key }.
+  const SEL_LS_KEY = 'v86.snap-selection';
+  function parseSel(val) {
+    if (typeof val !== 'string' || val === '') return null;
+    if (val.startsWith('fresh:')) return { iso: val.slice(6), name: null, isFresh: true, key: val };
+    const p = parseSnapKey(val);
+    if (!p) return null;
+    return { iso: p.iso, name: p.name, isFresh: false, key: val };
+  }
+
+  // Migrate any legacy `snap:<iso>:v2` (no :name suffix) into the new
+  // `snap:<iso>:v2:default` form. Idempotent. Runs once at populate.
+  let legacyMigrated = false;
+  async function migrateLegacySnapshots() {
+    if (legacyMigrated || LEGACY_BOOT) return;
+    legacyMigrated = true;
+    try {
+      const keys = await idbGetAllKeys();
+      for (const k of keys) {
+        if (typeof k !== 'string') continue;
+        const p = parseSnapKey(k);
+        if (!p || !p.legacy) continue;
+        const newKey = snapKeyFor(p.iso, DEFAULT_SNAP_NAME);
+        if (k === newKey) continue;
+        const exists = await idbHas(newKey);
+        if (!exists) await idbCopy(k, newKey);
+        await idbDel(k);
+      }
+    } catch (e) {
+      console.warn('[snap] legacy migration failed:', e);
+    }
+  }
+
+  // List all known snapshots (post-migration) sorted by iso then name.
+  async function listSnapshots() {
+    const out = [];
+    try {
+      const keys = await idbGetAllKeys();
+      for (const k of keys) {
+        if (typeof k !== 'string') continue;
+        const p = parseSnapKey(k);
+        if (!p) continue;
+        out.push({ iso: p.iso, name: p.name, key: snapKeyFor(p.iso, p.name) });
+      }
+    } catch (_) {}
+    out.sort((a, b) => a.iso.localeCompare(b.iso) || a.name.localeCompare(b.name));
+    return out;
+  }
+
+  // Re-populate the <select id="snap"> dropdown. If `preferKey` is provided
+  // and exists in the new options, that option is selected; otherwise we
+  // restore the previously persisted selection or fall back to a sensible
+  // default. Called on init, after save/clear/clone/rename.
+  async function populateSnapSelect(preferKey) {
+    await migrateLegacySnapshots();
+    const snaps = await listSnapshots();
+    const groupedByIso = new Map();
+    for (const s of snaps) {
+      if (!groupedByIso.has(s.iso)) groupedByIso.set(s.iso, []);
+      groupedByIso.get(s.iso).push(s);
+    }
+    // Build option list: for each ISO in catalog, a fresh-boot entry, then
+    // its snapshots. Then any "orphan" snapshots whose ISO is not in the
+    // catalog (rare, but we still surface them so the user can boot/rename).
+    const seenIsos = new Set();
+    const opts = [];
+    for (const cat of ISO_CATALOG) {
+      seenIsos.add(cat.iso);
+      opts.push({ value: 'fresh:' + cat.iso, label: '★ fresh boot — ' + cat.label });
+      const list = groupedByIso.get(cat.iso) || [];
+      for (const s of list) opts.push({ value: s.key, label: '  ' + cat.iso + '  /  ' + s.name });
+    }
+    for (const [iso, list] of groupedByIso) {
+      if (seenIsos.has(iso)) continue;
+      opts.push({ value: 'fresh:' + iso, label: '★ fresh boot — ' + iso });
+      for (const s of list) opts.push({ value: s.key, label: '  ' + iso + '  /  ' + s.name });
+    }
+    snapEl.innerHTML = '';
+    for (const o of opts) {
+      const el = document.createElement('option');
+      el.value = o.value; el.textContent = o.label;
+      snapEl.appendChild(el);
+    }
+    // Resolve desired selection
+    const stored = (() => { try { return localStorage.getItem(SEL_LS_KEY) || ''; } catch (_) { return ''; } })();
+    const candidates = [
+      preferKey,
+      stored,
+      // First snapshot for default ISO, else fresh-boot of default ISO
+      (() => {
+        const list = groupedByIso.get(initialFreshIso) || [];
+        return list.length ? list[0].key : ('fresh:' + initialFreshIso);
+      })(),
+      'fresh:' + DEFAULT_ISO,
+    ];
+    for (const c of candidates) {
+      if (c && [...snapEl.options].some(o => o.value === c)) {
+        snapEl.value = c; break;
+      }
+    }
+    persistSelection();
+    updateSnapButtonsState();
+  }
+  function persistSelection() {
+    try { localStorage.setItem(SEL_LS_KEY, snapEl.value); } catch (_) {}
+  }
+  function updateSnapButtonsState() {
+    const sel = parseSel(snapEl.value);
+    const running = !!emulator;
+    const isSnap = !!(sel && !sel.isFresh);
+    // rename/clone/clear require an actual saved snapshot in the selection.
+    if (renameBtn) renameBtn.disabled = !isSnap;
+    if (cloneBtn)  cloneBtn.disabled  = !isSnap;
+    // restore/clear: only meaningful when a snapshot is selected.
+    // (When emulator is running, restore is still allowed — it triggers
+    // a shutdown+reboot path via doRestore().)
+    restoreBtn.disabled = !isSnap;
+    clearBtn.disabled   = !isSnap;
+    // save: always allowed while emulator running. From a fresh-boot
+    // selection, save creates the "default" snapshot for that ISO.
+    saveBtn.disabled = !running;
+  }
+
+  // ---- Auto-save: debounced snapshot after activity settles ----
+  // Live ISOs write to tmpfs, so the only way to "persist FS changes" is
+  // to snapshot full VM state. We debounce ~3s of quiet after any serial
+  // activity or user input, then save_state() → IDB. Functionally
+  // "persists on change" without manual save-button clicks.
+  const AUTOSAVE_IDLE_MS = 3000;
+  const AUTOSAVE_MIN_GAP_MS = 5000; // never save more than once per 5s
+  let autosaveTimer = null, autosaveInFlight = false, lastAutosaveAt = 0, dirty = false;
+
+  function markDirty() {
+    // Suppress while a save is in flight: the umount/remount handshake
+    // itself sends serial bytes via sendGuestText, which would otherwise
+    // re-dirty the snapshot and immediately re-trigger autosave.
+    if (saveInProgress) return;
+    dirty = true;
+    if (autosaveEl.checked) scheduleAutosave();
+  }
+  function scheduleAutosave() {
+    if (!emulator || autosaveInFlight) return;
+    clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(runAutosave, AUTOSAVE_IDLE_MS);
+  }
+  async function runAutosave() {
+    if (!emulator || autosaveInFlight || !dirty) return;
+    const since = Date.now() - lastAutosaveAt;
+    if (since < AUTOSAVE_MIN_GAP_MS) {
+      autosaveTimer = setTimeout(runAutosave, AUTOSAVE_MIN_GAP_MS - since);
+      return;
+    }
+    autosaveInFlight = true;
+    saveInProgress = true;
+    const prevStatus = statusEl.textContent;
+    try {
+      const t0 = Date.now();
+      // Take snapshot in unmounted state — see umountBeforeSave() comment.
+      await umountBeforeSave();
+      const st = await emulator.save_state();
+      // Auto-save always writes back into whatever snapshot is currently
+      // active. If the session started from a fresh-boot selection, we
+      // synthesize the "default" name (and surface it in the dropdown on
+      // next populate).
+      const name = currentSnapName || DEFAULT_SNAP_NAME;
+      await idbPut(snapKeyFor(currentIso, name), st);
+      currentSnapName = name;
+      // Restore mount for the live session so the user keeps working.
+      await remountAfterSave();
+      lastAutosaveAt = Date.now();
+      dirty = false;
+      // The autosave just materialized a snapshot under currentIso/currentSnapName.
+      // Refresh dropdown so a new fresh-boot session gets a real entry.
+      try { await populateSnapSelect(snapKeyFor(currentIso, currentSnapName)); } catch (_) {}
+      setStatus(`auto-saved ${(st.byteLength/1048576).toFixed(1)} MB (${lastAutosaveAt - t0} ms)`, 'ok');
+      // restore prior status after 2s (unless user changed it)
+      setTimeout(() => { if (statusEl.textContent.startsWith('auto-saved')) setStatus(prevStatus); }, 2000);
+    } catch (e) {
+      setStatus('auto-save failed: ' + e.message, 'err');
+    } finally { autosaveInFlight = false; saveInProgress = false; }
+  }
+
+  // ---- Emulator lifecycle ----
+  let emulator = null, currentIso = null, currentSnapName = null;
+
+  // ── SerialVfs ───────────────────────────────────────────────────────────
+  // JS↔guest filesystem bridge over serial0 — bypasses 9P entirely.
+  //
+  // Each command runs at the guest shell as:
+  //
+  //     printf '\n%s\n' "$__b"; { <user cmd>; } </dev/null; ec=$?
+  //     printf '\n%s:%d\n' "$__e" "$ec"
+  //
+  // where $__b / $__e are randomized markers. We never emit the marker text
+  // as a literal string in the sent command, so the shell's input echo (which
+  // mirrors typed bytes back over serial0) cannot confuse output detection —
+  // the markers only appear in the *output* stream, never in the echo.
+  //
+  // API surface:
+  //   exec(cmd, opts?)  → { stdout, exitCode, timedOut? }
+  //   ls(path)          → string[]   (one entry per line, hidden+visible)
+  //   cat(path)         → string|null
+  //   read(path)        → Uint8Array|null (binary-safe via base64)
+  //   write(path,data)  → { exitCode } (string or Uint8Array; auto-mkdir)
+  //   stat(path)        → { type, size, mode, uid, gid, mtime } | null
+  //   mkdir(path)       → exec result
+  //   rm(path)          → exec result (rm -rf)
+  //   pwd()             → string
+  //
+  // All calls are queued; one command runs at a time. Calls before the
+  // shell is ready queue up and drain after `markShellReady()`.
+  class SerialVfs {
+    constructor() {
+      this.queue = [];
+      this.busy = false;
+      this.ready = false;
+      this.attached = false;
+      this.buf = '';                    // rolling output capture
+      this.current = null;              // active job
+      this.maxBufWindow = 4096;         // bytes to keep waiting for marker boundary
+      this.echoMaxLen = 65536;          // shell echo buffer cap
+    }
+
+    _attach(em) {
+      if (this.attached) return;
+      this.attached = true;
+      em.add_listener('serial0-output-byte', (b) => this._onByte(b));
+    }
+
+    setReady(yes) {
+      this.ready = !!yes;
+      if (this.ready && !this.busy && this.queue.length) this._next();
+    }
+
+    _send(text) {
+      const s = String(text || '');
+      for (let i = 0; i < s.length; i++) emulator.serial0_send(s[i]);
+    }
+
+    _onByte(b) {
+      if (!this.current) return;
+      const c = this.current;
+      this.buf += String.fromCharCode(b);
+      if (this.buf.length > this.echoMaxLen) {
+        this.buf = this.buf.slice(-this.echoMaxLen);
+      }
+      if (!c.started) {
+        // Begin marker only ever appears in output as `\n${begin}\r?\n`
+        // (printf prefixes with explicit \n). The echoed source line embeds
+        // begin inside double quotes/variable substitution and never on a
+        // line of its own.
+        const m = this.buf.match(c.beginRe);
+        if (!m) return;
+        c.started = true;
+        this.buf = this.buf.slice(m.index + m[0].length);
+        c.output = '';
+      }
+      const m = this.buf.match(c.endRe);
+      if (m) {
+        c.output += this.buf.slice(0, m.index);
+        const exitCode = parseInt(m[1], 10);
+        this.buf = '';
+        this.current = null;
+        const job = c.job;
+        clearTimeout(c.timer);
+        job.resolve({ stdout: c.output, exitCode });
+        this._next();
+      } else {
+        // Flush bytes that can't possibly be part of a marker yet.
+        const keep = Math.min(this.buf.length, this.maxBufWindow);
+        if (this.buf.length > keep) {
+          c.output += this.buf.slice(0, this.buf.length - keep);
+          this.buf = this.buf.slice(-keep);
+        }
+      }
+    }
+
+    _next() {
+      if (!this.ready) { this.busy = false; return; }
+      const job = this.queue.shift();
+      if (!job) { this.busy = false; return; }
+      this.busy = true;
+      this._run(job);
+    }
+
+    _run(job) {
+      const tag = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+      // Markers are constructed at runtime from a shell var so the literal
+      // `__VFS_B_<tag>__` text never appears in the sent command line (and
+      // therefore never appears in the input echo).
+      const begin = '__VFSB_' + tag + '__';
+      const end   = '__VFSE_' + tag + '__';
+      this.current = {
+        job,
+        started: false,
+        output: '',
+        beginRe: new RegExp('\\n' + begin + '\\r?\\n'),
+        endRe:   new RegExp('\\n' + end + ':(-?\\d+)\\r?\\n'),
+        timer: null,
+      };
+      this.buf = '';
+      // Build the printf format strings at runtime via concatenation so the
+      // marker text is not present as a single literal token in the source.
+      // Note: `</dev/null` prevents the user's command from reading marker
+      // bytes off stdin (serial0 input is the same pipe).
+      const wrapped =
+        `__b='${begin}'; __e='${end}'; ` +
+        `printf '\\n%s\\n' "$__b"; { ${job.cmd}\n} </dev/null; __ec=$?; ` +
+        `printf '\\n%s:%d\\n' "$__e" "$__ec"\n`;
+      this._send(wrapped);
+      this.current.timer = setTimeout(() => {
+        if (!this.current || this.current.job !== job) return;
+        const cur = this.current;
+        this.current = null;
+        this.buf = '';
+        // Best-effort: send Ctrl-C to break the runaway command.
+        this._send('\x03');
+        job.resolve({ stdout: cur.output, exitCode: -1, timedOut: true });
+        this._next();
+      }, job.timeout || 30000);
+    }
+
+    exec(cmd, opts = {}) {
+      return new Promise((resolve) => {
+        this.queue.push({ cmd: String(cmd), resolve, timeout: opts.timeout });
+        if (this.ready && !this.busy) this._next();
+      });
+    }
+
+    static _q(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+    static _dirname(p) { const i = String(p).lastIndexOf('/'); return i <= 0 ? '/' : p.slice(0, i); }
+
+    async ls(path = '.') {
+      const r = await this.exec(`ls -1A -- ${SerialVfs._q(path)} 2>/dev/null`);
+      if (r.exitCode !== 0) return [];
+      return r.stdout.split('\n').map(s => s.replace(/\r$/, '')).filter(Boolean);
+    }
+
+    async cat(path) {
+      const r = await this.exec(`cat -- ${SerialVfs._q(path)} 2>/dev/null`);
+      return r.exitCode === 0 ? r.stdout : null;
+    }
+
+    async read(path) {
+      const r = await this.exec(`base64 -- ${SerialVfs._q(path)} 2>/dev/null`, { timeout: 60000 });
+      if (r.exitCode !== 0) return null;
+      const b64 = r.stdout.replace(/[^A-Za-z0-9+/=]/g, '');
+      let bin;
+      try { bin = atob(b64); } catch { return null; }
+      const out = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+      return out;
+    }
+
+    async write(path, data) {
+      let bytes;
+      const tag = Object.prototype.toString.call(data);
+      if (typeof data === 'string') bytes = new TextEncoder().encode(data);
+      else if (tag === '[object Uint8Array]') bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      else if (data instanceof Uint8Array) bytes = data;
+      else if (data && data.buffer instanceof ArrayBuffer) bytes = new Uint8Array(data.buffer, data.byteOffset || 0, data.byteLength);
+      else throw new Error('SerialVfs.write: data must be string or Uint8Array');
+
+      // Encode to base64 in JS (binary-safe), then stream to a temp file in
+      // <=4KiB chunks via `printf >>` and decode with base64 -d. Works on
+      // BusyBox without `cat << EOF` heredoc fragility.
+      let bstr = '';
+      for (let i = 0; i < bytes.length; i++) bstr += String.fromCharCode(bytes[i]);
+      const b64 = btoa(bstr);
+
+      const tmp = '/tmp/.svfsw.' + Math.random().toString(36).slice(2, 10);
+      const CHUNK = 4096;
+      const dir = SerialVfs._dirname(path);
+      let cmd = `: > ${SerialVfs._q(tmp)} || exit 1; `;
+      for (let i = 0; i < b64.length; i += CHUNK) {
+        cmd += `printf '%s' ${SerialVfs._q(b64.slice(i, i + CHUNK))} >> ${SerialVfs._q(tmp)}; `;
+      }
+      cmd += `mkdir -p -- ${SerialVfs._q(dir)} 2>/dev/null; `;
+      cmd += `base64 -d ${SerialVfs._q(tmp)} > ${SerialVfs._q(path)}; rc=$?; `;
+      cmd += `rm -f ${SerialVfs._q(tmp)}; exit $rc`;
+      return this.exec(cmd, { timeout: Math.max(60000, 1000 + bytes.length / 1024 * 200) });
+    }
+
+    mkdir(path)      { return this.exec(`mkdir -p -- ${SerialVfs._q(path)}`); }
+    rm(path)         { return this.exec(`rm -rf -- ${SerialVfs._q(path)}`); }
+
+    async stat(path) {
+      const r = await this.exec(`stat -c '%F|%s|%a|%u|%g|%Y' -- ${SerialVfs._q(path)} 2>/dev/null`);
+      if (r.exitCode !== 0) return null;
+      const parts = r.stdout.trim().split('|');
+      if (parts.length < 6) return null;
+      return {
+        type:  parts[0],
+        size:  +parts[1],
+        mode:  parts[2],
+        uid:   +parts[3],
+        gid:   +parts[4],
+        mtime: +parts[5],
+      };
+    }
+
+    async pwd() {
+      const r = await this.exec('pwd');
+      return r.stdout.trim();
+    }
+  }
+
+  const serialVfs = new SerialVfs();
+  window.serialVfs = serialVfs;
+
+  // ── One-shot serial markers ────────────────────────────────────────────
+  // Some host operations need to wait for a guest-emitted line (e.g.
+  // __UMOUNT_OK__:<nonce> before save_state). Callers register a
+  // matcher via awaitGuestMarker(prefix, timeoutMs) and resolve when
+  // handleHostMarker sees a line with that prefix. The fundamental
+  // value of this pattern: lets us round-trip async work through the
+  // guest shell over the same serial path that everything else uses,
+  // unaffected by 9P client cache state.
+  const oneShotMarkers = []; // [{ re, resolve, reject, timer }]
+  function awaitGuestMarker(re, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const entry = { re, resolve, reject };
+      entry.timer = setTimeout(() => {
+        const i = oneShotMarkers.indexOf(entry);
+        if (i >= 0) oneShotMarkers.splice(i, 1);
+        reject(new Error('marker timeout: ' + re));
+      }, timeoutMs);
+      oneShotMarkers.push(entry);
+    });
+  }
+  function consumeOneShotMarker(line) {
+    for (let i = 0; i < oneShotMarkers.length; i++) {
+      const m = line.match(oneShotMarkers[i].re);
+      if (m) {
+        const e = oneShotMarkers[i];
+        oneShotMarkers.splice(i, 1);
+        clearTimeout(e.timer);
+        e.resolve(m);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function sendGuestText(text) {
+    if (!emulator) return false;
+    const value = String(text || '');
+    for (let index = 0; index < value.length; index++) emulator.serial0_send(value[index]);
+    markDirty();
+    return true;
+  }
+
+  // ── Umount-before-save handshake ────────────────────────────────────────
+  // The 9P kernel client tracks chan->inuse in guest RAM. If we save_state()
+  // while /mnt/host is mounted, the snapshot RAM image holds a stale
+  // chan->inuse=1 referencing a virtqueue identity that won't match the
+  // freshly recreated Virtio9p instance on restore. Result: post-restore
+  // `mount -t 9p` fails with `9pnet_virtio: no channels available`.
+  //
+  // The fix: always snapshot in the unmounted state. Before save we
+  // umount /mnt/host (kernel calls p9_client_destroy → chan->inuse=0).
+  // After save we re-mount so the live session keeps working. On restore
+  // the guest's restoreNetCmd already runs `mount -t 9p`, which now
+  // succeeds cleanly because the snapshot captured "no mount" state.
+  let saveInProgress = false; // guard markDirty re-entrance during save
+  async function umountBeforeSave() {
+    if (!emulator || !shellReady) return false;
+    const tag = 'usv' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+    // Anchor to start-of-line: avoid matching the echoed command line
+    // (which contains the literal printf invocation as a substring).
+    const re = new RegExp('^__UMOUNT_OK__:' + tag + '\\b');
+    const wait = awaitGuestMarker(re, 4000);
+    sendGuestText(
+      "sync; " +
+      "umount -f /mnt/host 2>/dev/null; " +
+      "umount -l /mnt/host 2>/dev/null; " +
+      "sync; " +
+      "printf '__UMOUNT_OK__:" + tag + "\\n'\n"
+    );
+    try { await wait; return true; } catch (_) { return false; }
+  }
+  async function remountAfterSave() {
+    if (!emulator || !shellReady) return false;
+    const tag = 'rsv' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+    const re = new RegExp('^__REMOUNT_OK__:' + tag + '\\b');
+    const wait = awaitGuestMarker(re, 4000);
+    sendGuestText(
+      "mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192,cache=none,access=any," +
+      "dfltuid=0,dfltgid=0,uid=0,gid=0,rw host9p /mnt/host 2>/dev/null; " +
+      "printf '__REMOUNT_OK__:" + tag + "\\n'\n"
+    );
+    try { await wait; return true; } catch (_) { return false; }
+  }
+
+  const sendCmd = sendGuestText;
+
+  function flushPendingGuestCommands() {
+    if (!emulator || !shellReady || !pendingGuestCommands.length || flushingGuestCommands) return;
+    flushingGuestCommands = true;
+    const flushNext = () => {
+      if (!emulator || !shellReady || !pendingGuestCommands.length) {
+        flushingGuestCommands = false;
+        return;
+      }
+      const entry = pendingGuestCommands.shift();
+      sendGuestText(entry.text);
+      if (entry.label) sLog('guest: ' + entry.label + ' (running in terminal below)', 'ok');
+      if (typeof entry.afterRun === 'function') {
+        const delayMs = entry.afterDelayMs == null ? 1200 : entry.afterDelayMs;
+        setTimeout(() => {
+          entry.afterRun().catch(() => {});
+        }, delayMs);
+      }
+      setTimeout(flushNext, 140);
+    };
+    flushNext();
+  }
+
+  function dispatchGuestCommand(text, label, options = {}) {
+    if (!emulator) return false;
+    const payload = String(text || '').replace(/\s+$/, '') + '\n';
+    if (!shellReady) {
+      pendingGuestCommands.push({
+        text: payload,
+        label,
+        afterRun: options.afterRun,
+        afterDelayMs: options.afterDelayMs,
+      });
+      if (label) sLog('guest: ' + label + ' (queued until shell is ready)', 'hint');
+      return true;
+    }
+    sendGuestText(payload);
+    if (label) sLog('guest: ' + label + ' (running in terminal below)', 'ok');
+    if (typeof options.afterRun === 'function') {
+      const delayMs = options.afterDelayMs == null ? 1200 : options.afterDelayMs;
+      setTimeout(() => {
+        options.afterRun().catch(() => {});
+      }, delayMs);
+    }
+    return true;
+  }
+
+  // ── DNS interceptor (pure-JS UDP/53 → DoH via relay) ──────────────────────
+  // v86's built-in DoH reply injection is broken for us. We hook the emulator
+  // bus before WISP sees the packet, answer DNS ourselves via /dns-query on
+  // the relay, and inject a correctly framed Ethernet reply via net0-receive.
+  function installDnsInterceptor(em) {
+    const DNS_ENDPOINT = 'https://relay.traits.build/dns-query';
+
+    // Parse minimal fields from an outgoing Ethernet II frame to detect DNS.
+    function parseOutgoingDns(buf) {
+      if (!(buf instanceof Uint8Array) || buf.length < 14 + 20 + 8) return null;
+      const etype = (buf[12] << 8) | buf[13];
+      if (etype !== 0x0800) return null;                     // not IPv4
+      const ip0 = 14;
+      const ihl = (buf[ip0] & 0x0f) * 4;
+      if (ihl < 20) return null;
+      if (buf[ip0 + 9] !== 17) return null;                  // not UDP
+      const udp0 = ip0 + ihl;
+      if (udp0 + 8 > buf.length) return null;
+      const dport = (buf[udp0 + 2] << 8) | buf[udp0 + 3];
+      if (dport !== 53) return null;
+      const sport = (buf[udp0] << 8) | buf[udp0 + 1];
+      const ulen  = (buf[udp0 + 4] << 8) | buf[udp0 + 5];
+      if (ulen < 8 || udp0 + ulen > buf.length) return null;
+      return {
+        ethDst: buf.slice(0, 6),
+        ethSrc: buf.slice(6, 12),
+        ipSrc:  buf.slice(ip0 + 12, ip0 + 16),
+        ipDst:  buf.slice(ip0 + 16, ip0 + 20),
+        udpSport: sport,
+        dnsPayload: buf.slice(udp0 + 8, udp0 + ulen),
+      };
+    }
+
+    function checksum16(bytes, start, end) {
+      let sum = 0;
+      for (let i = start; i + 1 < end; i += 2) sum += (bytes[i] << 8) | bytes[i + 1];
+      if ((end - start) & 1) sum += bytes[end - 1] << 8;
+      while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
+      return (~sum) & 0xffff;
+    }
+
+    function buildDnsReply(q, response) {
+      const ipLen  = 20 + 8 + response.length;
+      const ethLen = 14 + ipLen;
+      const out    = new Uint8Array(ethLen);
+      out.set(q.ethSrc, 0);                                  // new dst = old src
+      out.set(q.ethDst, 6);                                  // new src = old dst
+      out[12] = 0x08; out[13] = 0x00;
+      const ip = 14;
+      out[ip + 0] = 0x45; out[ip + 1] = 0x00;
+      out[ip + 2] = (ipLen >> 8) & 0xff; out[ip + 3] = ipLen & 0xff;
+      out[ip + 8] = 64; out[ip + 9] = 17;
+      out.set(q.ipDst, ip + 12);                             // src = old dst
+      out.set(q.ipSrc, ip + 16);                             // dst = old src
+      const ipc = checksum16(out, ip, ip + 20);
+      out[ip + 10] = (ipc >> 8) & 0xff; out[ip + 11] = ipc & 0xff;
+      const udp = ip + 20;
+      out[udp + 0] = 0; out[udp + 1] = 53;
+      out[udp + 2] = (q.udpSport >> 8) & 0xff; out[udp + 3] = q.udpSport & 0xff;
+      const ulen = 8 + response.length;
+      out[udp + 4] = (ulen >> 8) & 0xff; out[udp + 5] = ulen & 0xff;
+      // UDP checksum is optional for IPv4 — leave as 0.
+      out.set(response, udp + 8);
+      return out;
+    }
+
+    async function handleDnsQuery(q) {
+      try {
+        const resp = await fetch(DNS_ENDPOINT, {
+          method: 'POST',
+          headers: { 'content-type': 'application/dns-message' },
+          body: q.dnsPayload,
+        });
+        if (!resp.ok) { console.warn('[dns] upstream status', resp.status); return; }
+        const ab = await resp.arrayBuffer();
+        const reply = buildDnsReply(q, new Uint8Array(ab));
+        em.bus.send('net0-receive', reply);
+      } catch (e) {
+        console.warn('[dns] fetch failed', e);
+      }
+    }
+
+    // Hook net0-send. v86's BusConnector stores listeners as an array on
+    // `listeners[topic]` and dispatches to all of them. To avoid double-sending
+    // non-DNS packets, we REPLACE the array: save v86's existing listener,
+    // then install ours as the sole listener (which forwards to v86 for
+    // non-DNS packets).
+    const tryHook = () => {
+      if (!em.bus) return false;
+      const l = em.bus.listeners;
+      if (!l || !l['net0-send'] || !l['net0-send'].length) return false;
+      const prev = l['net0-send'][l['net0-send'].length - 1];
+      const hijacker = {
+        fn: (data) => {
+          const buf = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+          const q = parseOutgoingDns(buf);
+          if (q) { handleDnsQuery(q); return; }
+          if (prev) prev.fn.call(prev.this_value, data);
+        },
+        this_value: this,
+      };
+      l['net0-send'] = [hijacker];
+      console.log('[dns] interceptor installed, replaced v86 listener');
+      return true;
+    };
+    // The adapter registers net0-send from its constructor, which runs inside
+    // `new V86(cfg)`, so by the time we call installDnsInterceptor() the
+    // listener is already there. Retry a few times just in case.
+    if (!tryHook()) {
+      let tries = 0;
+      const iv = setInterval(() => {
+        if (tryHook() || ++tries > 20) clearInterval(iv);
+      }, 100);
+    }
+  }
+
+  async function boot(opts = {}) {
+    // Resolve target snapshot from the dropdown selection (or opts.snapKey
+    // override). Fresh-boot selections become a clean ISO boot; named
+    // selections become an idbGet-restore.
+    let sel = opts.snapKey ? parseSel(opts.snapKey) : parseSel(snapEl.value);
+    if (!sel) sel = parseSel('fresh:' + DEFAULT_ISO);
+    const iso = sel.iso;
+    currentIso = iso;
+    currentSnapName = sel.isFresh ? null : sel.name;
+    // doRestore is honored only when the selection is a named snapshot AND
+    // the caller asked for restore. Fresh-boot selections always boot clean.
+    const snapKey = sel.isFresh ? null : sel.key;
+    const doRestore = !!(opts.restore && snapKey && await idbHas(snapKey));
+
+    const labelIso = sel.isFresh ? iso : (iso + ' / ' + sel.name);
+    setStatus(doRestore ? `restoring ${labelIso}…` : `booting ${labelIso}…`);
+    bootBtn.disabled = true;
+
+    byteCount = 0;
+    term.reset();
+
+    // Alpine runs diskless from the ISO — rootfs is tmpfs sized at 50% of RAM
+    // by default. 512 MB was tight (rootfs capped at 244 MB, ENOSPC during
+    // `npm install -g`, and node/npm got OOM-killed). 1024 MB gave a ~500 MB
+    // rootfs but large npm packages (openclaw has 7231 files across dozens of
+    // transitive deps) still fill it. 2048 MB gives a ~1 GB rootfs and plenty
+    // of process headroom. Tiny busybox ISOs still run on 128.
+    // Some browsers/v86 builds fail ISOLINUX boot at >=4096 MB, so we cap
+    // Alpine memory at 3584 MB for stability.
+    // Override with ?mem=<MB> for debugging.
+    const isAlpine = /^alpine/i.test(iso);
+    const memOverride = parseInt(new URLSearchParams(location.search).get('mem') || '', 10);
+    const maxStableAlpineMemMB = 3584;
+    const requestedMemMB = Number.isFinite(memOverride) && memOverride > 0
+      ? memOverride
+      : (isAlpine ? 2048 : 128);
+    const memMB = isAlpine
+      ? Math.min(requestedMemMB, maxStableAlpineMemMB)
+      : requestedMemMB;
+    if (isAlpine && requestedMemMB > maxStableAlpineMemMB) {
+      console.warn(`[boot] requested mem=${requestedMemMB}MB exceeds stable cap; using ${memMB}MB`);
+      setStatus(`requested ${requestedMemMB}MB; capped to ${memMB}MB for stable boot`);
+    }
+    const cfg = {
+      wasm_path: './v86.wasm',
+      bios:     { url: './seabios.bin' },
+      vga_bios: { url: './vgabios.bin' },
+      cdrom:    { url: './' + iso },
+      memory_size: memMB * 1024 * 1024,
+      vga_memory_size: 4 * 1024 * 1024,
+      autostart: true,
+      disable_mouse: true,
+      // Empty 9P virtio filesystem. Mounts in the guest as the virtio tag
+      // `host9p`. We use it to expose files between guest and host browser:
+      // the guest writes to /mnt/host/* and the host reads via
+      // emulator.fs9p.read_dir() / read_file() — no relay or websocat
+      // needed. The viewer overlay button uses this directly.
+      // Skipped in legacy mode so device topology matches v1 snapshots.
+      ...(LEGACY_BOOT ? {} : { filesystem: {} }),
+    };
+    // Network is always enabled (no checkbox). Route emulated NIC through
+    // the Fly.io WISP relay so `apk add`, wget, etc. work.
+    // Migrate legacy relay URLs to the Fly.io WISP endpoint. The Cloudflare
+    // Worker relay (wisps://relay.traits.build/wisp) cannot reach CF-fronted
+    // hosts like api.openai.com due to CF's loopback-prevention block on
+    // Worker→CF-IP connect(). The Fly.io backend uses tokio::net::TcpStream
+    // and has no such restriction.
+    // The Fly backend speaks WISP v1, so the URL MUST use wisps:// (secure)
+    // or wisp:// — v86's src/browser/network.js picks WispNetworkAdapter only
+    // for those schemes. A plain wss:// URL silently falls back to the legacy
+    // raw-Ethernet NetworkAdapter, which sends DHCP/ARP frames our WISP server
+    // does not understand (guest then never gets a DHCP lease).
+    try {
+      const stored = localStorage.getItem('v86.relay-url') || '';
+      if (stored && (
+        /relay\.traits\.build\/(x\/sys|x\/net|linux\/tunnel|wisp)\/?$/.test(stored) ||
+        /^wisps?:\/\/relay\.traits\.build\/wisp\/?$/.test(stored) ||
+        /^wss?:\/\/apptron-traits-build\.fly\.dev\/wisp\/?$/.test(stored)
+      )) {
+        localStorage.setItem('v86.relay-url', 'wisps://apptron-traits-build.fly.dev/wisp');
+      }
+    } catch(_) {}
+    const relayUrl = new URLSearchParams(location.search).get('relay')
+      || localStorage.getItem('v86.relay-url')
+      || 'wisps://apptron-traits-build.fly.dev/wisp';
+    // v86 selects the backend from the URL scheme: wisp://, wisps:// →
+    // WispNetworkAdapter (TCP tunneling); ws://, wss:// → legacy raw-Ethernet
+    // NetworkAdapter; "fetch" → FetchNetworkAdapter. v86 only creates a NIC
+    // when net_device.type is set explicitly.
+    //
+    // What works with the config below:
+    //   - NIC bring-up, DHCP lease (192.168.86.100)
+    //   - ICMP (ping 1.1.1.1)
+    //   - TCP (real sockets via WISP to cloudflare:sockets)
+    //   - DNS via DoH proxied through our relay at /dns-query
+    cfg.net_device = {
+      type: 'ne2k',
+      relay_url: relayUrl,
+      dns_method: 'doh',
+      doh_server: 'relay.traits.build',
+      cors_proxy: 'https://relay.traits.build/cors?url=',
+    };
+    if (doRestore) {
+      const blob = await idbGet(snapKey);
+      cfg.initial_state = { buffer: blob };
+    }
+
+    emulator = new V86(cfg);
+    window.emulator = emulator;
+    serialVfs._attach(emulator);
+
+    // ── 9P inode uid/gid sanitizer ──────────────────────────────────────────
+    // v86's fs9p stores inode uid as whatever the kernel sent in Tattach's
+    // n_uname field. Linux 9p with `access=any` sends ~0u (0xFFFFFFFF) as a
+    // sentinel for "any user". v86 stores that as fid.uid, then Tmkdir/Tlcreate
+    // copy it into c.uid. When the kernel reads it back via Tgetattr, (uid_t)-1
+    // is treated as "invalid" and squashed to dfltuid (65534 = nobody),
+    // producing EOVERFLOW on plain `rm`/`stat`. We patched libv86.js Tattach
+    // to clamp n_uname to 0 for new attaches, but persisted snapshots still
+    // contain stale inodes with uid=4294967295. This walks the inode array
+    // on every emulator-ready and resets any out-of-range uid/gid to 0 (root).
+    function sanitizeInodeOwnership() {
+      const fs = emulator && emulator.fs9p;
+      if (!fs || !fs.inodes) return 0;
+      let fixed = 0;
+      for (const inode of fs.inodes) {
+        if (!inode) continue;
+        if (inode.uid === undefined || inode.uid < 0 || inode.uid >= 0x80000000 || !Number.isFinite(inode.uid)) {
+          inode.uid = 0; fixed++;
+        }
+        if (inode.gid === undefined || inode.gid < 0 || inode.gid >= 0x80000000 || !Number.isFinite(inode.gid)) {
+          inode.gid = 0;
+        }
+      }
+      if (fixed) console.log('[fs9p] sanitized inode uids:', fixed);
+      return fixed;
+    }
+    window.sanitize9pInodes = sanitizeInodeOwnership;
+
+    // ── DNS interceptor ─────────────────────────────────────────────────────
+    // v86's WispNetworkAdapter has a built-in DoH path (handle_fake_dns_doh)
+    // but its synthesised UDP reply isn't delivered to the guest resolver in
+    // the current v86 build. We bypass it entirely: peek at outbound Ethernet
+    // frames on the bus, detect UDP/53 queries, fetch DoH through our relay,
+    // and inject the reply back onto the receive side with correct framing.
+    installDnsInterceptor(emulator);
+
+    // ── virtio-9p post-restore IRQ kick ─────────────────────────────────────
+    // After snapshot restore, the kernel's 9pnet_virtio driver still has
+    // chan->inuse=true from the snapshot-era mount, while the v86 backend
+    // virtqueue has been re-set_state'd with addresses that the kernel may no
+    // longer trust. The deepest fix in pure JS is to issue a virtio
+    // config-change interrupt (VIRTIO_ISR_DEVICE_CFG, ISR bit 2) so the
+    // kernel's virtio_pci core fires its config_changed callback and the
+    // 9pnet_virtio driver gets a chance to revalidate. We also bump
+    // config_generation so the kernel re-reads the device tag/config space.
+    //
+    // Caveats: this is speculative. The Linux 9p driver's config_changed
+    // path doesn't actively clear chan->inuse, but a config IRQ + generation
+    // bump is the only nudge we can deliver from pure JS without patching
+    // libv86.js. If this proves insufficient, the backstop is to detect
+    // mount failure and auto-clear the snapshot for one-reload recovery.
+    function kickVirtio9pAfterRestore() {
+      try {
+        const dev = emulator && emulator.v86 && emulator.v86.cpu && emulator.v86.cpu.devices && emulator.v86.cpu.devices.virtio_9p;
+        if (!dev) { console.warn('[restore] virtio_9p device missing'); return false; }
+        const v = dev.virtio;
+        if (!v) { console.warn('[restore] virtio_9p.virtio missing'); return false; }
+        // Re-bind virtqueue handle in case set_state recreated queues array.
+        if (Array.isArray(v.queues) && v.queues.length > 0) dev.virtqueue = v.queues[0];
+        if (typeof v.notify_config_changes === 'function') {
+          v.notify_config_changes();
+          console.log('[restore] virtio_9p notify_config_changes() fired (ISR bit 2)');
+        }
+        if (typeof v.update_config_generation === 'function') {
+          v.update_config_generation();
+          console.log('[restore] virtio_9p config_generation bumped');
+        }
+        return true;
+      } catch (e) {
+        console.warn('[restore] kickVirtio9pAfterRestore failed:', e);
+        return false;
+      }
+    }
+    window.kickVirtio9pAfterRestore = kickVirtio9pAfterRestore;
+
+    emulator.add_listener('emulator-ready',   () => { sanitizeInodeOwnership(); if (doRestore) kickVirtio9pAfterRestore(); setStatus('ready'); });
+    emulator.add_listener('emulator-started', () => { sanitizeInodeOwnership(); if (doRestore) kickVirtio9pAfterRestore(); setStatus(doRestore ? 'restored' : 'running', 'ok'); });
+    emulator.add_listener('emulator-stopped', () => setStatus('stopped'));
+
+    // ── Restore-path instrumentation ───────────────────────────────────────
+    // Visible in browser console. Captures WispNetworkAdapter WS lifecycle so
+    // we can see whether the tunnel reattaches cleanly on restore.
+    if (doRestore) {
+      console.log('[restore] boot invoked restore=true, snapKey=', snapKey);
+      // Dump fs9p state shortly after restore so we can tell whether the
+      // snapshot actually carried the share contents across or came back
+      // empty. If inodes.length is ~3-5 (just /, /dev, /proc-ish), v86's
+      // save_state did not persist fs9p — the guest's `ls /mnt/host` will
+      // then be empty regardless of how we remount.
+      setTimeout(() => {
+        try {
+          const fs = emulator && emulator.fs9p;
+          if (!fs) { console.warn('[restore] fs9p missing'); return; }
+          const inodeCount = fs.inodes ? fs.inodes.filter(Boolean).length : -1;
+          // GetChildren returns NAMES (not ids), so we resolve them via the
+          // parent's direntries Map for child-id → log a single summary.
+          let rootEntries = null, publicEntries = null;
+          try {
+            if (fs.GetChildren) rootEntries = fs.GetChildren(0);
+          } catch (_) {}
+          try {
+            if (fs.SearchPath) {
+              const pub = fs.SearchPath('/public');
+              if (pub && pub.id >= 0) publicEntries = fs.GetChildren(pub.id);
+            }
+          } catch (_) {}
+          console.log('[restore] fs9p state', {
+            inodes: inodeCount,
+            root: rootEntries,
+            public: publicEntries,
+          });
+        } catch (e) { console.warn('[restore] fs9p peek failed', e); }
+      }, 800);
+      // Peek at the adapter's internal WebSocket (v86 stashes it on
+      // emulator.network_adapter.wisp_network.wisp_url / websocket).
+      setTimeout(() => {
+        try {
+          const na = emulator.network_adapter;
+          const wn = na && (na.wisp_network || na.wisp || null);
+          const ws = wn && (wn.websocket || wn.ws || null);
+          console.log('[restore] adapter snapshot', {
+            adapter: na ? na.constructor && na.constructor.name : null,
+            wisp:    wn ? Object.keys(wn) : null,
+            ws_state: ws ? ws.readyState : null,
+            ws_url:   ws ? ws.url : null,
+            relay:    cfg.net_device && cfg.net_device.relay_url,
+          });
+        } catch (e) { console.warn('[restore] adapter peek failed', e); }
+      }, 500);
+    }
+    // Auto-init network on first shell prompt.
+    // Fresh boot: full setup (DHCP + repos + apk upgrade guidance).
+    // Snapshot restore: lightweight NIC recovery (DHCP refresh + resolv.conf)
+    // to fix stale tunnel/DHCP state after restore.
+    // Network is always enabled (the old #net checkbox was removed). Net
+    // init runs as soon as the guest reaches a shell prompt.
+    let netInited = false;
+    // On restore the shell is already up, so enable stty sync immediately.
+    if (doRestore) {
+      shellReady = true;
+      flushPendingGuestCommands();
+    }
+
+    // Build the net-init command (fresh boot vs snapshot restore).
+    function buildNetInitCmd() {
+      const rootfsParam = (new URLSearchParams(location.search).get('rootfs') || '').trim();
+      const rootfsSize = rootfsParam || (isAlpine ? '4G' : '');
+      const rootfsCmd = rootfsSize
+        ? `mount -o remount,size=${rootfsSize} / >/dev/null 2>&1\necho "[rootfs] remounted / as ${rootfsSize}"\n`
+        : '';
+      // Fresh Alpine live ISO ships with only /media/cdrom/apks as an apk repo
+      // and a stale libcrypto that breaks any `apk add nodejs` (EVP_MD_CTX_get_size_ex
+      // symbol mismatch). On fresh boot we replace the repo list with the
+      // upstream Alpine CDN, refresh the index, and rebase libc/libcrypto so
+      // `apk add <pkg>` works immediately. Snapshot restores skip this since
+      // the snapshot already has the patched repos.
+      // Disable explicitly with ?setup=0.
+      const setupParam = (new URLSearchParams(location.search).get('setup') || '').trim();
+      const skipSetup = setupParam === '0';
+      const setupCmd = skipSetup ? '' :
+        'echo "[setup] configuring apk repositories…"\n' +
+        'printf "%s\\n" "https://dl-cdn.alpinelinux.org/alpine/latest-stable/main" "https://dl-cdn.alpinelinux.org/alpine/latest-stable/community" > /etc/apk/repositories\n' +
+        'echo "[setup] apk update…"\n' +
+        'apk update 2>&1 | tail -3\n' +
+        'echo "[setup] apk upgrade (rebasing libc/libcrypto)…"\n' +
+        'apk upgrade --available 2>&1 | tail -3\n' +
+        'echo "[setup] ready — apk add <pkg> works now. snapshot to skip on next boot."\n';
+      // Snapshot restore: WISP WebSocket is freshly reconnected (JS adapter
+      // is not in the x86 snapshot), and the Wisp router config is known
+      // and fixed: guest IP 192.168.86.100/24, gateway 192.168.86.1, router
+      // MAC 52:54:00:01:02:03. A backgrounded `udhcpc` detached subshell
+      // never completed and left the guest with no IP and no route — so
+      // instead we apply deterministic static config in one shot. This is
+      // non-blocking (no RTNL wait, no DHCP round-trip), idempotent, and
+      // leaves the guest immediately able to open TCP streams through the
+      // freshly-registered WispNetworkAdapter. DoH `doh_server` is already
+      // handled by the adapter itself (`dns_method: 'doh'`), so resolv.conf
+      // here is only a belt-and-braces fallback for glibc/musl name lookup
+      // that bypasses the DoH interceptor.
+      //
+      // CRITICAL: bounce eth0 BEFORE configuring IP. The WispNetworkAdapter
+      // learns the guest NIC's MAC via a `net0-mac` bus event that ne2k
+      // fires on driver init. On snapshot restore the ne2k driver is
+      // already loaded (x86 state) and does NOT re-emit `net0-mac`, so
+      // the fresh adapter keeps a stale/zero vm_mac and silently drops
+      // frames. `ip link down/up` re-initializes the NE2K, re-fires the
+      // MAC announcement, and resets the adapter's RX/TX ring state.
+      // Without this bounce even `ping 192.168.86.1` (virtual gateway)
+      // fails 100% post-restore.
+      // Retry loop for the eth0 up: empirically, the first `ip link set eth0
+      // up` after snapshot restore sometimes silently fails (interface stays
+      // DOWN) because the NE2K driver + fresh WispNetworkAdapter handshake
+      // is racy. A second `up` after a longer settle always succeeds. We
+      // poll `/sys/class/net/eth0/operstate` up to 5 times and redo the up
+      // until it reports non-`down`.
+      // Mount the v86 9P share at /mnt/host so the host browser viewer can
+      // read files written by the guest without going through the relay.
+      // - cache=none: forces the kernel to re-fetch stat for every op.
+      //   `cache=loose` (the v86 default we used to ship) caches qid.version
+      //   and stat fields in the kernel dentry. v86 increments qid.version on
+      //   every write/rename/unlink and stores 64-bit size/mtime as JS Numbers,
+      //   which over a long session drift past 32-bit limits. The kernel's
+      //   p9_check_errors() then returns EOVERFLOW ("Value too large for data
+      //   type") on lstat() — which `rm` calls before unlinkat() — so even
+      //   `rm -rf /mnt/host/foo` fails. `cache=none` makes 9P slower but
+      //   correct: no stale dentries, no overflow on stat, rm/mv/cp work.
+      // - msize=8192: small but reliable; v86 9P doesn't like big msize.
+      // - access=any: avoid strict per-uid server-side permission checks.
+      //   We also drop dfltuid/dfltgid (v86 ignores them anyway).
+      // - seed social dirs as 0777 so first-write works even if uid metadata
+      //   is reported as overflow/nobody by the 9P bridge on fresh tabs.
+      // - always remount: snapshot restore can keep stale old mount options.
+      // The symlink puts a `~/host` shortcut in $HOME for ergonomic access.
+      // For destructive ops that still trip 9P (legacy snapshots etc), the
+      // browser exposes window.wipe9p(path) which deletes via emulator.fs9p
+      // directly — no kernel 9P client involved.
+      const mount9pCmd =
+        'mkdir -p /mnt/host 2>/dev/null\n' +
+        // Unstack any existing host9p mounts. If snapshot restore or a prior
+        // boot path mounted /mnt/host more than once, a single umount leaves
+        // the inner mount(s) stacked underneath — `ls /mnt/host/x` (absolute)
+        // and `cd /mnt/host; ls x` (relative) then resolve through different
+        // mount layers and disagree (e.g. SFTP writes visible only via the
+        // top mount). Loop until /proc/mounts no longer lists host9p.
+        'cd / 2>/dev/null\n' +
+        'i=0; while grep -q " /mnt/host " /proc/mounts && [ $i -lt 8 ]; do ' +
+        '  umount /mnt/host 2>/dev/null || umount -l /mnt/host 2>/dev/null || break; ' +
+        '  i=$((i+1)); ' +
+        'done\n' +
+        'mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192,cache=none,access=any,dfltuid=0,dfltgid=0,uid=0,gid=0,rw host9p /mnt/host 2>/dev/null || ' +
+        'mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192,cache=loose,access=any,dfltuid=0,dfltgid=0,uid=0,gid=0,rw host9p /mnt/host 2>/dev/null\n' +
+        // Reset stale ownership left over from old snapshots where v86 fs9p
+        // recorded uid=0xFFFFFFFF (Linux: nobody=65534, → EOVERFLOW on stat).
+        // The host page also runs window.sanitize9pInodes() on emulator-ready
+        // for the same purpose; this guest-side chown is belt-and-suspenders
+        // for the moment after mount, before the first user `rm`.
+        'chown -R 0:0 /mnt/host 2>/dev/null || true\n' +
+        'ln -sfn /mnt/host /home/root/host 2>/dev/null\n' +
+        'umask 000\n' +
+        'mkdir -p -m 0777 /mnt/host/public /mnt/host/public/.following 2>/dev/null\n' +
+        'mkdir -p -m 0777 /mnt/host/following /mnt/host/following_new /mnt/host/social_following 2>/dev/null\n' +
+        'mkdir -p -m 0777 /mnt/host/vfs/public /mnt/host/vfs/public/.following 2>/dev/null\n' +
+        'mkdir -p -m 0777 /mnt/host/vfs/following /mnt/host/vfs/following_new /mnt/host/vfs/social_following 2>/dev/null\n' +
+        'chmod 0777 /mnt/host/public /mnt/host/following /mnt/host/following_new /mnt/host/social_following 2>/dev/null || true\n' +
+        'chmod 0777 /mnt/host/vfs/public /mnt/host/vfs/following /mnt/host/vfs/following_new /mnt/host/vfs/social_following 2>/dev/null || true\n' +
+        // sync9p: ask the host page to refresh its 9P view of /mnt/host
+        // and confirm via a receipt the guest reads back. Flow:
+        //   1. `sync` flushes guest writes to fs9p.
+        //   2. Guest emits "__HOST_SYNC__:<nonce>" on serial0 and blocks
+        //      in `read -t` on its own stdin.
+        //   3. Host catches marker, refreshes viewer (renderTree),
+        //      writes /.tb-sync-<nonce> to fs9p (best-effort, for
+        //      observability), and echoes "SYNC9P_RECEIPT:<nonce>\n"
+        //      back over serial0.
+        //   4. Guest's `read` returns with the receipt line; sync9p prints
+        //      "sync9p: ok <nonce>".
+        //
+        // The previous design polled /mnt/host/.tb-sync-<nonce> from the
+        // guest, but the Linux 9P client's dentry + readdir caches can
+        // survive snapshot restore in stale states that hide host-written
+        // files even from per-nonce stat() probes. Serial is the same
+        // bidirectional path the shell already uses, so it cannot be
+        // poisoned by 9P client-side caching.
+        'cat > /etc/profile.d/02sync9p.sh <<\\__SYNC9P_EOF__\n' +
+        'SYNC9P_VERSION="v6-remount-instrumented"\n' +
+        'sync9p() {\n' +
+        '  __n=$$-$(date +%s 2>/dev/null)-$RANDOM-$RANDOM\n' +
+        '  __v="${SYNC9P_VERSION:-unset}"\n' +
+        '  sync 2>/dev/null\n' +
+        '  printf "sync9p[%s]: nonce=%s\\n" "$__v" "$__n"\n' +
+        '  printf "__HOST_SYNC__:%s\\n" "$__n"\n' +
+        '  # Wait for host to echo SYNC9P_RECEIPT:<nonce> back over serial.\n' +
+        '  __i=0\n' +
+        '  while [ $__i -lt 30 ]; do\n' +
+        '    if IFS= read -r -t 1 __line 2>/dev/null; then\n' +
+        '      case "$__line" in\n' +
+        '        *SYNC9P_RECEIPT:$__n*)\n' +
+        '          printf "sync9p: receipt matched after %ds\\n" "$__i"\n' +
+        '          # 1. drop VFS caches (cheap, may help dentry negative cache)\n' +
+        '          if echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; then\n' +
+        '            printf "sync9p: drop_caches ok\\n"\n' +
+        '          else\n' +
+        '            printf "sync9p: drop_caches FAILED\\n"\n' +
+        '          fi\n' +
+        '          # 2. save cwd, escape if under /mnt/host\n' +
+        '          __cwd=$(pwd 2>/dev/null)\n' +
+        '          printf "sync9p: cwd=%s\\n" "$__cwd"\n' +
+        '          case "$__cwd" in /mnt/host*) cd / 2>/dev/null && printf "sync9p: cd / (was under /mnt/host)\\n" ;; esac\n' +
+        '          # 3. show current mount\n' +
+        '          printf "sync9p: pre-mounts: "; grep " /mnt/host " /proc/mounts || printf "(none)\\n"\n' +
+        '          # 4. umount loop\n' +
+        '          __ri=0\n' +
+        '          while grep -q " /mnt/host " /proc/mounts && [ $__ri -lt 8 ]; do\n' +
+        '            if umount /mnt/host 2>/dev/null; then\n' +
+        '              printf "sync9p: umount #%d ok\\n" "$__ri"\n' +
+        '            elif umount -l /mnt/host 2>/dev/null; then\n' +
+        '              printf "sync9p: umount -l #%d ok\\n" "$__ri"\n' +
+        '            else\n' +
+        '              printf "sync9p: umount #%d FAILED — break\\n" "$__ri"\n' +
+        '              break\n' +
+        '            fi\n' +
+        '            __ri=$((__ri+1))\n' +
+        '          done\n' +
+        '          printf "sync9p: post-umount: "; grep " /mnt/host " /proc/mounts || printf "(unmounted)\\n"\n' +
+        '          # 5. remount\n' +
+        '          if mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192,cache=none,access=any,dfltuid=0,dfltgid=0,uid=0,gid=0,rw host9p /mnt/host 2>/dev/null; then\n' +
+        '            printf "sync9p: remount ok (cache=none)\\n"\n' +
+        '          elif mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192,cache=loose,access=any,dfltuid=0,dfltgid=0,uid=0,gid=0,rw host9p /mnt/host 2>/dev/null; then\n' +
+        '            printf "sync9p: remount ok (cache=loose fallback)\\n"\n' +
+        '          else\n' +
+        '            printf "sync9p: remount FAILED\\n"\n' +
+        '          fi\n' +
+        '          printf "sync9p: post-mounts: "; grep " /mnt/host " /proc/mounts || printf "(none)\\n"\n' +
+        '          # 6. peek root listing for reality check\n' +
+        '          printf "sync9p: ls /mnt/host: "\n' +
+        '          ls -1 /mnt/host 2>/dev/null | tr "\\n" " "\n' +
+        '          printf "\\n"\n' +
+        '          # 7. restore cwd\n' +
+        '          case "$__cwd" in /mnt/host*) cd "$__cwd" 2>/dev/null || cd / ;; esac\n' +
+        '          printf "sync9p: ok %s\\n" "$__n"\n' +
+        '          return 0\n' +
+        '          ;;\n' +
+        '      esac\n' +
+        '    fi\n' +
+        '    __i=$((__i+1))\n' +
+        '  done\n' +
+        '  printf "sync9p: timeout (no receipt for %s)\\n" "$__n" >&2\n' +
+        '  return 1\n' +
+        '}\n' +
+        '__SYNC9P_EOF__\n' +
+        '. /etc/profile.d/02sync9p.sh 2>/dev/null || true\n';
+
+      // /mnt/host (9P share) is the canonical SOCIAL_HOME. Ensure the
+      // expected subdirs exist with permissive modes so social.sh + the
+      // overlay can write into them without UID translation surprises.
+      const ensureHostDirsCmd =
+        'mkdir -p -m 0777 /mnt/host/public /mnt/host/following /mnt/host/following_new /mnt/host/social_following 2>/dev/null || true\n' +
+        'chmod 0777 /mnt/host/public /mnt/host/following /mnt/host/following_new /mnt/host/social_following 2>/dev/null || true\n' +
+        'export SOCIAL_HOME=/mnt/host\n';
+
+      // Seed /etc/hosts via DoH (DNS-over-HTTPS to 1.1.1.1).
+      // The Fly WISP backend doesn't pass UDP/53 reliably, so plain
+      // getaddrinfo / nslookup times out post-boot. HTTPS to 1.1.1.1
+      // works, so we resolve the canonical traits.build + Fly hosts via
+      // the JSON DoH endpoint and write them straight into /etc/hosts.
+      // Idempotent via a marker-block delete on each run.
+      // Includes dl-cdn.alpinelinux.org so `apk add ...` works on a
+      // fresh/restored guest before tunnel-up.sh has run its own seed.
+      const dohSeedCmd =
+        'sed -i "/# traits-doh-begin/,/# traits-doh-end/d" /etc/hosts 2>/dev/null\n' +
+        '{ echo "# traits-doh-begin"; for h in ' +
+          'www.traits.build tunnel.traits.build relay.traits.build ' +
+          'traits-build-tunnel.fly.dev apptron-traits-build.fly.dev traits-build.fly.dev ' +
+          'dl-cdn.alpinelinux.org; do ' +
+          'ip=$(wget -qO- --timeout=4 -t 1 ' +
+            '"https://1.1.1.1/dns-query?name=${h}&type=A" ' +
+            '--header="Accept: application/dns-json" 2>/dev/null ' +
+            '| tr "," "\\n" ' +
+            '| sed -n \'s/.*"data":"\\([0-9.]*\\)".*/\\1/p\' ' +
+            '| grep -E "^[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+$" ' +
+            '| head -1); ' +
+          '[ -n "$ip" ] && echo "$ip $h"; ' +
+        'done; echo "# traits-doh-end"; } >> /etc/hosts\n';
+
+      // Bring up a local DNS proxy on 127.0.0.1:53 that forwards over
+      // TCP to 1.1.1.1 / 1.0.0.1. Fly WISP drops UDP/53, so plain
+      // /etc/resolv.conf -> 1.1.1.1 fails for any host not in the
+      // DoH-seeded /etc/hosts. unbound's `forward-tcp-upstream: yes`
+      // resolves arbitrary hostnames over TCP/53 which DOES pass.
+      // Auto-installs unbound if missing (apk works because dl-cdn is
+      // in the DoH-seeded /etc/hosts above). Always rewrites
+      // unbound.conf so the apk default (which has all forward-addr
+      // commented out) cannot leave us with a non-resolving daemon.
+      const dnsProxyCmd =
+        'if ! command -v unbound >/dev/null 2>&1; then ' +
+          'echo "[dns] installing unbound..."; ' +
+          'apk add --no-cache --upgrade unbound libcrypto3 libssl3 >/dev/null 2>&1 ' +
+            '|| echo "[dns] apk install failed — DNS will rely on /etc/hosts only" >&2; ' +
+        'fi\n' +
+        'if command -v unbound >/dev/null 2>&1; then ' +
+          'mkdir -p /etc/unbound /var/lib/unbound 2>/dev/null; ' +
+          'printf \'%s\\n\' ' +
+            '\'server:\' \'    verbosity: 0\' \'    interface: 127.0.0.1\' ' +
+            '\'    port: 53\' \'    do-udp: yes\' \'    do-tcp: yes\' ' +
+            '\'    do-ip4: yes\' \'    do-ip6: no\' ' +
+            '\'    access-control: 127.0.0.0/8 allow\' ' +
+            '\'    chroot: ""\' \'    pidfile: "/var/run/unbound.pid"\' ' +
+            '\'    use-syslog: no\' \'    logfile: ""\' ' +
+            '\'    hide-identity: yes\' \'    hide-version: yes\' ' +
+            '\'    qname-minimisation: no\' \'    harden-glue: yes\' ' +
+            '\'    cache-min-ttl: 60\' \'    cache-max-ttl: 3600\' ' +
+            '\'    auto-trust-anchor-file: ""\' \'    trust-anchor-file: ""\' ' +
+            '\'    val-permissive-mode: yes\' \'\' \'forward-zone:\' ' +
+            '\'    name: "."\' \'    forward-tcp-upstream: yes\' ' +
+            '\'    forward-first: no\' \'    forward-addr: 1.1.1.1\' ' +
+            '\'    forward-addr: 1.0.0.1\' ' +
+            '> /etc/unbound/unbound.conf; ' +
+          'killall -q unbound 2>/dev/null; sleep 1; ' +
+          'unbound -c /etc/unbound/unbound.conf >/dev/null 2>&1 & ' +
+          '__ub_ok=0; __ub_i=0; while [ $__ub_i -lt 12 ]; do ' +
+            'if nslookup -timeout=1 cloudflare.com 127.0.0.1 >/dev/null 2>&1; then __ub_ok=1; break; fi; ' +
+            '__ub_i=$((__ub_i+1)); sleep 0.5; ' +
+          'done; ' +
+          'if [ "$__ub_ok" = 1 ]; then ' +
+            'printf "nameserver 127.0.0.1\\nnameserver 1.1.1.1\\n" > /etc/resolv.conf; ' +
+            'echo "[dns] unbound resolving OK"; ' +
+          'else ' +
+            'echo "[dns] unbound did not bind in time, /etc/hosts only (UDP/53 may fail)" >&2; ' +
+          'fi; ' +
+        'else ' +
+          'echo "[dns] no unbound — relying on /etc/hosts seeds only" >&2; ' +
+        'fi\n';
+
+      const restoreNetCmd =
+        rootfsCmd +
+        mount9pCmd +
+        ensureHostDirsCmd +
+        'killall -q udhcpc 2>/dev/null\n' +
+        'ip link set eth0 down 2>/dev/null\n' +
+        'sleep 1\n' +
+        'for i in 1 2 3 4 5; do ip link set eth0 up 2>/dev/null; sleep 1; st=$(cat /sys/class/net/eth0/operstate 2>/dev/null); fl=$(cat /sys/class/net/eth0/flags 2>/dev/null); [ "$st" != "down" ] && break; done\n' +
+        'ip addr flush dev eth0 2>/dev/null\n' +
+        'ip addr add 192.168.86.100/24 dev eth0\n' +
+        'ip route replace default via 192.168.86.1 dev eth0 2>/dev/null\n' +
+        'arp -d 192.168.86.1 2>/dev/null\n' +
+        'arp -s 192.168.86.1 52:54:00:01:02:03\n' +
+        'printf "nameserver 1.1.1.1\\nnameserver 1.0.0.1\\n" > /etc/resolv.conf\n' +
+        dohSeedCmd +
+        dnsProxyCmd +
+        'echo "[restore-net] eth0 operstate=$st flags=$fl (retries=$i)"\n';
+
+      const freshBootCmd =
+        rootfsCmd +
+        mount9pCmd +
+        ensureHostDirsCmd +
+        'ip link set eth0 up 2>/dev/null\n' +
+        'udhcpc -i eth0 -q -n -f -T 2 -t 3 >/dev/null 2>&1\n' +
+        'printf "nameserver 1.1.1.1\\nnameserver 1.0.0.1\\n" > /etc/resolv.conf\n' +
+        dohSeedCmd +
+        dnsProxyCmd +
+        'clear\n' + (setupCmd ? setupCmd + '\n' : '');
+
+      return doRestore ? restoreNetCmd : freshBootCmd;
+    }
+
+    function runNetInit() {
+      if (netInited) return;
+      netInited = true;
+      // Stream the multi-line init script with a small inter-line delay so
+      // the busybox hush serial input buffer doesn't saturate (which would
+      // truncate long lines and leave the shell in continuation mode with
+      // an unterminated quote).
+      const script = buildNetInitCmd();
+      const lines = script.split('\n');
+      let i = 0;
+      const sendNext = () => {
+        if (!emulator || i >= lines.length) return;
+        const line = lines[i++];
+        if (line.length) sendGuestText(line);
+        sendGuestText('\n');
+        setTimeout(sendNext, 60);
+      };
+      sendNext();
+    }
+
+    let promptLine = '';
+    let markerLine = '';
+    let queuedLoginKickSent = false;
+    let queuedLoginHintShown = false;
+    let queuedPasswordSent = false;
+    let netInitTimer = null;
+    const SHELL_PROMPT_RE = /^(?!.*login:)(?!.*password:)(?:\x1b\[[0-9;]*m)*(?:[A-Za-z0-9_.-]+@)?[A-Za-z0-9_.-]+:[^\n]*#\s$/i;
+    const LOGIN_PROMPT_RE = /login:\s*$/i;
+    const PASSWORD_PROMPT_RE = /password:\s*$/i;
+    // Optional persisted root password used for auto-login on snapshot restore.
+    // Set via DevTools: localStorage['v86.root.password'] = 'dummy1234!'
+    function getStoredRootPassword() {
+      try {
+        const v = localStorage.getItem('v86.root.password');
+        return (typeof v === 'string' && v.length) ? v : '';
+      } catch (_) { return ''; }
+    }
+    const HOST_SYNC_RE = /__HOST_SYNC__:([^\s]+)\s*$/;
+    const GUEST_SYNC_OK_RE = /sync9p:\s*ok\s+(\S+)/i;
+    const GUEST_SYNC_TIMEOUT_RE = /sync9p:\s*timeout\s+\(no receipt for\s+(\S+)\)/i;
+
+    // ----- sync9p diagnostics ------------------------------------------------
+    // Inspect from DevTools:
+    //   window._sync9pDiag.recent      // last 200 entries (host + guest)
+    //   window._sync9pDiag.stats       // aggregate counters
+    //   window._sync9pDiag.errors      // last 50 errors
+    //   window._sync9pDiag.fsWrites    // fs write API stats
+    //   window._sync9pDiag.summary()   // compact snapshot
+    //   window._sync9pDiag.reset()
+    // Enable verbose console output with ?sync9p_debug=1 or
+    // localStorage['sync9p.debug']==='1'.
+    const SYNC9P_DEBUG = (() => {
+      try {
+        const q = new URLSearchParams(location.search).get('sync9p_debug');
+        if (q === '1' || q === 'true') return true;
+        if (typeof localStorage !== 'undefined' && localStorage.getItem('sync9p.debug') === '1') return true;
+      } catch (_) {}
+      return false;
+    })();
+    const SYNC9P_RING_MAX = 200;
+    const SYNC9P_ERRORS_MAX = 50;
+    function makeSync9pStats() {
+      return {
+        started: 0, ok: 0, timeout: 0, fs_unavailable: 0, exceptions: 0,
+        write_errors: 0, verify_failures: 0, total_attempts: 0,
+        guest_ok: 0, guest_timeout: 0,
+        max_duration_ms: 0, total_duration_ms: 0,
+        last_nonce: null, last_status: null,
+        started_at: Date.now(),
+      };
+    }
+    const sync9pDiag = (window._sync9pDiag = window._sync9pDiag || {
+      recent: [], errors: [], stats: makeSync9pStats(),
+      fsWrites: { count: 0, byApi: {}, errors: [], last: null },
+      enabled: SYNC9P_DEBUG,
+      reset() { this.recent.length = 0; this.errors.length = 0;
+        this.stats = makeSync9pStats();
+        this.fsWrites = { count: 0, byApi: {}, errors: [], last: null }; },
+      summary() {
+        const s = this.stats;
+        const ok = s.ok, to = s.timeout, total = s.started || 0;
+        return {
+          host: { started: s.started, ok, timeout: to, fs_unavailable: s.fs_unavailable, exceptions: s.exceptions,
+            success_rate: total ? (ok / total) : null,
+            avg_duration_ms: ok ? Math.round((s.total_duration_ms / Math.max(ok, 1))) : null,
+            max_duration_ms: s.max_duration_ms,
+            total_attempts: s.total_attempts, write_errors: s.write_errors, verify_failures: s.verify_failures,
+            last_nonce: s.last_nonce, last_status: s.last_status },
+          guest: { ok: s.guest_ok, timeout: s.guest_timeout },
+          fsWrites: { count: this.fsWrites.count, byApi: { ...this.fsWrites.byApi },
+            error_count: this.fsWrites.errors.length, last: this.fsWrites.last },
+          last10: this.recent.slice(-10),
+          recent_errors: this.errors.slice(-5),
+        };
+      },
+    });
+    function sync9pPush(entry) {
+      sync9pDiag.recent.push(entry);
+      if (sync9pDiag.recent.length > SYNC9P_RING_MAX) sync9pDiag.recent.shift();
+      if (entry.error) {
+        sync9pDiag.errors.push({ t: entry.t_end || entry.t_start, phase: entry.phase || 'host',
+          nonce: entry.nonce, state: entry.state, error: entry.error });
+        if (sync9pDiag.errors.length > SYNC9P_ERRORS_MAX) sync9pDiag.errors.shift();
+      }
+      if (sync9pDiag.enabled) { try { console.debug('[sync9p]', entry); } catch (_) {} }
+    }
+
+    // Watch for guest-emitted action markers on serial0 and execute them
+    // host-side. Handles sync9p host receipt + records guest-perceived outcome.
+    function handleHostMarker(line) {
+      // Strip ANSI escapes the guest shell may have wrapped around output.
+      const clean = line.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
+
+      // Resolve any pending one-shot markers (e.g. umount/remount handshake).
+      // Done first so async save flows resume promptly even if other markers
+      // would have matched.
+      try { consumeOneShotMarker(clean); } catch (_) {}
+
+      // Record guest-side sync9p outcomes (printed by the guest function
+      // after polling /mnt/host/.tb-sync-<nonce>). These reveal cases where
+      // the host wrote+verified the receipt but the Linux 9P client never
+      // saw it (cache poisoning, mount race, etc.).
+      const gOk = GUEST_SYNC_OK_RE.exec(clean);
+      if (gOk) {
+        sync9pDiag.stats.guest_ok++;
+        sync9pPush({ phase: 'guest', nonce: gOk[1], t_end: Date.now(), state: 'guest_ok' });
+      }
+      const gTo = GUEST_SYNC_TIMEOUT_RE.exec(clean);
+      if (gTo) {
+        sync9pDiag.stats.guest_timeout++;
+        sync9pPush({ phase: 'guest', nonce: gTo[1], t_end: Date.now(), state: 'guest_timeout',
+          error: 'guest_poll_timeout' });
+      }
+
+      const sm = HOST_SYNC_RE.exec(clean);
+      if (!sm) return;
+      const nonce = sm[1].trim();
+      const entry = { phase: 'host', nonce, t_start: Date.now(),
+        attempts: [], state: 'started', verified: false };
+      sync9pDiag.stats.started++;
+      sync9pDiag.stats.last_nonce = nonce;
+      sync9pPush(entry);
+      // PRIMARY receipt channel: echo the nonce back over serial0. The
+      // guest's sync9p() function is blocked in `read -t` on stdin and
+      // will see this line. Serial is the same path everything else
+      // uses (shell input/output) and is unaffected by 9P client-side
+      // dentry/readdir caches that survive snapshot restore.
+      try { sendGuestText('SYNC9P_RECEIPT:' + nonce + '\n'); } catch (_) {}
+      (async () => {
+        try {
+          // Note: we used to call renderTree() here for live refresh,
+          // but it could fire while the user was editing the path field
+          // and caused perceived "auto-replace" of their typing. The
+          // user can hit the refresh button or press Enter to reload.
+          const fs = emulator && emulator.fs9p;
+          if (!fs) {
+            entry.state = 'fs_unavailable';
+            entry.error = 'fs9p unavailable';
+            entry.t_end = Date.now();
+            entry.duration_ms = entry.t_end - entry.t_start;
+            sync9pDiag.stats.fs_unavailable++;
+            sync9pDiag.stats.last_status = 'fs_unavailable';
+            sLog('sync9p: fs9p unavailable', 'err');
+            return;
+          }
+          const receiptText = nonce + ' ' + Date.now() + '\n';
+          const bytes = new TextEncoder().encode(receiptText);
+          const path = '/.tb-sync-' + nonce;
+          // Write-verify-retry: fsWriteFileCompat occasionally returns
+          // success without the byte stream being readable back through
+          // fs.read_file (silent drop, esp. after snapshot restore). Verify
+          // by reading back; retry up to 4× with 120ms backoff. Without
+          // this the guest's `ls /mnt/host/.tb-sync-<nonce>` poll loop
+          // times out (sync9p: timeout) even though the host JS thinks
+          // the write succeeded.
+          let verified = false;
+          for (let attempt = 0; attempt < 4 && !verified; attempt++) {
+            const a = { i: attempt, t_start: Date.now() };
+            sync9pDiag.stats.total_attempts++;
+            try {
+              const ws = Date.now();
+              await fsWriteFileCompat(fs, path, bytes);
+              a.write_ms = Date.now() - ws;
+            } catch (e) {
+              a.write_error = String(e && e.message || e);
+              sync9pDiag.stats.write_errors++;
+            }
+            try {
+              const rs = Date.now();
+              const back = await fs.read_file(path);
+              a.read_ms = Date.now() - rs;
+              a.bytes_back = back ? back.length : -1;
+              a.bytes_expected = bytes.length;
+              if (back && back.length === bytes.length) { a.verified = true; verified = true; }
+              else { a.verified = false; sync9pDiag.stats.verify_failures++; }
+            } catch (e) {
+              a.read_error = String(e && e.message || e);
+              a.verified = false;
+              sync9pDiag.stats.verify_failures++;
+            }
+            a.duration_ms = Date.now() - a.t_start;
+            entry.attempts.push(a);
+            if (verified) break;
+            if (attempt < 3) await new Promise(r => setTimeout(r, 120));
+          }
+          entry.t_end = Date.now();
+          entry.duration_ms = entry.t_end - entry.t_start;
+          entry.verified = verified;
+          entry.state = verified ? 'ok' : 'timeout';
+          if (!verified) entry.error = 'verify_failed_after_4_retries';
+          if (verified) {
+            sync9pDiag.stats.ok++;
+            sync9pDiag.stats.total_duration_ms += entry.duration_ms;
+          } else {
+            sync9pDiag.stats.timeout++;
+          }
+          if (entry.duration_ms > sync9pDiag.stats.max_duration_ms) {
+            sync9pDiag.stats.max_duration_ms = entry.duration_ms;
+          }
+          sync9pDiag.stats.last_status = entry.state;
+          if (verified) sLog('sync9p: ack ' + nonce + ' (' + entry.duration_ms + 'ms, ' + entry.attempts.length + 'x)', 'ok');
+          else sLog('sync9p: ack ' + nonce + ' write not verifiable after 4 retries (' + entry.duration_ms + 'ms)', 'err');
+        } catch (e) {
+          entry.t_end = Date.now();
+          entry.duration_ms = entry.t_end - entry.t_start;
+          entry.state = 'exception';
+          entry.error = String(e && e.message || e);
+          sync9pDiag.stats.exceptions++;
+          sync9pDiag.stats.last_status = 'exception';
+          sLog('sync9p ack failed: ' + entry.error, 'err');
+        }
+      })();
+    }
+
+    function markShellReady() {
+      if (shellReady) return;
+      shellReady = true;
+      queuedLoginKickSent = false;
+      queuedLoginHintShown = false;
+      queuedPasswordSent = false;
+      serialVfs.setReady(true);
+      flushPendingGuestCommands();
+      // Prime stty with current cols now that we know we're at a shell.
+      if (lastCols && emulator) {
+        sentCols = lastCols;
+        const cmd = `stty cols ${lastCols} 2>/dev/null\n`;
+        setTimeout(() => sendGuestText(cmd), 300);
+      }
+    }
+
+    function maybeKickQueuedGuestLogin() {
+      if (queuedLoginKickSent || shellReady) return;
+      const autoLogin = (typeof window !== 'undefined') && window.__v86AutoLogin === true;
+      const haveWork = pendingGuestCommands.length > 0 || (serialVfs && serialVfs.queue.length > 0);
+      if (!autoLogin && !haveWork) return;
+      queuedLoginKickSent = true;
+      if (!queuedLoginHintShown) {
+        queuedLoginHintShown = true;
+        sLog('guest: logging into Alpine as root so queued guest commands can run', 'hint');
+      }
+      setTimeout(() => {
+        if (!emulator || shellReady) return;
+        sendGuestText('root\n');
+      }, 120);
+    }
+
+    emulator.add_listener('serial0-output-byte', b => {
+      byteCount++; pushByte(b); markDirty();
+      const ch = String.fromCharCode(b);
+      // Accumulate full lines so we can detect host-side action markers
+      // emitted by guest scripts (e.g. sync9p prints "__HOST_SYNC__:<nonce>").
+      if (ch === '\n' || ch === '\r') {
+        if (markerLine) {
+          const line = markerLine; markerLine = '';
+          handleHostMarker(line);
+        }
+      } else {
+        markerLine = (markerLine + ch).slice(-512);
+      }
+      if (!shellReady || !netInited) {
+        // Any incoming byte while netInit is still pending means the guest
+        // is still printing (motd, autologin, shell init) — push the
+        // settle deadline back so we don't type into a half-built shell.
+        if (netInitTimer) {
+          clearTimeout(netInitTimer);
+          netInitTimer = setTimeout(() => { netInitTimer = null; runNetInit(); }, 900);
+        }
+        if (ch === '\r' || ch === '\n') {
+          promptLine = '';
+        } else {
+          promptLine = (promptLine + ch).slice(-256);
+        }
+        if (!shellReady && LOGIN_PROMPT_RE.test(promptLine)) {
+          maybeKickQueuedGuestLogin();
+          return;
+        }
+        if (!shellReady && queuedLoginKickSent && !queuedPasswordSent && PASSWORD_PROMPT_RE.test(promptLine)) {
+          const pw = getStoredRootPassword();
+          if (pw) {
+            queuedPasswordSent = true;
+            setTimeout(() => { if (emulator && !shellReady) sendGuestText(pw + '\n'); }, 120);
+            return;
+          }
+        }
+        // Strip ANSI CSI sequences (e.g. \x1b[6n cursor-position report)
+        // before testing — agetty/busybox can append those after `# `.
+        const cleanPrompt = promptLine.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+        if (SHELL_PROMPT_RE.test(cleanPrompt)) {
+          if (!shellReady) {
+            markShellReady();
+          }
+          // Debounce netInit start until the serial output goes idle for
+          // ~900ms. On fresh boot, multiple prompt-shaped strings can flash
+          // by during motd / autologin / shell init, and firing the script
+          // on the first one collides with shell setup (BusyBox eats input
+          // mid-redraw and the script half-runs). Reschedule on every new
+          // serial byte; only when nothing has arrived for the idle window
+          // do we actually start typing.
+          if (!netInited) {
+            if (netInitTimer) clearTimeout(netInitTimer);
+            netInitTimer = setTimeout(() => { netInitTimer = null; runNetInit(); }, 900);
+          }
+        }
+      }
+    });
+
+    // On restore the guest is idle at the shell prompt (HLT) and will not
+    // emit any serial output until input wakes it up — so PROMPT_RE above
+    // never fires. We also can't rely on `emulator-started`: when v86 boots
+    // from a preloaded `initial_state` buffer, that event can fire before
+    // all our listeners are attached, so a listener registered later simply
+    // misses it (observed on 2nd+ back-to-back restores). Just schedule the
+    // kicker on a plain timer — `runNetInit` is idempotent via `netInited`.
+    if (doRestore && !netInited) {
+      setTimeout(() => { if (emulator) sendGuestText('\n'); }, 400);
+      // Fallback kicker: if no prompt-shaped output arrives within the
+      // settle window (HLT'd guest with truly silent serial), force-start.
+      // Cancelled automatically when prompt detection schedules its own
+      // debounced timer above.
+      if (!netInitTimer) {
+        netInitTimer = setTimeout(() => { netInitTimer = null; runNetInit(); }, 1800);
+      }
+    }
+
+    resetBtn.disabled = false;
+    saveBtn.disabled = false;
+    updateSnapButtonsState();
+
+    term.focus();
+  }
+
+  async function shutdown() {
+    if (!emulator) return;
+    try { emulator.stop(); } catch (_) {}
+    try { emulator.destroy(); } catch (_) {}
+    emulator = null; window.emulator = null;
+    shellReady = false; sentCols = 0;
+    queuedLoginKickSent = false; queuedLoginHintShown = false; queuedPasswordSent = false; promptLine = '';
+    serialVfs.ready = false; serialVfs.attached = false;
+    serialVfs.busy = false; serialVfs.current = null; serialVfs.buf = '';
+    bootBtn.disabled = false;
+    updateSnapButtonsState();
+  }
+
+  async function doReset() { await shutdown(); await boot({ restore: false }); }
+  async function doRestore() { await shutdown(); await boot({ restore: true }); }
+  async function doClear() {
+    const sel = parseSel(snapEl.value);
+    if (!sel || sel.isFresh) return;
+    await idbDel(sel.key);
+    if (currentSnapName === sel.name && currentIso === sel.iso) currentSnapName = null;
+    setStatus('snapshot cleared');
+    await populateSnapSelect('fresh:' + sel.iso);
+  }
+  async function doSave() {
+    if (!emulator) return;
+    saveBtn.disabled = true;
+    saveInProgress = true;
+    setStatus('saving snapshot…');
+    try {
+      // Take snapshot in unmounted state — see umountBeforeSave() comment.
+      await umountBeforeSave();
+      const buf = await emulator.save_state();
+      // Save into the dropdown's currently-selected slot. Fresh-boot
+      // selections materialize as DEFAULT_SNAP_NAME for that ISO. Named
+      // selections overwrite that snapshot. This lets users switch the
+      // dropdown mid-run to pick a save target.
+      const selSave = parseSel(snapEl.value) || { iso: currentIso, isFresh: true };
+      const targetIso = selSave.iso || currentIso;
+      const targetName = (!selSave.isFresh && selSave.name) ? selSave.name : DEFAULT_SNAP_NAME;
+      currentIso = targetIso;
+      currentSnapName = targetName;
+      const key = snapKeyFor(targetIso, targetName);
+      await idbPut(key, buf);
+      await remountAfterSave();
+      setStatus(`snapshot saved as ${targetIso}/${targetName} (${(buf.byteLength/1048576).toFixed(1)} MB)`, 'ok');
+      await populateSnapSelect(key);
+    } catch (e) {
+      setStatus('save failed: ' + e.message, 'err');
+    } finally { saveBtn.disabled = false; saveInProgress = false; }
+  }
+
+  function uniqueSnapName(iso, base, existingNames) {
+    const taken = new Set(existingNames);
+    if (!taken.has(base)) return base;
+    for (let i = 2; i < 1000; i++) {
+      const cand = base + ' ' + i;
+      if (!taken.has(cand)) return cand;
+    }
+    return base + ' ' + Date.now();
+  }
+  async function doRename() {
+    const sel = parseSel(snapEl.value);
+    if (!sel || sel.isFresh) return;
+    const next = window.prompt('Rename snapshot', sel.name);
+    if (next == null) return;
+    const trimmed = next.trim();
+    if (!trimmed || trimmed === sel.name) return;
+    if (/[:\\/]/.test(trimmed)) {
+      setStatus('rename failed: name cannot contain : / \\', 'err');
+      return;
+    }
+    const newKey = snapKeyFor(sel.iso, trimmed);
+    if (await idbHas(newKey)) {
+      setStatus('rename failed: name already exists', 'err');
+      return;
+    }
+    try {
+      await idbCopy(sel.key, newKey);
+      await idbDel(sel.key);
+      if (currentIso === sel.iso && currentSnapName === sel.name) currentSnapName = trimmed;
+      setStatus(`renamed to ${sel.iso}/${trimmed}`, 'ok');
+      await populateSnapSelect(newKey);
+    } catch (e) {
+      setStatus('rename failed: ' + e.message, 'err');
+    }
+  }
+  async function doClone() {
+    const sel = parseSel(snapEl.value);
+    if (!sel || sel.isFresh) return;
+    const all = await listSnapshots();
+    const sameIso = all.filter(s => s.iso === sel.iso).map(s => s.name);
+    const cloneName = uniqueSnapName(sel.iso, sel.name + ' clone', sameIso);
+    const newKey = snapKeyFor(sel.iso, cloneName);
+    try {
+      await idbCopy(sel.key, newKey);
+      setStatus(`cloned to ${sel.iso}/${cloneName}`, 'ok');
+      // Per spec: clone is auto-selected as the next restore target.
+      await populateSnapSelect(newKey);
+    } catch (e) {
+      setStatus('clone failed: ' + e.message, 'err');
+    }
+  }
+
+  bootBtn.onclick    = () => boot({ restore: false });
+  resetBtn.onclick   = doReset;
+  saveBtn.onclick    = doSave;
+  restoreBtn.onclick = doRestore;
+  clearBtn.onclick   = doClear;
+  if (renameBtn) renameBtn.onclick = doRename;
+  if (cloneBtn)  cloneBtn.onclick  = doClone;
+
+  snapEl.onchange = async () => {
+    persistSelection();
+    const sel = parseSel(snapEl.value);
+    if (!sel) { updateSnapButtonsState(); return; }
+    if (sel.isFresh) {
+      setStatus(`fresh boot — ${sel.iso}`);
+    } else {
+      const has = await idbHas(sel.key);
+      setStatus(has ? `snapshot ${sel.iso} / ${sel.name}` : 'snapshot missing');
+    }
+    updateSnapButtonsState();
+  };
+  await populateSnapSelect();
+
+  // ---- Keyboard input: xterm.js streams raw VT input directly ----
+  // term.onData fires with a string containing already-encoded VT sequences
+  // (arrow keys → ESC[A, Ctrl-C → \x03, etc.), so we just forward bytes.
+  term.onData(data => {
+    sendGuestText(data);
+  });
+  // Cmd/Ctrl+C: when there's a terminal selection, copy via browser instead of
+  // sending Ctrl+C to the guest (xterm's default). Cmd/Ctrl+V: paste from
+  // clipboard. Cmd/Ctrl+A: select all visible buffer.
+  term.attachCustomKeyEventHandler((ev) => {
+    if (ev.type !== 'keydown') return true;
+    const mod = ev.metaKey || ev.ctrlKey;
+    if (!mod) return true;
+    const k = (ev.key || '').toLowerCase();
+    if (k === 'c' && term.hasSelection()) {
+      try { navigator.clipboard.writeText(term.getSelection()); } catch {}
+      return false;
+    }
+    if (k === 'v') {
+      navigator.clipboard.readText().then(t => {
+        if (t) sendGuestText(t);
+      }).catch(() => {});
+      return false;
+    }
+    if (k === 'a' && ev.shiftKey === false) {
+      // Cmd+A (no shift) → select all in terminal buffer
+      try { term.selectAll(); } catch {}
+      return false;
+    }
+    return true;
+  });
+  termEl.addEventListener('click', () => term.focus());
+
+  // ── Global Cmd/Ctrl+C fallback ───────────────────────────────────────────
+  // When the active selection is OUTSIDE xterm (viewer source/editor, panels,
+  // tunnel logs, etc.), some browsers route the keystroke to the focused
+  // element instead of the document selection. This handler catches Cmd/Ctrl+C
+  // when there's a window-level selection and delegates to the clipboard.
+  window.addEventListener('keydown', (ev) => {
+    const mod = ev.metaKey || ev.ctrlKey;
+    if (!mod) return;
+    const k = (ev.key || '').toLowerCase();
+    if (k !== 'c') return;
+    // If event already targets an editable input/textarea, let the browser
+    // handle it natively.
+    const t = ev.target;
+    const tag = (t && t.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || (t && t.isContentEditable)) return;
+    // If terminal has a selection, the xterm handler above already runs.
+    if (term.hasSelection && term.hasSelection()) return;
+    // Otherwise copy the document selection (works inside #viewer-editor /
+    // #viewer-tree contents / log areas that aren't user-select:none).
+    const sel = window.getSelection && window.getSelection();
+    const txt = sel ? sel.toString() : '';
+    if (txt) {
+      try { navigator.clipboard.writeText(txt); } catch {}
+      ev.preventDefault();
+    }
+  }, true);
+
+  setInterval(() => { statsEl.textContent = emulator ? `${byteCount} bytes` : ''; }, 500);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Viewer overlay — browse files in the v86 9P share directly from the host.
+  // No relay/tunnel/websocat needed. Files the guest writes under /mnt/host/*
+  // appear here on the next refresh. The 9P share root (fs9p "/") is what the
+  // guest sees mounted at /mnt/host — the input field accepts both forms
+  // ("/mnt/host/..." guest paths and "/..." share-relative paths).
+  // ─────────────────────────────────────────────────────────────────────────
+  const viewerBtn   = $('viewer');
+  const overlay     = $('viewer-overlay');
+  const treeEl      = $('viewer-tree');
+  const frameEl     = $('viewer-frame');
+  const emptyEl     = $('viewer-empty');
+  const pathEl      = $('viewer-path');
+  const refreshBtn  = $('viewer-refresh');
+  const closeBtn    = $('viewer-close');
+  const vStatusEl   = $('viewer-status');
+  let lastBlobUrl   = null;
+  // Viewer browses the entire guest filesystem via SerialVfs (ls / cat over
+  // the serial console). Paths are absolute guest paths (e.g. /, /root,
+  // /mnt/host, /etc). No 9P share or tunnel is involved here.
+  const VIEWER_ROOT = '/';
+  const expanded    = new Set([VIEWER_ROOT]);
+  // Cache: dir path -> [{name, path, dir}]. Cleared on refresh.
+  const dirCache    = new Map();
+  // Render generation counter; lets us discard stale async renders when the
+  // user navigates faster than serial commands complete.
+  let renderGen = 0;
+
+  function normalizeViewerPath(raw) {
+    let p = String(raw || '').trim();
+    if (!p) return VIEWER_ROOT;
+    if (!p.startsWith('/')) p = '/' + p;
+    p = p.replace(/\/+/g, '/');
+    if (p.length > 1) p = p.replace(/\/$/, '');
+    return p || VIEWER_ROOT;
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+
+  function vSet(msg, cls) { vStatusEl.textContent = msg || ''; vStatusEl.className = 'hint ' + (cls || ''); }
+
+  function fs9p() { return emulator && emulator.fs9p; }
+
+  // Host-side wipe — bypasses the guest's 9P kernel client entirely.
+  // Use when `rm -rf /mnt/host/foo` returns EOVERFLOW ("Value too large for
+  // data type") or any other 9P-side error. Operates directly on the v86
+  // in-memory inode tree via fs9p.DeleteNode/Unlink/RecursiveDelete.
+  // Path is relative to the 9P root (i.e. drop the `/mnt/host` prefix).
+  // Examples (devtools console):
+  //   wipe9p('/public')              -> wipes everything under /public
+  //   wipe9p('/following/npub1xxx')  -> wipes one followed user's mirror
+  //   ls9p('/public')                -> list children
+  //   stat9p('/public/manifest.json')-> show inode info
+  window.wipe9p = function (path) {
+    const fs = fs9p(); if (!fs) return 'fs9p not ready';
+    if (!path || path === '/' || path === '') return 'refuse to wipe root';
+    // Strip /mnt/host prefix if user passes the guest path by accident.
+    path = String(path).replace(/^\/mnt\/host/, '') || '/';
+    const r = fs.SearchPath(path);
+    if (!r || r.id === -1) return 'not found: ' + path;
+    try { fs.DeleteNode(path); return 'wiped: ' + path; }
+    catch (e) { return 'wipe failed: ' + (e && e.message || e); }
+  };
+  window.ls9p = function (path) {
+    const fs = fs9p(); if (!fs) return 'fs9p not ready';
+    path = String(path || '/').replace(/^\/mnt\/host/, '') || '/';
+    const r = fs.SearchPath(path);
+    if (!r || r.id === -1) return 'not found: ' + path;
+    if (!fs.IsDirectory(r.id)) return 'not a dir: ' + path;
+    return fs.GetChildren(r.id);
+  };
+  window.stat9p = function (path) {
+    const fs = fs9p(); if (!fs) return 'fs9p not ready';
+    path = String(path || '/').replace(/^\/mnt\/host/, '') || '/';
+    const r = fs.SearchPath(path);
+    if (!r || r.id === -1) return 'not found: ' + path;
+    const inode = fs.GetInode(r.id);
+    return {
+      id: r.id, mode: '0' + (inode.mode & 0o7777).toString(8),
+      type: (inode.mode & 0o170000).toString(8),
+      uid: inode.uid, gid: inode.gid, size: inode.size,
+      qid: { path: inode.qid.path, version: inode.qid.version, type: inode.qid.type },
+      nlinks: inode.nlinks, status: inode.status,
+    };
+  };
+
+  function joinPath(base, name) {
+    if (base === '/' || base === '') return '/' + name;
+    return base.replace(/\/+$/, '') + '/' + name;
+  }
+  function isDir(path) {
+    const fs = fs9p(); if (!fs) return false;
+    const r = fs.SearchPath(path);
+    if (!r || r.id === -1) return false;
+    return fs.IsDirectory(r.id);
+  }
+  function listDir(path) {
+    const fs = fs9p(); if (!fs) return [];
+    const names = fs.read_dir(path) || [];
+    return names.map(n => {
+      const p = joinPath(path, n);
+      return { name: n, path: p, dir: isDir(p) };
+    }).sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
+  }
+
+  // ── Serial-backed filesystem helpers (whole guest FS) ──────────────────
+  // svfsList: list a directory using `ls -1Ap` (BusyBox). The trailing '/'
+  // marker on each line distinguishes dirs from files in a single command.
+  // svfsIsDir: cheap dir check via `[ -d ... ]`.
+  // Strip ANSI CSI escapes that some shells inject via `ls` aliases
+  // (e.g. `alias ls='ls --color=auto'`). The leading `\ls` bypasses any
+  // alias on bash; for BusyBox/ash this is a no-op (no aliases by default)
+  // and we still strip on the host side as a safety net.
+  const ANSI_CSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
+  function stripAnsi(s) { return (s || '').replace(ANSI_CSI_RE, ''); }
+  async function svfsList(path) {
+    if (!serialVfs || !serialVfs.ready) return [];
+    const r = await serialVfs.exec(
+      `\\ls --color=never -1Ap -- ${SerialVfs._q(path)} 2>/dev/null`,
+      { timeout: 15000 }
+    );
+    if (r.exitCode !== 0) return [];
+    return stripAnsi(r.stdout).split('\n')
+      .map(s => s.replace(/\r$/, ''))
+      .filter(Boolean)
+      .map(line => {
+        const dir = line.endsWith('/');
+        const name = dir ? line.slice(0, -1) : line;
+        return { name, path: joinPath(path, name), dir };
+      })
+      .filter(e => e.name && e.name !== '.' && e.name !== '..')
+      .sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
+  }
+  async function svfsIsDir(path) {
+    if (!serialVfs || !serialVfs.ready) return false;
+    const r = await serialVfs.exec(
+      `[ -d ${SerialVfs._q(path)} ] && echo 1 || echo 0`,
+      { timeout: 10000 }
+    );
+    return stripAnsi(r.stdout).replace(/\s+/g, '') === '1';
+  }
+  async function getDir(path, force = false) {
+    if (!force && dirCache.has(path)) return dirCache.get(path);
+    const ents = await svfsList(path);
+    dirCache.set(path, ents);
+    return ents;
+  }
+
+  async function renderTree() {
+    if (!serialVfs || !serialVfs.ready) {
+      treeEl.innerHTML = '<div class="row hint" style="padding:8px 12px">shell not ready — wait for guest prompt</div>';
+      return;
+    }
+    const myGen = ++renderGen;
+    const root = normalizeViewerPath(pathEl.value);
+    // Never write back to pathEl here — the user owns that field.
+    // (Previously we normalized the value while unfocused, but any
+    // automatic rerender would still flicker the input.)
+    if (!await svfsIsDir(root)) {
+      if (myGen !== renderGen) return;
+      treeEl.innerHTML = `<div class="row hint" style="padding:8px 12px">not a directory: ${escapeHtml(root)}</div>`;
+      return;
+    }
+    if (myGen !== renderGen) return;
+    expanded.add(root);
+    const out = [];
+    async function walk(dirPath, depth) {
+      const entries = await getDir(dirPath);
+      if (myGen !== renderGen) return;
+      for (const e of entries) {
+        const cls = e.dir ? ('dir' + (expanded.has(e.path) ? ' open' : '')) : 'file';
+        const indent = depth > 5 ? 5 : depth;
+        out.push(`<div class="row ${cls} indent-${indent}" data-path="${escapeHtml(e.path)}" data-dir="${e.dir ? 1 : 0}">${escapeHtml(e.name)}</div>`);
+        if (e.dir && expanded.has(e.path)) await walk(e.path, depth + 1);
+        if (myGen !== renderGen) return;
+      }
+    }
+    await walk(root, 1);
+    if (myGen !== renderGen) return;
+    treeEl.innerHTML = out.join('') || '<div class="row hint" style="padding:8px 12px">empty</div>';
+  }
+
+  function mimeFor(path) {
+    const ext = (path.split('.').pop() || '').toLowerCase();
+    return ({
+      html:'text/html', htm:'text/html',
+      js:'text/javascript', mjs:'text/javascript',
+      css:'text/css', json:'application/json',
+      svg:'image/svg+xml', png:'image/png', jpg:'image/jpeg', jpeg:'image/jpeg',
+      gif:'image/gif', webp:'image/webp', ico:'image/x-icon',
+      txt:'text/plain', md:'text/plain', log:'text/plain',
+      pdf:'application/pdf', wasm:'application/wasm',
+    })[ext] || 'text/plain;charset=utf-8';
+  }
+
+  // Hard cap for in-viewer file reads. base64-over-serial is slow and
+  // monopolizes the guest shell while it runs — reading a multi-MB JS/HTML
+  // file made the whole tab look frozen. 1 MiB is a comfortable upper bound
+  // for the kind of preview content this viewer is meant for.
+  const VIEWER_MAX_BYTES = 1024 * 1024;
+
+  // ── Render/Source tabs + Monaco editor ──────────────────────────────
+  const tabsEl       = $('viewer-tabs');
+  const tabRenderBtn = $('viewer-tab-render');
+  const tabSourceBtn = $('viewer-tab-source');
+  const vSaveBtn      = $('viewer-save');
+  const tabStatusEl  = $('viewer-tab-status');
+  const editorEl     = $('viewer-editor');
+
+  // Per-file state for the currently-open file.
+  const cur = {
+    path: null,
+    bytes: null,        // Uint8Array — original bytes
+    text: null,         // decoded text if printable
+    isText: false,
+    mime: null,
+    dirty: false,
+    tab: 'render',      // 'render' | 'source'
+  };
+
+  let monacoLoading  = null;   // Promise resolving to monaco namespace
+  let monacoEditor   = null;   // monaco.editor.IStandaloneCodeEditor
+  let monacoModel    = null;
+
+  const MONACO_BASE = 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min';
+
+  function loadMonaco() {
+    if (monacoLoading) return monacoLoading;
+    monacoLoading = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = MONACO_BASE + '/vs/loader.js';
+      s.onload = () => {
+        try {
+          window.require.config({ paths: { vs: MONACO_BASE + '/vs' } });
+          window.MonacoEnvironment = {
+            getWorkerUrl: () => `data:text/javascript;charset=utf-8,${encodeURIComponent(`
+              self.MonacoEnvironment = { baseUrl: '${MONACO_BASE}/' };
+              importScripts('${MONACO_BASE}/vs/base/worker/workerMain.js');
+            `)}`,
+          };
+          window.require(['vs/editor/editor.main'], () => resolve(window.monaco));
+        } catch (e) { reject(e); }
+      };
+      s.onerror = () => reject(new Error('failed to load monaco loader'));
+      document.head.appendChild(s);
+    });
+    return monacoLoading;
+  }
+
+  function langFor(path) {
+    const ext = (path.split('.').pop() || '').toLowerCase();
+    return ({
+      html:'html', htm:'html', xml:'xml', svg:'xml',
+      js:'javascript', mjs:'javascript', cjs:'javascript',
+      ts:'typescript', tsx:'typescript', jsx:'javascript',
+      css:'css', scss:'scss', less:'less',
+      json:'json', md:'markdown', markdown:'markdown',
+      py:'python', rs:'rust', go:'go', sh:'shell', bash:'shell',
+      yml:'yaml', yaml:'yaml', toml:'ini', ini:'ini', conf:'ini',
+      sql:'sql', lua:'lua', c:'c', h:'c', cpp:'cpp', hpp:'cpp',
+      java:'java', kt:'kotlin', rb:'ruby', php:'php', dockerfile:'dockerfile',
+      txt:'plaintext', log:'plaintext',
+    })[ext] || 'plaintext';
+  }
+
+  // Heuristic: treat as text if no NUL bytes and ≥95% printable/whitespace.
+  function isLikelyText(bytes) {
+    if (!bytes || !bytes.length) return true;
+    const sample = bytes.subarray(0, Math.min(bytes.length, 4096));
+    let printable = 0;
+    for (let i = 0; i < sample.length; i++) {
+      const b = sample[i];
+      if (b === 0) return false;
+      if (b === 9 || b === 10 || b === 13 || (b >= 32 && b < 127) || b >= 128) printable++;
+    }
+    return printable / sample.length > 0.95;
+  }
+
+  async function ensureEditor() {
+    const monaco = await loadMonaco();
+    if (!monacoEditor) {
+      monacoEditor = monaco.editor.create(editorEl, {
+        value: '',
+        language: 'plaintext',
+        theme: 'vs-dark',
+        automaticLayout: true,
+        lineNumbers: 'on',
+        minimap: { enabled: false },
+        scrollBeyondLastLine: false,
+        fontSize: 12,
+        wordWrap: 'on',
+        tabSize: 2,
+      });
+      monacoEditor.onDidChangeModelContent(() => {
+        if (!cur.path) return;
+        cur.dirty = true;
+        cur.text  = monacoEditor.getValue();
+        vSaveBtn.hidden = false;
+        vSaveBtn.textContent = 'save *';
+      });
+      // Cmd/Ctrl+S to save
+      monacoEditor.addCommand(
+        monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS,
+        () => saveCurrent()
+      );
+    }
+    return monaco;
+  }
+
+  async function setSourceFromCurrent() {
+    if (!cur.path) return;
+    const monaco = await ensureEditor();
+    const lang = langFor(cur.path);
+    if (monacoModel) { try { monacoModel.dispose(); } catch (_) {} monacoModel = null; }
+    monacoModel = monaco.editor.createModel(cur.text || '', lang);
+    monacoEditor.setModel(monacoModel);
+    monacoEditor.setScrollTop(0);
+  }
+
+  function setRenderFromCurrent() {
+    if (!cur.path || !cur.bytes) return;
+    if (lastBlobUrl) { try { URL.revokeObjectURL(lastBlobUrl); } catch (_) {} lastBlobUrl = null; }
+    const blob = new Blob([cur.bytes], { type: cur.mime || mimeFor(cur.path) });
+    lastBlobUrl = URL.createObjectURL(blob);
+    frameEl.src = lastBlobUrl;
+  }
+
+  async function showTab(tab) {
+    cur.tab = tab;
+    tabRenderBtn.classList.toggle('vt-active', tab === 'render');
+    tabSourceBtn.classList.toggle('vt-active', tab === 'source');
+    if (tab === 'render') {
+      frameEl.hidden  = false;
+      editorEl.hidden = true;
+    } else {
+      editorEl.hidden = false;
+      frameEl.hidden  = true;
+      await setSourceFromCurrent();
+      try { monacoEditor && monacoEditor.layout(); } catch (_) {}
+    }
+  }
+
+  async function saveCurrent() {
+    if (!cur.path) return;
+    if (!cur.dirty) { tabStatusEl.textContent = 'no changes'; return; }
+    if (!cur.isText) { tabStatusEl.textContent = 'binary file — refusing to save'; return; }
+    const text = monacoEditor ? monacoEditor.getValue() : cur.text;
+    vSaveBtn.disabled = true;
+    vSaveBtn.textContent = 'saving…';
+    tabStatusEl.textContent = 'writing ' + cur.path + '…';
+    try {
+      await serialVfs.write(cur.path, text);
+      cur.text  = text;
+      cur.bytes = new TextEncoder().encode(text);
+      cur.dirty = false;
+      vSaveBtn.textContent = 'saved';
+      tabStatusEl.textContent = 'saved (' + cur.bytes.length + ' B)';
+      // If the render tab is currently shown, refresh the iframe content.
+      if (cur.tab === 'render') setRenderFromCurrent();
+      setTimeout(() => {
+        if (!cur.dirty) vSaveBtn.textContent = 'save';
+      }, 1500);
+    } catch (e) {
+      tabStatusEl.textContent = 'save failed: ' + (e && e.message || e);
+      vSaveBtn.textContent = 'save';
+    } finally {
+      vSaveBtn.disabled = false;
+    }
+  }
+
+  tabRenderBtn.addEventListener('click', () => showTab('render'));
+  tabSourceBtn.addEventListener('click', () => showTab('source'));
+  vSaveBtn.addEventListener('click', () => saveCurrent());
+
+  async function openFile(path) {
+    if (!serialVfs || !serialVfs.ready) { vSet('shell not ready', 'err'); return; }
+    vSet('checking ' + path);
+    // Probe size first via stat so we never start a multi-minute base64
+    // stream on a huge binary by accident.
+    let size = -1;
+    try {
+      const st = await serialVfs.stat(path);
+      if (st && Number.isFinite(st.size)) size = st.size;
+    } catch (_) {}
+    if (size > VIEWER_MAX_BYTES) {
+      vSet(`too large to preview (${size} bytes > ${VIEWER_MAX_BYTES}). open a shell to inspect.`, 'err');
+      return;
+    }
+    vSet(`loading ${path}${size >= 0 ? ' (' + size + ' B)' : ''}`);
+    let data;
+    try { data = await serialVfs.read(path); }
+    catch (e) { vSet('error: ' + (e && e.message || e), 'err'); return; }
+    if (!data) { vSet('empty or missing: ' + path, 'err'); return; }
+
+    cur.path   = path;
+    cur.bytes  = data;
+    cur.mime   = mimeFor(path);
+    cur.isText = isLikelyText(data);
+    cur.text   = cur.isText ? new TextDecoder('utf-8', { fatal: false }).decode(data) : null;
+    cur.dirty  = false;
+
+    emptyEl.hidden = true;
+    tabsEl.hidden  = false;
+    vSaveBtn.hidden = !cur.isText;
+    vSaveBtn.textContent = 'save';
+    tabStatusEl.textContent = '';
+
+    setRenderFromCurrent();
+    if (cur.tab === 'source') {
+      await setSourceFromCurrent();
+      editorEl.hidden = false;
+      frameEl.hidden  = true;
+    } else {
+      frameEl.hidden  = false;
+      editorEl.hidden = true;
+    }
+    vSet(`${path} (${data.length} bytes)`, 'ok');
+  }
+
+  treeEl.addEventListener('click', e => {
+    const row = e.target.closest('.row'); if (!row) return;
+    const path = row.dataset.path;
+    if (row.dataset.dir === '1') {
+      if (expanded.has(path)) expanded.delete(path); else expanded.add(path);
+      renderTree();
+    } else {
+      treeEl.querySelectorAll('.row.sel').forEach(r => r.classList.remove('sel'));
+      row.classList.add('sel');
+      openFile(path);
+    }
+  });
+  refreshBtn.onclick = () => {
+    dirCache.clear();
+    renderTree();
+    vSet('reloaded');
+  };
+  pathEl.onkeydown = e => {
+    if (e.key === 'Enter') {
+      // Navigating to a new root: drop expansion + cache so the new tree is fresh.
+      expanded.clear();
+      dirCache.clear();
+      renderTree();
+    }
+  };
+  // No onblur normalizer — we never want to mutate what the user typed.
+  // Normalization happens at submit time (Enter / refresh / openViewer).
+  const divider = $('viewer-divider');
+  const fullscreenBtn = $('viewer-fullscreen');
+  function setViewerOpen(open) {
+    overlay.hidden = !open;
+    if (divider) divider.hidden = !open;
+    if (!open) {
+      // restore terminal if we were full-screen
+      document.body.classList.remove('term-hidden');
+      if (fullscreenBtn) fullscreenBtn.textContent = '\u2922';
+    }
+  }
+  closeBtn.onclick = () => { setViewerOpen(false); term.focus(); };
+  if (fullscreenBtn) fullscreenBtn.onclick = () => {
+    const hidden = document.body.classList.toggle('term-hidden');
+    fullscreenBtn.textContent = hidden ? '\u2923' : '\u2922';
+    fullscreenBtn.title = hidden ? 'show terminal' : 'hide terminal \u2014 full-screen viewer';
+    if (!hidden) try { term.focus(); } catch {}
+  };
+  // Divider drag → resize terminal area
+  if (divider) {
+    let dragging = false;
+    const onMove = (e) => {
+      if (!dragging) return;
+      const y = e.touches ? e.touches[0].clientY : e.clientY;
+      const vh = window.innerHeight;
+      // clamp terminal height between 80px and (vh - 36 - 120)
+      let termH = vh - y;
+      if (termH < 80) termH = 80;
+      if (termH > vh - 36 - 120) termH = vh - 36 - 120;
+      document.documentElement.style.setProperty('--term-h', termH + 'px');
+      e.preventDefault();
+    };
+    const onUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.classList.remove('dragging-divider');
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      window.removeEventListener('touchmove', onMove);
+      window.removeEventListener('touchend', onUp);
+    };
+    const onDown = (e) => {
+      dragging = true;
+      document.body.classList.add('dragging-divider');
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+      window.addEventListener('touchmove', onMove, { passive:false });
+      window.addEventListener('touchend', onUp);
+      e.preventDefault();
+    };
+    divider.addEventListener('mousedown', onDown);
+    divider.addEventListener('touchstart', onDown, { passive:false });
+  }
+  viewerBtn.onclick = async () => {
+    if (!emulator) { setStatus('boot v86 first', 'err'); return; }
+    if (!overlay.hidden) {
+      // toggle off
+      setViewerOpen(false);
+      term.focus();
+      return;
+    }
+    if (!serialVfs) { setStatus('serial vfs unavailable', 'err'); return; }
+    // Trust the user: if they clicked the viewer button, assume the shell is
+    // up. The prompt-detector sometimes misses the prompt (snapshot restore,
+    // ANSI noise, etc.) and we don't want a permanently-disabled UI. If the
+    // shell really isn't ready, exec() will time out and the tree shows an
+    // error row instead.
+    if (!serialVfs.ready && typeof serialVfs.setReady === 'function') {
+      serialVfs.setReady(true);
+    }
+    setViewerOpen(true);
+    vSet('listing…');
+    if (!pathEl.value) pathEl.value = VIEWER_ROOT;
+    expanded.clear();
+    dirCache.clear();
+    await renderTree();
+    vSet('ready (serial-backed)', 'ok');
+  };
+  // Toggle viewer button availability when emulator boots/stops or shell becomes ready.
+  function syncViewerBtn() {
+    // Enable viewer whenever the emulator is running. If the shell isn't
+    // ready yet, the viewer overlay itself will show a "shell not ready"
+    // hint instead of leaving the button looking permanently broken.
+    viewerBtn.disabled = !emulator;
+  }
+  setInterval(syncViewerBtn, 800);
+
+
+  // ── follow panel ──────────────────────────────────────────────────────
+  // Side panel (does not fully overlap the terminal). Bootstrap pipeline:
+  //   1. `which social` → wget+chmod if missing
+  //   2. `social pubkey` → `social init` if missing, then `social pubkey`
+  //   3. Display npub.
+  // Refresh button reruns the same pipeline. Other buttons are placeholders.
+  const followBtn        = $('follow');
+  const followPanel      = $('follow-panel');
+  const followCloseBtn   = $('follow-close');
+  const followRefreshBtn = $('follow-refresh');
+  const followNpubEl     = $('follow-npub');
+  const followStatusEl   = $('follow-status');
+  const followLogEl      = $('follow-log');
+
+  function fLog(line, cls) {
+    const d = document.createElement('div');
+    d.className = 'fl-' + (cls || 'info');
+    d.textContent = line;
+    followLogEl.appendChild(d);
+    followLogEl.scrollTop = followLogEl.scrollHeight;
+  }
+  function fStatus(msg, cls) {
+    followStatusEl.textContent = msg;
+    followStatusEl.style.color = cls === 'err' ? '#f87171'
+                              : cls === 'ok'  ? '#4ade80'
+                              : '#7a8392';
+  }
+
+  // Run a shell command via SerialVfs and log it. Returns {stdout, exitCode, timedOut}.
+  async function followRun(cmd, opts) {
+    fLog('$ ' + cmd, 'cmd');
+    if (!serialVfs || !serialVfs.ready) {
+      fLog('(serial shell not ready)', 'err');
+      return { stdout: '', exitCode: -1, timedOut: false, notReady: true };
+    }
+    const r = await serialVfs.exec(cmd, opts || { timeout: 60000 });
+    const out = (r.stdout || '').replace(/\r/g, '').replace(/\n+$/, '');
+    if (out) fLog(out, 'out');
+    const tag = r.timedOut ? 'TIMEOUT' : ('exit=' + r.exitCode);
+    fLog('  → ' + tag, r.exitCode === 0 ? 'ok' : 'err');
+    return r;
+  }
+
+  function extractNpub(text) {
+    const m = (text || '').match(/npub1[0-9a-z]{20,}/i);
+    return m ? m[0] : null;
+  }
+
+  let followBootstrapInFlight = false;
+  async function followBootstrap() {
+    if (followBootstrapInFlight) return;
+    followBootstrapInFlight = true;
+    followRefreshBtn.disabled = true;
+    fStatus('running bootstrap…');
+    fLog('── bootstrap start ──', 'info');
+    try {
+      if (!emulator) { fStatus('boot v86 first', 'err'); fLog('no emulator', 'err'); return; }
+      if (!serialVfs) {
+        fStatus('serial vfs unavailable', 'err');
+        fLog('serialVfs missing', 'err');
+        return;
+      }
+      // Trust the user: if they clicked the button, assume shell is up.
+      // Prompt-detector sometimes misses the prompt (snapshot restore, ANSI noise).
+      if (!serialVfs.ready && typeof serialVfs.setReady === 'function') {
+        serialVfs.setReady(true);
+        fLog('(forcing shell-ready — exec will time out if guest not really up)', 'info');
+      }
+
+      // Step 1: check for /usr/local/bin/social (or anywhere on PATH)
+      fStatus('1/3 checking social CLI…');
+      const which = await followRun('which social || true', { timeout: 15000 });
+      const socialPath = (which.stdout || '').replace(/\s+/g, '');
+      if (!socialPath || !socialPath.startsWith('/')) {
+        fStatus('1/3 installing social CLI…');
+        fLog('social not found — downloading', 'info');
+        const dl = await followRun(
+          'wget -O /usr/local/bin/social https://www.traits.build/local/social.sh && chmod +x /usr/local/bin/social',
+          { timeout: 90000 }
+        );
+        if (dl.exitCode !== 0) {
+          fStatus('install failed', 'err');
+          fLog('wget/chmod failed — check network (DNS / unbound) and try again', 'err');
+          return;
+        }
+      } else {
+        fLog('found: ' + socialPath, 'ok');
+      }
+
+      // Step 2: social pubkey → init if needed → pubkey
+      fStatus('2/3 reading pubkey…');
+      let pk = await followRun('social pubkey 2>&1 || true', { timeout: 30000 });
+      let npub = extractNpub(pk.stdout);
+      if (!npub) {
+        fStatus('2/3 no key — running social init…');
+        fLog('no pubkey yet — generating identity', 'info');
+        const init = await followRun('social init 2>&1', { timeout: 60000 });
+        const initNpub = extractNpub(init.stdout);
+        if (initNpub) {
+          npub = initNpub;
+        } else {
+          fStatus('3/3 re-reading pubkey…');
+          pk = await followRun('social pubkey 2>&1 || true', { timeout: 30000 });
+          npub = extractNpub(pk.stdout);
+        }
+      }
+
+      // Step 3: display
+      if (npub) {
+        followNpubEl.textContent = npub;
+        followNpubEl.style.color = '#4ade80';
+        fStatus('ready', 'ok');
+        fLog('── bootstrap ok ──', 'ok');
+        // Enable real actions now that we have an identity.
+        followPublishBtn.disabled = false;
+        followPublishBtn.title = 'Publish $SOCIAL_HOME/public to Nostr relays';
+        followFollowBtn.disabled = false;
+        followFollowBtn.title = 'Follow an npub and mirror their published files';
+        followSyncBtn.disabled = false;
+        followSyncBtn.title = 'Re-sync all followed users';
+        followListBtn.disabled = false;
+        followListBtn.title = 'Show who you currently follow';
+        followSearchBtn.disabled = false;
+        followSearchBtn.title = 'NIP-50 keyword search across relays';
+      } else {
+        followNpubEl.innerHTML = '<span class="hint">(could not determine npub — see log)</span>';
+        fStatus('failed to obtain npub', 'err');
+        fLog('── bootstrap failed ──', 'err');
+      }
+    } catch (err) {
+      fStatus('error: ' + (err && err.message || err), 'err');
+      fLog('exception: ' + (err && err.stack || err), 'err');
+    } finally {
+      followBootstrapInFlight = false;
+      followRefreshBtn.disabled = false;
+    }
+  }
+
+  followBtn.onclick = async () => {
+    if (!emulator) { setStatus('boot v86 first', 'err'); return; }
+    if (!followPanel.hidden) {
+      // toggle off
+      followPanel.hidden = true;
+      term.focus();
+      return;
+    }
+    // mutually exclusive with tunnels panel
+    if (tunnelsPanel && !tunnelsPanel.hidden) tunnelsPanel.hidden = true;
+    followPanel.hidden = false;
+    // Auto-run bootstrap once when first opened (log empty == fresh).
+    if (!followLogEl.children.length) {
+      followBootstrap();
+    }
+  };
+  followCloseBtn.onclick = () => { followPanel.hidden = true; term.focus(); };
+  followRefreshBtn.onclick = () => { followBootstrap(); };
+
+  // ── publish ───────────────────────────────────────────────────────────
+  // Pipeline:
+  //   1. Locate SOCIAL_HOME (the dir that contains .nsec) and its public/ subdir.
+  //   2. Refuse to publish if public/ is empty (would just litter relays).
+  //   3. Ensure websocat is installed (via apk; falls back to social tunnel-up
+  //      which also installs it).
+  //   4. Ensure a tunnel base URL is cached so peers can actually fetch files;
+  //      run `social tunnel-up 8080` if missing.
+  //   5. Run `social publish 2>&1` and surface the result.
+  const followPublishBtn = $('follow-action-publish');
+  const followFollowBtn  = $('follow-action-follow');
+  const followSyncBtn    = $('follow-action-sync');
+  const followListBtn    = $('follow-action-list');
+  const followSearchBtn  = $('follow-action-search');
+  let followPublishInFlight = false;
+  async function followPublish() {
+    if (followPublishInFlight) return;
+    followPublishInFlight = true;
+    followPublishBtn.disabled = true;
+    fStatus('publishing…');
+    fLog('── publish start ──', 'info');
+    try {
+      // 1. Locate SOCIAL_HOME via the nsec file social.sh writes.
+      const home = await followRun(
+        'for d in /mnt/host "$HOME" "$PWD"; do if [ -f "$d/.nsec" ]; then echo "$d"; break; fi; done',
+        { timeout: 10000 }
+      );
+      const socialHome = (home.stdout || '').trim();
+      if (!socialHome) {
+        fStatus('no identity yet — run refresh', 'err');
+        fLog('no .nsec file found in /mnt/host, $HOME, or $PWD', 'err');
+        return;
+      }
+      fLog('SOCIAL_HOME = ' + socialHome, 'ok');
+
+      // 2. Verify public/ exists and has content.
+      const ls = await followRun(
+        'mkdir -p "' + socialHome + '/public" && find "' + socialHome + '/public" -type f 2>/dev/null | wc -l',
+        { timeout: 10000 }
+      );
+      const nFiles = parseInt((ls.stdout || '0').trim(), 10) || 0;
+      if (nFiles === 0) {
+        fStatus('public/ is empty', 'err');
+        fLog('Nothing to publish — drop files into ' + socialHome + '/public/ first.', 'err');
+        fLog('Tip: in the terminal run:  echo hello > ' + socialHome + '/public/note.txt', 'info');
+        return;
+      }
+      fLog('found ' + nFiles + ' file(s) under ' + socialHome + '/public', 'ok');
+
+      // 3. Ensure websocat (publish hard-fails without it).
+      // Alpine ISO ships with only its in-CD repo; websocat lives in edge/community.
+      // We seed both edge repos (idempotent) and `apk update` before installing.
+      const ws = await followRun('which websocat || true', { timeout: 10000 });
+      if (!(ws.stdout || '').trim().startsWith('/')) {
+        fStatus('adding edge repos & installing websocat…');
+        fLog('websocat missing — seeding edge/main + edge/community', 'info');
+        const seedRepos =
+          'grep -q "edge/main" /etc/apk/repositories || ' +
+          'echo "https://dl-cdn.alpinelinux.org/alpine/edge/main" >> /etc/apk/repositories; ' +
+          'grep -q "edge/community" /etc/apk/repositories || ' +
+          'echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories; ' +
+          'apk update 2>&1 | tail -3';
+        await followRun(seedRepos, { timeout: 60000 });
+        fLog('apk add websocat (from edge/community)…', 'info');
+        const apk = await followRun(
+          'apk add --no-cache --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community websocat 2>&1 | tail -5',
+          { timeout: 120000 }
+        );
+        if (apk.exitCode !== 0) {
+          fStatus('failed to install websocat', 'err');
+          fLog('Could not install websocat. Check guest networking (DNS / unbound) and try refresh.', 'err');
+          fLog('Manual: apk update && apk add --repository=https://dl-cdn.alpinelinux.org/alpine/edge/community websocat', 'info');
+          return;
+        }
+        // Verify
+        const ws2 = await followRun('which websocat || true', { timeout: 10000 });
+        if (!(ws2.stdout || '').trim().startsWith('/')) {
+          fStatus('websocat install reported success but binary not found', 'err');
+          return;
+        }
+        fLog('websocat installed: ' + (ws2.stdout || '').trim(), 'ok');
+      } else {
+        fLog('websocat: ' + (ws.stdout || '').trim(), 'ok');
+      }
+
+      // 4. Ensure tunnel base URL cached. Run social tunnel-up 8080 if not.
+      const tu = await followRun(
+        'test -s "' + socialHome + '/.social.tunnel" && cat "' + socialHome + '/.social.tunnel" || true',
+        { timeout: 10000 }
+      );
+      const cachedTunnel = (tu.stdout || '').trim();
+      if (!cachedTunnel) {
+        fStatus('starting tunnel (port 8080)…');
+        fLog('no tunnel cached — running `social tunnel-up 8080`', 'info');
+        const t = await followRun('social tunnel-up 8080 2>&1', { timeout: 120000 });
+        if (t.exitCode !== 0) {
+          fLog('tunnel-up failed (publishing without `r` tag — files won\'t be fetchable)', 'err');
+        }
+      } else {
+        fLog('tunnel cached: ' + cachedTunnel, 'ok');
+      }
+
+      // 5. Sign + broadcast.
+      fStatus('signing & broadcasting…');
+      const pub = await followRun('social publish 2>&1', { timeout: 120000 });
+      const out = (pub.stdout || '');
+      // Parse "published as npub... (ok=N fail=M files=K bytes=B)"
+      const m = out.match(/published as (npub1[0-9a-z]+)\s*\(ok=(\d+)\s+fail=(\d+)\s+files=(\d+)\s+bytes=(\d+)\)/i);
+      if (m && parseInt(m[2], 10) > 0) {
+        fStatus('published ✓ (ok=' + m[2] + '/fail=' + m[3] + ', ' + m[4] + ' files)', 'ok');
+        fLog('── publish ok ──', 'ok');
+      } else if (pub.exitCode === 0) {
+        fStatus('publish completed (no relay confirmations)', 'err');
+        fLog('── publish completed but no relays acked ──', 'err');
+      } else {
+        fStatus('publish failed (exit ' + pub.exitCode + ')', 'err');
+        fLog('── publish failed ──', 'err');
+      }
+    } catch (err) {
+      fStatus('error: ' + (err && err.message || err), 'err');
+      fLog('exception: ' + (err && err.stack || err), 'err');
+    } finally {
+      followPublishInFlight = false;
+      followPublishBtn.disabled = false;
+    }
+  }
+  followPublishBtn.onclick = () => { followPublish(); };
+
+  // ── follow / sync / list / search ────────────────────────────────────
+  // Wired to social.sh CLI commands. social follow auto-syncs the new
+  // npub (creates /mnt/host/following/<npub>/ and mirrors files in one shot).
+  let followActionInFlight = false;
+  async function followAction(label, cmd, timeout) {
+    if (followActionInFlight) return;
+    followActionInFlight = true;
+    [followFollowBtn, followSyncBtn, followListBtn, followSearchBtn].forEach(b => b.disabled = true);
+    fStatus(label + '…');
+    fLog('── ' + label + ' start ──', 'info');
+    try {
+      const r = await followRun(cmd, { timeout: timeout || 120000 });
+      if (r.exitCode === 0) {
+        fStatus(label + ' ok', 'ok');
+        fLog('── ' + label + ' ok ──', 'ok');
+      } else {
+        fStatus(label + ' failed (exit ' + r.exitCode + ')', 'err');
+        fLog('── ' + label + ' failed ──', 'err');
+      }
+    } catch (err) {
+      fStatus('error: ' + (err && err.message || err), 'err');
+      fLog('exception: ' + (err && err.stack || err), 'err');
+    } finally {
+      followActionInFlight = false;
+      [followFollowBtn, followSyncBtn, followListBtn, followSearchBtn].forEach(b => b.disabled = false);
+    }
+  }
+
+  followFollowBtn.onclick = () => {
+    const npub = (prompt('Follow which npub?\n(paste npub1...)') || '').trim();
+    if (!npub) return;
+    if (!/^npub1[0-9a-z]{20,}$/i.test(npub)) {
+      fStatus('invalid npub', 'err');
+      fLog('expected npub1... — got: ' + npub, 'err');
+      return;
+    }
+    // social follow auto-syncs (mirrors files into /mnt/host/following/<npub>/)
+    followAction('follow ' + npub.slice(0, 12) + '…', 'social follow ' + npub + ' 2>&1', 180000);
+  };
+  followSyncBtn.onclick   = () => followAction('sync all',  'social sync 2>&1', 240000);
+  followListBtn.onclick   = () => followAction('list',      'social list 2>&1', 15000);
+  followSearchBtn.onclick = () => {
+    const q = (prompt('Search Nostr profiles for:') || '').trim();
+    if (!q) return;
+    // shell-escape: replace single-quotes with '\''
+    const safe = q.replace(/'/g, "'\\''");
+    followAction('search ' + q, "social search '" + safe + "' 2>&1", 60000);
+  };
+
+  setInterval(() => { followBtn.disabled = !emulator; }, 800);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Tunnels panel — manages lifecycle of running tunnels (ssh, social, etc.)
+  // Reads guest state from /tmp/tunnel.code, /tmp/tunnel.pids, /tmp/tunnel.cmd
+  // Pretty-formats one row per tunnel with relay-side status, supports
+  // start / stop / restart / edit-cmd. Edited commands are persisted to
+  // localStorage (per pairing-code) and used by future restart actions.
+  // ─────────────────────────────────────────────────────────────────────────
+  const tunnelsBtn         = $('tunnels');
+  const tunnelsPanel       = $('tunnels-panel');
+  const tunnelsCloseBtn    = $('tunnels-close');
+  const tunnelsRefreshBtn  = $('tunnels-refresh');
+  const tunnelsListEl      = $('tunnels-list');
+  const tunnelsLogEl       = $('tunnels-log');
+
+  const TUNNEL_CMD_OVERRIDE_PREFIX = 'traits.tunnels.cmd.';
+  const TUNNEL_DEFAULT_CMD = 'sh <(curl -sS https://www.traits.build/local/tunnel-up.sh) 22 8080 22000 8384';
+  const TUNNEL_RELAY_ENDPOINTS = [
+    'https://traits-build-tunnel.fly.dev',
+    'https://tunnel.traits.build',
+  ];
+
+  function tnLog(line, cls) {
+    const d = document.createElement('div');
+    d.className = 'tl-' + (cls || 'info');
+    d.textContent = line;
+    tunnelsLogEl.appendChild(d);
+    tunnelsLogEl.scrollTop = tunnelsLogEl.scrollHeight;
+  }
+
+  async function tnExec(cmd, opts) {
+    if (!serialVfs || !serialVfs.ready) {
+      if (serialVfs && typeof serialVfs.setReady === 'function') {
+        try { serialVfs.setReady(true); } catch (_) {}
+      }
+    }
+    if (!serialVfs) return { stdout: '', exitCode: -1, timedOut: true };
+    return serialVfs.exec(cmd, opts || { timeout: 20000 });
+  }
+
+  function tnGetCmdOverride(code) {
+    if (!code) return null;
+    try { return localStorage.getItem(TUNNEL_CMD_OVERRIDE_PREFIX + code); } catch (_) { return null; }
+  }
+  function tnSetCmdOverride(code, cmd) {
+    if (!code) return;
+    try {
+      if (cmd && cmd.trim()) localStorage.setItem(TUNNEL_CMD_OVERRIDE_PREFIX + code, cmd);
+      else localStorage.removeItem(TUNNEL_CMD_OVERRIDE_PREFIX + code);
+    } catch (_) {}
+  }
+  function tnEffectiveCmd(code) {
+    return tnGetCmdOverride(code) || TUNNEL_DEFAULT_CMD;
+  }
+
+  async function tnFetchRelayStatus(code) {
+    if (!code) return null;
+    for (const base of TUNNEL_RELAY_ENDPOINTS) {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 4000);
+        const r = await fetch(base + '/port/status?code=' + encodeURIComponent(code), { signal: ctrl.signal });
+        clearTimeout(t);
+        if (!r.ok) continue;
+        const j = await r.json();
+        return { endpoint: base, ...j };
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  async function tnDiscoverTunnels() {
+    // Single guest call to gather everything we need.
+    // Outputs distinct sections marked with sentinels for easy parsing.
+    const cmd =
+      'echo __TUNNEL_CODE__; cat /tmp/tunnel.code 2>/dev/null; ' +
+      'echo __TUNNEL_PORTS__; cat /tmp/tunnel.ports 2>/dev/null; ' +
+      'echo __TUNNEL_PIDS__; cat /tmp/tunnel.pids 2>/dev/null; ' +
+      'echo __TUNNEL_CMD__; cat /tmp/tunnel.cmd 2>/dev/null; ' +
+      'echo __TUNNEL_PS__; ps -o pid,args 2>/dev/null | grep -E "websocat|tunnel-up" | grep -v grep || true; ' +
+      'echo __TUNNEL_END__';
+    const r = await tnExec(cmd, { timeout: 15000 });
+    const out = (r.stdout || '').replace(/\r/g, '');
+    function section(name) {
+      const re = new RegExp('__' + name + '__\\n([\\s\\S]*?)(?=__TUNNEL_[A-Z]+__|$)');
+      const m = out.match(re);
+      return m ? m[1].trim() : '';
+    }
+    const code  = section('TUNNEL_CODE');
+    const ports = section('TUNNEL_PORTS').split(/\s+/).filter(Boolean);
+    const pids  = section('TUNNEL_PIDS').split(/\s+/).filter(Boolean);
+    const cmdFile = section('TUNNEL_CMD');
+    const ps    = section('TUNNEL_PS').split(/\n/).map(s => s.trim()).filter(Boolean);
+
+    const tunnels = [];
+    if (code) {
+      tunnels.push({
+        id: code,
+        code,
+        ports,
+        pids,
+        cmd: cmdFile || null,
+        ps,
+      });
+    } else if (ps.length) {
+      // No code file but websocat processes running.
+      tunnels.push({ id: 'unmanaged', code: null, ports: [], pids: [], cmd: null, ps });
+    }
+    return tunnels;
+  }
+
+  function tnRenderRow(t) {
+    const row = document.createElement('div');
+    row.className = 'tn-row';
+    row.dataset.code = t.code || '';
+
+    const head = document.createElement('div');
+    head.innerHTML = '<span class="tn-code">' + (t.code ? 'code: ' + t.code : '(no pairing code)') + '</span>';
+    row.appendChild(head);
+
+    if (t.ports && t.ports.length) {
+      const meta = document.createElement('div');
+      meta.className = 'tn-meta';
+      meta.textContent = 'ports: ' + t.ports.join(', ');
+      row.appendChild(meta);
+    }
+    if (t.pids && t.pids.length) {
+      const meta = document.createElement('div');
+      meta.className = 'tn-meta';
+      meta.textContent = 'pids: ' + t.pids.join(' ') + ' (' + t.pids.length + ' bridge proc' + (t.pids.length === 1 ? '' : 's') + ')';
+      row.appendChild(meta);
+    }
+    if (t.ps && t.ps.length) {
+      const meta = document.createElement('div');
+      meta.className = 'tn-meta';
+      meta.textContent = 'ps: ' + t.ps.length + ' matching process' + (t.ps.length === 1 ? '' : 'es');
+      meta.title = t.ps.join('\n');
+      row.appendChild(meta);
+    }
+
+    const relay = document.createElement('div');
+    relay.className = 'tn-meta';
+    relay.textContent = 'relay: querying…';
+    row.appendChild(relay);
+
+    if (t.code) {
+      tnFetchRelayStatus(t.code).then(s => {
+        if (!s) {
+          relay.className = 'tn-meta tn-relay-err';
+          relay.textContent = 'relay: unreachable';
+          return;
+        }
+        const active = !!s.active;
+        const guestPorts = (s.guest_ports && Object.keys(s.guest_ports)) || [];
+        const queueDepth = s.guest_queue_depth || {};
+        const pairs = s.active_pairs || {};
+        const age = (typeof s.age_s === 'number') ? Math.round(s.age_s) + 's' : '';
+        const parts = [];
+        parts.push(active ? '✓ active' : '✗ inactive');
+        if (guestPorts.length) parts.push('guest=' + guestPorts.join(','));
+        if (Object.keys(pairs).length) parts.push('pairs=' + JSON.stringify(pairs));
+        if (Object.keys(queueDepth).length) parts.push('queue=' + JSON.stringify(queueDepth));
+        if (age) parts.push('age=' + age);
+        relay.className = 'tn-meta ' + (active && guestPorts.length ? 'tn-relay-ok' : (active ? 'tn-relay-warn' : 'tn-relay-err'));
+        relay.textContent = 'relay: ' + parts.join('  ');
+        relay.title = JSON.stringify(s, null, 2);
+      });
+    } else {
+      relay.className = 'tn-meta tn-relay-warn';
+      relay.textContent = 'relay: (no code)';
+    }
+
+    const cmdShown = t.code ? tnEffectiveCmd(t.code) : (t.cmd || TUNNEL_DEFAULT_CMD);
+    const cmdEl = document.createElement('div');
+    cmdEl.className = 'tn-cmd';
+    cmdEl.textContent = '$ ' + cmdShown;
+    if (t.code && tnGetCmdOverride(t.code)) cmdEl.title = 'overridden via localStorage';
+    row.appendChild(cmdEl);
+
+    const actions = document.createElement('div');
+    actions.className = 'tn-actions';
+    const btnRestart = document.createElement('button');
+    btnRestart.textContent = 'restart';
+    btnRestart.onclick = () => tnRestartTunnel(t);
+    const btnStop = document.createElement('button');
+    btnStop.textContent = 'stop';
+    btnStop.onclick = () => tnStopTunnel(t);
+    const btnEdit = document.createElement('button');
+    btnEdit.textContent = 'edit cmd';
+    btnEdit.onclick = () => tnEditCmd(t);
+    actions.appendChild(btnRestart);
+    actions.appendChild(btnStop);
+    actions.appendChild(btnEdit);
+    row.appendChild(actions);
+
+    return row;
+  }
+
+  async function tnRefresh() {
+    if (!emulator) {
+      tunnelsListEl.innerHTML = '<div class="tn-row tn-empty">boot v86 first</div>';
+      return;
+    }
+    tunnelsListEl.innerHTML = '<div class="tn-row tn-empty">scanning guest…</div>';
+    let tunnels = [];
+    try {
+      tunnels = await tnDiscoverTunnels();
+    } catch (e) {
+      tunnelsListEl.innerHTML = '';
+      tnLog('discover failed: ' + (e && e.message || e), 'err');
+      return;
+    }
+    tunnelsListEl.innerHTML = '';
+    if (!tunnels.length) {
+      const empty = document.createElement('div');
+      empty.className = 'tn-row tn-empty';
+      empty.innerHTML =
+        'no tunnels detected. start one with the default command below or click <b>restart</b> after editing.<br>' +
+        '<div class="tn-cmd" style="margin-top:6px">$ ' + TUNNEL_DEFAULT_CMD + '</div>';
+      const actions = document.createElement('div');
+      actions.className = 'tn-actions';
+      const startBtn = document.createElement('button');
+      startBtn.textContent = 'start default';
+      startBtn.onclick = () => tnRestartTunnel({ id: 'default', code: null });
+      const editBtn = document.createElement('button');
+      editBtn.textContent = 'edit cmd';
+      editBtn.onclick = () => tnEditCmd({ id: 'default', code: null });
+      actions.appendChild(startBtn);
+      actions.appendChild(editBtn);
+      empty.appendChild(actions);
+      tunnelsListEl.appendChild(empty);
+      return;
+    }
+    tunnels.forEach(t => tunnelsListEl.appendChild(tnRenderRow(t)));
+  }
+
+  async function tnStopTunnel(t) {
+    tnLog('$ stop ' + (t.code || '(unmanaged)'), 'cmd');
+    const cmd =
+      'if [ -s /tmp/tunnel.pids ]; then ' +
+        'while read p; do kill "$p" 2>/dev/null; done < /tmp/tunnel.pids; ' +
+        'sleep 0.3; ' +
+        'while read p; do kill -9 "$p" 2>/dev/null; done < /tmp/tunnel.pids; ' +
+      'fi; ' +
+      'pkill -f websocat 2>/dev/null; ' +
+      'rm -f /tmp/tunnel.code /tmp/tunnel.pids /tmp/tunnel.cmd /tmp/tunnel.ports 2>/dev/null; ' +
+      'echo stopped';
+    const r = await tnExec(cmd, { timeout: 10000 });
+    tnLog((r.stdout || '').trim() || '(no output)', r.exitCode === 0 ? 'ok' : 'err');
+    setTimeout(tnRefresh, 400);
+  }
+
+  async function tnRestartTunnel(t) {
+    const code = t.code || (t.id !== 'default' ? t.id : null);
+    const cmd = code ? tnEffectiveCmd(code) : TUNNEL_DEFAULT_CMD;
+    tnLog('$ restart ' + (code || '(default)'), 'cmd');
+    tnLog(cmd, 'out');
+    // Stop first so respawn loops are gone, then start fresh.
+    await tnStopTunnel(t).catch(() => {});
+    // Run the effective command in the background so the panel does not hang
+    // on websocat's foreground respawn loop. We background it via `&` and
+    // detach stdout/stderr to a log so subsequent guest commands still work.
+    const wrapped = '( ' + cmd + ' ) >/tmp/tunnel.last.log 2>&1 &';
+    const r = await tnExec(wrapped, { timeout: 8000 });
+    tnLog('launched (exit=' + r.exitCode + ')', r.exitCode === 0 ? 'ok' : 'err');
+    // Give tunnel-up.sh a moment to write /tmp/tunnel.code, then refresh.
+    setTimeout(tnRefresh, 4000);
+  }
+
+  function tnEditCmd(t) {
+    const code = t.code || (t.id && t.id !== 'default' ? t.id : null);
+    const current = code ? tnEffectiveCmd(code) : TUNNEL_DEFAULT_CMD;
+    const next = window.prompt(
+      'Edit start command for ' + (code ? 'code ' + code : 'default tunnel') +
+      '.\n\nLeave empty to clear override and revert to default.',
+      current
+    );
+    if (next === null) return; // cancelled
+    if (!code) {
+      // No code yet — store as default override under sentinel key.
+      tnSetCmdOverride('__default__', next);
+      tnLog('default cmd updated', 'ok');
+    } else {
+      tnSetCmdOverride(code, next);
+      tnLog('override saved for ' + code + (next.trim() ? '' : ' (cleared)'), 'ok');
+    }
+    tnRefresh();
+  }
+
+  tunnelsBtn.onclick = () => {
+    if (!emulator) { setStatus('boot v86 first', 'err'); return; }
+    if (!tunnelsPanel.hidden) {
+      // toggle off
+      tunnelsPanel.hidden = true;
+      term.focus();
+      return;
+    }
+    // mutually exclusive with social/follow panel
+    if (followPanel && !followPanel.hidden) followPanel.hidden = true;
+    tunnelsPanel.hidden = false;
+    tnRefresh();
+  };
+  tunnelsCloseBtn.onclick = () => { tunnelsPanel.hidden = true; term.focus(); };
+  tunnelsRefreshBtn.onclick = () => tnRefresh();
+
+  setInterval(() => { tunnelsBtn.disabled = !emulator; }, 800);
+
+  // ?autoboot=1 [&restore=0|1]
+  // When `restore` is unspecified, auto-restore if a snapshot exists for the
+  // current iso (the common SPA case at /shell — users save snapshots and
+  // expect file persistence across reloads). Pass `&restore=0` for a clean boot.
+  const qs = new URLSearchParams(location.search);
+  if (qs.get('autoboot') === '1') {
+    window.__v86AutoLogin = true;
+    (async () => {
+      const restoreParam = qs.get('restore');
+      // Resolve restore intent against the current snapshot dropdown
+      // selection (a fresh-boot entry → no restore; a real snapshot key
+      // → restore unless ?restore=0).
+      const sel = parseSel(snapEl.value);
+      let wantRestore;
+      if (restoreParam === '1') wantRestore = !!(sel && !sel.isFresh);
+      else if (restoreParam === '0') wantRestore = false;
+      else wantRestore = !!(sel && !sel.isFresh && await idbHas(sel.key).catch(() => false));
+      boot({ restore: wantRestore });
+    })();
+  }
+})();
+</script>
+</body>
+</html>

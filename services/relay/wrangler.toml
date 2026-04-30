@@ -1,0 +1,33 @@
+name = "traits-build-relay"
+account_id = "266790f1b479dc950d5833befe740e29"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+workers_dev = true
+
+routes = [
+  { pattern = "relay.traits.build", custom_domain = true }
+]
+
+[durable_objects]
+bindings = [
+  { name = "RELAY", class_name = "RelaySession" },
+  { name = "FSBRIDGE", class_name = "FsBridge" },
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RelaySession"]
+
+# Keep v2 marker to match deployed migration history.
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = []
+
+# Keep v3 marker to match deployed migration history.
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = []
+
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["FsBridge"]

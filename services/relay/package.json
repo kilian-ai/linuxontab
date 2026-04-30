@@ -1,0 +1,13 @@
+{
+  "name": "traits-relay",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev --config ./wrangler.toml --name traits-build-relay",
+    "deploy": "wrangler deploy --config ./wrangler.toml --name traits-build-relay",
+    "status": "wrangler deployments list --config ./wrangler.toml --name traits-build-relay"
+  },
+  "devDependencies": {
+    "wrangler": "^3"
+  }
+}
