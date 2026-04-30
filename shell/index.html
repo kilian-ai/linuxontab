@@ -309,7 +309,19 @@
   autosaveEl.checked = localStorage.getItem('v86.autosave') === '1';
   autosaveEl.onchange = () => {
     localStorage.setItem('v86.autosave', autosaveEl.checked ? '1' : '0');
-    if (autosaveEl.checked && emulator) scheduleAutosave();
+    if (autosaveEl.checked && emulator) {
+      // Re-check the RAM gate so toggling on with a big VM gives instant feedback.
+      if (currentMemMB && currentMemMB > AUTOSAVE_MEM_LIMIT_MB) {
+        autosaveEl.checked = false;
+        try { localStorage.setItem('v86.autosave', '0'); } catch (_) {}
+        setStatus(
+          `auto-save not allowed: VM has ${currentMemMB} MB RAM. Use the manual "save" button instead.`,
+          'err'
+        );
+        return;
+      }
+      scheduleAutosave();
+    }
   };
 
   // ?iso= URL param selects a fresh-boot of the given ISO (no restore).
@@ -569,7 +581,21 @@
     // re-dirty the snapshot and immediately re-trigger autosave.
     if (saveInProgress) return;
     dirty = true;
-    if (autosaveEl.checked) scheduleAutosave();
+    if (!autosaveEl.checked) return;
+    // Refuse to autosave huge VMs: would block the tab for tens of seconds
+    // and possibly blow the IDB origin quota. Disable the toggle once and
+    // tell the user how to persist manually.
+    if (currentMemMB && currentMemMB > AUTOSAVE_MEM_LIMIT_MB) {
+      autosaveEl.checked = false;
+      try { localStorage.setItem('v86.autosave', '0'); } catch (_) {}
+      setStatus(
+        `auto-save disabled: VM has ${currentMemMB} MB RAM — a snapshot would be ~${currentMemMB} MB and freeze the tab. Use the manual "save" button when you want to persist.`,
+        'err'
+      );
+      console.warn(`[autosave] disabled — memMB=${currentMemMB} > limit=${AUTOSAVE_MEM_LIMIT_MB}`);
+      return;
+    }
+    scheduleAutosave();
   }
   function scheduleAutosave() {
     if (!emulator || autosaveInFlight) return;
@@ -614,7 +640,18 @@
   }
 
   // ---- Emulator lifecycle ----
-  let emulator = null, currentIso = null, currentSnapName = null;
+  let emulator = null, currentIso = null, currentSnapName = null, currentMemMB = 0;
+
+  // Auto-save serializes the FULL guest RAM (memory_size bytes) plus device
+  // state into a single Uint8Array, then writes it to IndexedDB. For Alpine
+  // at the default 2048 MB that's a ~2 GB blob — save_state() blocks the JS
+  // main thread for tens of seconds and the IDB write structured-clones
+  // another 2 GB on top. The tab looks frozen the whole time, and large
+  // installs (npm install -g openclaw) trigger this exactly when the user
+  // tries to interact with the just-finished prompt.
+  // Above this threshold we refuse to autosave and tell the user to use
+  // the manual save button instead.
+  const AUTOSAVE_MEM_LIMIT_MB = 1024;
 
   // ── SerialVfs ───────────────────────────────────────────────────────────
   // JS↔guest filesystem bridge over serial0 — bypasses 9P entirely.
@@ -1198,6 +1235,7 @@
 
     emulator = new V86(cfg);
     window.emulator = emulator;
+    currentMemMB = memMB;
     serialVfs._attach(emulator);
 
     // ── 9P inode uid/gid sanitizer ──────────────────────────────────────────
@@ -2021,9 +2059,21 @@
   }
   async function doSave() {
     if (!emulator) return;
+    // save_state() is synchronous on the JS main thread and serializes the
+    // full guest RAM. On a 2048 MB VM that's a ~10\u201330s tab freeze. Confirm
+    // first when the snapshot will be expensive.
+    if (currentMemMB && currentMemMB > AUTOSAVE_MEM_LIMIT_MB) {
+      const sec = Math.ceil(currentMemMB / 100);
+      const ok = window.confirm(
+        `Saving will freeze this tab for ~${sec}s and write ~${currentMemMB} MB to IndexedDB.\n\n` +
+        `(VM has ${currentMemMB} MB RAM. Boot with ?mem=512 in the URL for fast snapshots.)\n\n` +
+        `Continue?`
+      );
+      if (!ok) return;
+    }
     saveBtn.disabled = true;
     saveInProgress = true;
-    setStatus('saving snapshot…');
+    setStatus('saving snapshot\u2026 (tab may freeze briefly)');
     try {
       // Take snapshot in unmounted state — see umountBeforeSave() comment.
       await umountBeforeSave();
