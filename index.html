@@ -162,12 +162,18 @@
   footer.site { padding:30px 24px 50px; color:var(--mut); font-size:13px; text-align:center; }
   footer.site a { color:var(--mut); }
   footer.site a:hover { color:var(--fg); }
-  .terminal-mock { background:#0e1217; border:1px solid var(--line); border-radius:10px; padding:14px 16px; text-align:left; max-width:760px; margin:28px auto 0; font-family:ui-monospace,Menlo,monospace; font-size:13px; color:#d5d8dc; box-shadow:0 8px 30px rgba(0,0,0,.35); }
+  .terminal-mock { background:#0e1217; border:1px solid var(--line); border-radius:10px; padding:14px 16px; text-align:left; max-width:760px; margin:28px auto 0; font-family:ui-monospace,Menlo,monospace; font-size:13px; color:#d5d8dc; box-shadow:0 8px 30px rgba(0,0,0,.35); min-height:230px; }
   .terminal-mock .dots { display:flex; gap:6px; margin-bottom:10px; }
   .terminal-mock .dots span { width:11px; height:11px; border-radius:50%; background:#3a424d; }
-  .terminal-mock .line { white-space:pre; }
+  .terminal-mock .dots span:nth-child(1) { background:#ff5f56; }
+  .terminal-mock .dots span:nth-child(2) { background:#ffbd2e; }
+  .terminal-mock .dots span:nth-child(3) { background:#27c93f; }
+  .terminal-mock .line { white-space:pre; min-height:1.55em; }
   .terminal-mock .prompt { color:var(--accent); }
   .terminal-mock .out { color:#aab2bd; }
+  .terminal-mock .cursor { display:inline-block; width:8px; height:1em; background:var(--accent); vertical-align:-2px; animation:tm-blink 1s steps(2,end) infinite; margin-left:2px; }
+  @keyframes tm-blink { 0%,50% { opacity:1; } 50.01%,100% { opacity:0; } }
+  @media (prefers-reduced-motion: reduce) { .terminal-mock .cursor { animation:none; } }
   ul.checks { padding-left:0; list-style:none; }
   ul.checks li { padding:4px 0 4px 24px; position:relative; }
   ul.checks li::before { content:"✓"; color:var(--accent); position:absolute; left:0; top:4px; font-weight:700; }
@@ -188,7 +194,8 @@
     <a href="#vs-docker">vs Docker</a>
     <a href="#quickstart">Quickstart</a>
     <a href="#faq">FAQ</a>
-    <a href="https://github.com/copy/v86" rel="noopener">v86</a>
+    <a href="./changelog/">Changelog</a>
+    <a href="https://github.com/kilian-ai/linuxontab" rel="noopener">GitHub</a>
   </nav>
 </header>
 
@@ -211,15 +218,9 @@
     <span>Free, no signup</span>
   </div>
 
-  <div class="terminal-mock" aria-hidden="true">
+  <div class="terminal-mock" id="tm" aria-hidden="true">
     <div class="dots"><span></span><span></span><span></span></div>
-<div class="line"><span class="prompt">localhost:~#</span> uname -a</div>
-<div class="line out">Linux localhost 6.x.x #1 SMP i686 GNU/Linux</div>
-<div class="line"><span class="prompt">localhost:~#</span> apk add python3 git</div>
-<div class="line out">OK: 80 MiB in 35 packages</div>
-<div class="line"><span class="prompt">localhost:~#</span> python3 -c 'print("hello from a browser tab")'</div>
-<div class="line out">hello from a browser tab</div>
-<div class="line"><span class="prompt">localhost:~#</span> <span style="background:var(--accent);color:#0b0d10">&nbsp;</span></div>
+    <div id="tm-body"></div>
   </div>
 </section>
 
@@ -376,10 +377,115 @@ ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@loc
   <div style="margin-top:8px;">
     <a href="./shell/">Launch shell</a> ·
     <a href="./viewer/">Public viewer</a> ·
+    <a href="./changelog/">Changelog</a> ·
+    <a href="https://github.com/kilian-ai/linuxontab" rel="noopener">GitHub</a> ·
     <a href="https://github.com/copy/v86" rel="noopener">v86</a> ·
     <a href="https://alpinelinux.org/" rel="noopener">Alpine</a>
   </div>
 </footer>
+
+<script>
+  // Hero typewriter — pure JS, respects prefers-reduced-motion.
+  (function () {
+    var body = document.getElementById('tm-body');
+    if (!body) return;
+    var prompt = 'localhost:~# ';
+    var script = [
+      { type: 'cmd',  text: 'uname -a' },
+      { type: 'out',  text: 'Linux localhost 6.x.x #1 SMP i686 GNU/Linux' },
+      { type: 'cmd',  text: 'apk add python3 git' },
+      { type: 'out',  text: 'OK: 80 MiB in 35 packages' },
+      { type: 'cmd',  text: 'python3 -c \'print("hello from a browser tab")\'' },
+      { type: 'out',  text: 'hello from a browser tab' },
+      { type: 'cmd',  text: 'wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh' },
+      { type: 'out',  text: 'tunnel ready — code: ARXN' },
+      { type: 'cmd',  text: '' }
+    ];
+    var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    function fastRender() {
+      var html = '';
+      script.forEach(function (s) {
+        if (s.type === 'cmd') {
+          html += '<div class="line"><span class="prompt">' + prompt + '</span>' + escapeHtml(s.text) + '</div>';
+        } else {
+          html += '<div class="line out">' + escapeHtml(s.text) + '</div>';
+        }
+      });
+      html += '<span class="cursor"></span>';
+      body.innerHTML = html;
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, function (c) {
+        return ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' })[c];
+      });
+    }
+
+    if (reduced) { fastRender(); return; }
+
+    var idx = 0, charIdx = 0, currentLine = null, cursor = null;
+    function ensureCursor() {
+      if (cursor && cursor.parentNode) cursor.parentNode.removeChild(cursor);
+      cursor = document.createElement('span');
+      cursor.className = 'cursor';
+    }
+    function startStep() {
+      if (idx >= script.length) {
+        // loop after a pause
+        setTimeout(function () {
+          body.innerHTML = '';
+          idx = 0; charIdx = 0; startStep();
+        }, 4000);
+        return;
+      }
+      var step = script[idx];
+      currentLine = document.createElement('div');
+      if (step.type === 'cmd') {
+        currentLine.className = 'line';
+        currentLine.innerHTML = '<span class="prompt">' + prompt + '</span><span class="t"></span>';
+      } else {
+        currentLine.className = 'line out';
+        currentLine.innerHTML = '<span class="t"></span>';
+      }
+      body.appendChild(currentLine);
+      ensureCursor();
+      currentLine.appendChild(cursor);
+      charIdx = 0;
+      typeStep();
+    }
+    function typeStep() {
+      var step = script[idx];
+      var t = currentLine.querySelector('.t');
+      if (charIdx < step.text.length) {
+        t.textContent += step.text.charAt(charIdx++);
+        var delay = step.type === 'cmd' ? 38 + Math.random() * 50 : 6 + Math.random() * 10;
+        setTimeout(typeStep, delay);
+      } else {
+        // line done — pause, drop cursor, advance
+        if (cursor && cursor.parentNode) cursor.parentNode.removeChild(cursor);
+        var pause = step.type === 'cmd' ? 380 : 240;
+        idx++;
+        setTimeout(startStep, pause);
+      }
+    }
+
+    // Defer until visible & idle to avoid blocking first paint.
+    var started = false;
+    function start() {
+      if (started) return; started = true;
+      startStep();
+    }
+    if ('IntersectionObserver' in window) {
+      var io = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) { if (e.isIntersecting) { start(); io.disconnect(); } });
+      });
+      io.observe(document.getElementById('tm'));
+    } else {
+      setTimeout(start, 600);
+    }
+  })();
+</script>
 
 </body>
 </html>
