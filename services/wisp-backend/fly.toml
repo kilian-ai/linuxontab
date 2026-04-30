@@ -1,0 +1,43 @@
+app = "linuxontab-net"
+primary_region = "sjc"
+
+# This app reuses the prebuilt `traits` binary image from the upstream
+# traits.build deployment (apptron-traits-build). The traits binary
+# exposes /wisp WebSocket endpoint via sys.serve, which is what v86's
+# WispNetworkAdapter connects to for real TCP egress.
+#
+# To redeploy with a newer image:
+#   fly deploy -a linuxontab-net --image registry.fly.io/apptron-traits-build:deployment-XXX
+#
+# To rebuild from source instead, point [build] at the traits.build repo
+# Dockerfile and remove the --image flag.
+
+[env]
+  TRAITS_PORT = "8090"
+  TRAITS_BIND = "0.0.0.0"
+  RELAY_URL = "https://relay.linuxontab.com"
+  RUST_LOG = "info"
+
+[http_service]
+  internal_port = 8090
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  max_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[vm]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
+
+[[mounts]]
+  source = "linuxontab_net_data"
+  destination = "/data"

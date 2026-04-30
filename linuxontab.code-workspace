@@ -1,0 +1,36 @@
+{
+  "folders": [
+    {
+      "name": "LinuxOnTab",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "files.exclude": {
+      "**/.DS_Store": true,
+      "**/node_modules": true,
+      "shell/*.iso": true,
+      "shell/*.wasm": true,
+      "shell/*.bin": true
+    },
+    "search.exclude": {
+      "**/node_modules": true,
+      "shell/alpine.iso": true,
+      "shell/linux*.iso": true,
+      "shell/v86.wasm": true,
+      "shell/seabios.bin": true,
+      "shell/vgabios.bin": true,
+      "**/package-lock.json": true
+    },
+    "files.associations": {
+      "*.agent.md": "markdown"
+    },
+    "github.copilot.chat.codeGeneration.useInstructionFiles": true
+  },
+  "extensions": {
+    "recommendations": [
+      "github.copilot",
+      "github.copilot-chat"
+    ]
+  }
+}
