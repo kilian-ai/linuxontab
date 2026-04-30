@@ -3054,7 +3054,9 @@
   const tunnelsLogEl       = $('tunnels-log');
 
   const TUNNEL_CMD_OVERRIDE_PREFIX = 'traits.tunnels.cmd.';
-  const TUNNEL_DEFAULT_CMD = 'sh <(curl -sS https://linuxontab.com/local/tunnel-up.sh) 22 8080 22000 8384';
+  // NOTE: Default cmd must be POSIX-portable. BusyBox/hush in Alpine does NOT
+  // support bash process substitution `sh <(curl ...)`. Use wget|sh -s ... .
+  const TUNNEL_DEFAULT_CMD = 'wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh -s 22 8080 22000 8384';
   const TUNNEL_RELAY_ENDPOINTS = [
     'https://linuxontab-tunnel.fly.dev',
     'https://tunnel.linuxontab.com',
@@ -3090,7 +3092,8 @@
     } catch (_) {}
   }
   function tnEffectiveCmd(code) {
-    return tnGetCmdOverride(code) || TUNNEL_DEFAULT_CMD;
+    // Resolution order: per-code override → __default__ override → hard-coded default.
+    return tnGetCmdOverride(code) || tnGetCmdOverride('__default__') || TUNNEL_DEFAULT_CMD;
   }
 
   async function tnFetchRelayStatus(code) {
@@ -3228,9 +3231,15 @@
     const btnEdit = document.createElement('button');
     btnEdit.textContent = 'edit cmd';
     btnEdit.onclick = () => tnEditCmd(t);
+    const btnTunSsh = document.createElement('button');
+    btnTunSsh.textContent = 'tunnel ssh';
+    btnTunSsh.title = 'Copy the tunnel-to-localhost command to clipboard. Paste it into a terminal on your host (Mac) to open a local TCP listener bridged to this guest tunnel, then ssh -p 2222 root@localhost.';
+    btnTunSsh.disabled = !t.code;
+    btnTunSsh.onclick = () => tnCopyTunnelListen(t);
     actions.appendChild(btnRestart);
     actions.appendChild(btnStop);
     actions.appendChild(btnEdit);
+    actions.appendChild(btnTunSsh);
     row.appendChild(actions);
 
     return row;
@@ -3256,7 +3265,7 @@
       empty.className = 'tn-row tn-empty';
       empty.innerHTML =
         'no tunnels detected. start one with the default command below or click <b>restart</b> after editing.<br>' +
-        '<div class="tn-cmd" style="margin-top:6px">$ ' + TUNNEL_DEFAULT_CMD + '</div>';
+        '<div class="tn-cmd" style="margin-top:6px">$ ' + (tnGetCmdOverride('__default__') || TUNNEL_DEFAULT_CMD) + '</div>';
       const actions = document.createElement('div');
       actions.className = 'tn-actions';
       const startBtn = document.createElement('button');
@@ -3292,7 +3301,8 @@
 
   async function tnRestartTunnel(t) {
     const code = t.code || (t.id !== 'default' ? t.id : null);
-    const cmd = code ? tnEffectiveCmd(code) : TUNNEL_DEFAULT_CMD;
+    // Even for the default (no code yet), honor a stored __default__ override.
+    const cmd = code ? tnEffectiveCmd(code) : (tnGetCmdOverride('__default__') || TUNNEL_DEFAULT_CMD);
     tnLog('$ restart ' + (code || '(default)'), 'cmd');
     tnLog(cmd, 'out');
     // Stop first so respawn loops are gone, then start fresh.
@@ -3309,7 +3319,7 @@
 
   function tnEditCmd(t) {
     const code = t.code || (t.id && t.id !== 'default' ? t.id : null);
-    const current = code ? tnEffectiveCmd(code) : TUNNEL_DEFAULT_CMD;
+    const current = code ? tnEffectiveCmd(code) : (tnGetCmdOverride('__default__') || TUNNEL_DEFAULT_CMD);
     const next = window.prompt(
       'Edit start command for ' + (code ? 'code ' + code : 'default tunnel') +
       '.\n\nLeave empty to clear override and revert to default.',
@@ -3325,6 +3335,42 @@
       tnLog('override saved for ' + code + (next.trim() ? '' : ' (cleared)'), 'ok');
     }
     tnRefresh();
+  }
+
+  async function tnCopyTunnelListen(t) {
+    const code = t.code || (t.id && t.id !== 'default' ? t.id : null);
+    if (!code) {
+      tnLog('no pairing code yet — start the tunnel first', 'err');
+      return;
+    }
+    const cmd = 'sh <(curl -sS https://linuxontab.com/local/tunnel-listen.sh) ' + code;
+    let copied = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(cmd);
+        copied = true;
+      }
+    } catch (_) {}
+    if (!copied) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = cmd;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        copied = document.execCommand('copy');
+        document.body.removeChild(ta);
+      } catch (_) {}
+    }
+    if (copied) {
+      tnLog('copied to clipboard — paste in a host terminal:', 'ok');
+      tnLog('$ ' + cmd, 'out');
+      tnLog('then: ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@localhost', 'hint');
+    } else {
+      tnLog('clipboard copy failed; copy manually:', 'err');
+      tnLog('$ ' + cmd, 'out');
+    }
   }
 
   tunnelsBtn.onclick = () => {

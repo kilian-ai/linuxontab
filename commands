@@ -1,0 +1,118 @@
+#dhcp and dns refresh (if networking is really messed up, e.g. after suspend)
+ip link set eth0 down 2>/dev/null; ip link set eth0 up 2>/dev/null; killall udhcpc >/dev/null 2>&1; udhcpc -i eth0 -q -n -f -T 2 -t 5 >/dev/null 2>&1; printf "nameserver 1.1.1.1\nnameserver 1.0.0.1\n" > /etc/resolv.conf; echo "[restore-net] DHCP + DNS refreshed"
+
+#Stop current install
+pkill -f "npm install -g openclaw" || true
+
+#Throttle npm networking hard
+npm config set maxsockets 1
+npm config set fetch-retries 20
+npm config set fetch-retry-mintimeout 5000
+npm config set fetch-retry-maxtimeout 10000
+npm config set prefer-online true
+npm config set progress false
+
+#Re-run install
+npm install -g --no-audit --no-fund openclaw@latest
+
+#Watch health while it runs
+while true; do
+date
+df -h / | tail -1
+ps | grep -E "npm|node" | grep -v grep || true
+sleep 10
+done
+
+mount -o remount,size=<rootfs> / 
+
+#  In mac: 
+ssh -o ProxyCommand='websocat wss://tunnel.traits.build/port/client?code=42G4&port=22' root@dummy
+curl -s 'https://tunnel.traits.build/port/status?code=42G4'
+
+# In guest:
+apk add openssh
+ssh-keygen -A
+passwd  # set root password
+echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config
+/usr/sbin/sshd
+# Now rerun tunnel:
+sh <(curl -sS https://www.traits.build/local/tunnel-up.sh) 22
+
+
+
+#working tunnels!
+#guest
+wget -qO- https://www.traits.build/local/tunnel-up.sh | sh
+wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh
+
+#host
+ sh <(curl -sS https://www.traits.build/local/tunnel-ssh.sh) ARXN
+
+ # Terminal 1: open local listener on :2222 → tunnel
+sh <(curl -sS https://www.traits.build/local/tunnel-listen.sh) ARXN
+
+# Terminal 2: use any standard client
+ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@localhost
+scp -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null myfile root@localhost:/tmp/
+sftp -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@localhost
+rsync -e "ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" -av ./ root@localhost:/tmp/
+
+#kill
+ps | grep tunnel 
+# Expose guest port 8384 (Syncthing GUI) as local :18384
+sh <(curl -sS https://www.traits.build/local/tunnel-listen.sh) ARXN 18384 8384
+# then open http://localhost:18384 in browser
+
+#social:
+wget -O /usr/local/bin/social https://www.traits.build/local/social.sh && chmod +x /usr/local/bin/social
+# optional: force custom location (otherwise social auto-picks /mnt/host -> $PWD)
+# export SOCIAL_HOME=/mnt/host
+
+# what relays currently serve (raw event)
+cat /mnt/host/following/npub17230tdh.../.manifest.json | jq '.content | fromjson | .files'
+
+
+# 1. Refetch social.sh (gets the new pre-publish warning + auto-republish)
+wget -qO /usr/local/bin/social https://www.traits.build/local/social.sh && chmod +x /usr/local/bin/social
+
+# 2. Make sure tunnel-up is running with a fresh code
+wget -qO- https://www.traits.build/local/tunnel-up.sh | sh
+# → prints a NEW 4-char code, e.g. "K3ZQ"
+
+# 3. Refresh the cached base_url (this also auto-publishes now)
+social tunnel-up
+
+# kick a fresh tunnel:
+sh <(curl -sS https://www.traits.build/local/tunnel-up.sh) --new &
+social tunnel-up
+
+#unblock internet:
+apk add --no-cache --upgrade unbound libcrypto3 libssl3 && \
+printf '%s\n' 'server:' '  interface: 127.0.0.1' '  do-tcp: yes' \
+  'forward-zone:' '  name: "."' '  forward-tcp-upstream: yes' \
+  '  forward-addr: 1.1.1.1' '  forward-addr: 1.0.0.1' > /etc/unbound/unbound.conf && \
+killall -q unbound 2>/dev/null; sleep 1; unbound -c /etc/unbound/unbound.conf & \
+sleep 2 && printf 'nameserver 127.0.0.1\nnameserver 1.1.1.1\n' > /etc/resolv.conf && \
+nslookup google.com
+
+#If even literal-IP HTTPS fails, the v86 NIC is detached from the WISP. Bounce it:
+ip link set eth0 down; sleep 1; ip link set eth0 up
+udhcpc -i eth0 -q -n -f -T 2 -t 5
+ip route
+
+#change password:
+printf 'dummy1234!\ndummy1234!\n' | passwd root
+echo 'root:dummy1234!' | chpasswd
+
+#apk online
+echo "https://dl-cdn.alpinelinux.org/alpine/edge/main" >> /etc/apk/repositories
+echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
+apk update
+
+apk add --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main <package>
+
+#INIT
+printf 'lot-tb-61216!\nlot-tb-61216!\n' | passwd root
+apk add websocat curl jq openssh-server unbound
+wget -qO- https://www.traits.build/local/tunnel-up.sh | sh
+
