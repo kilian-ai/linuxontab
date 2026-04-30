@@ -9,7 +9,7 @@
 #   /mnt/host/following/.list             ← npubs you follow (one per line)
 #   /mnt/host/following/<npub>/           ← mirrored content from each followed user
 #
-# Crypto goes through linuxontab-api.fly.dev REST (social.nostr trait).
+# Crypto goes through traits-build.fly.dev REST (social.nostr trait).
 # Relay I/O via websocat. File mirror via wget.
 #
 # Usage:
@@ -25,14 +25,17 @@
 #   social.sh search <query>        # NIP-50 keyword search across relays (kind 0 profiles)
 #
 # Config (env overrides):
-#   SOCIAL_API     default: https://linuxontab-api.fly.dev/traits/social/nostr
+#   SOCIAL_API     default: https://traits-build.fly.dev/traits/social/nostr
 #   SOCIAL_RELAYS  default: wss://relay.damus.io wss://nos.lol wss://relay.nostr.band
 #   SOCIAL_HOME    default: auto (/mnt/host → current working directory)
 
 set -eu
 
-API="${SOCIAL_API:-https://linuxontab-api.fly.dev/traits/social/nostr}"
-API_CANDIDATES="${SOCIAL_API_CANDIDATES:-$API}"
+# NOTE: LinuxOnTab does not yet host its own Nostr REST signer. The default
+# points at the upstream traits.build deployment, which exposes the same
+# `social.nostr` trait. Override with SOCIAL_API to self-host.
+API="${SOCIAL_API:-https://traits-build.fly.dev/traits/social/nostr}"
+API_CANDIDATES="${SOCIAL_API_CANDIDATES:-$API https://traits-build.fly.dev/traits/social/nostr}"
 RELAYS="${SOCIAL_RELAYS:-wss://relay.damus.io wss://nos.lol wss://relay.nostr.band}"
 
 auto_home_dir() {
