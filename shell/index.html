@@ -3381,8 +3381,57 @@
     const wrapped = '( ' + cmd + ' ) >/tmp/tunnel.last.log 2>&1 &';
     const r = await tnExec(wrapped, { timeout: 8000 });
     tnLog('launched (exit=' + r.exitCode + ')', r.exitCode === 0 ? 'ok' : 'err');
-    // Give tunnel-up.sh a moment to write /tmp/tunnel.code, then refresh.
-    setTimeout(tnRefresh, 4000);
+    // tunnel-up.sh has to install packages, seed DNS, register, generate
+    // ssh host keys, and start sshd before it writes /tmp/tunnel.code. On
+    // a cold guest this can take 20-60s. Poll for the code instead of a
+    // single timed refresh, and if it never arrives surface the log tail
+    // so the user can see what failed (registration error, missing tool,
+    // DNS, etc).
+    tnPollForCode(60000).catch(() => {});
+  }
+
+  // Watches /tmp/tunnel.code for up to `maxMs` ms. On success: refresh the
+  // panel. On timeout: dump tail of /tmp/tunnel.last.log to the log pane.
+  async function tnPollForCode(maxMs) {
+    const start = Date.now();
+    let lastTail = '';
+    while (Date.now() - start < maxMs) {
+      await new Promise(r => setTimeout(r, 2000));
+      const probe = await tnExec(
+        'if [ -s /tmp/tunnel.code ]; then ' +
+          'echo __HAVE_CODE__:$(head -1 /tmp/tunnel.code); ' +
+        'else ' +
+          'echo __NO_CODE__; tail -n 4 /tmp/tunnel.last.log 2>/dev/null; ' +
+        'fi',
+        { timeout: 5000 }
+      ).catch(() => ({ stdout: '' }));
+      const out = probe.stdout || '';
+      if (/__HAVE_CODE__:/.test(out)) {
+        const code = (out.match(/__HAVE_CODE__:([A-Z0-9]+)/) || [])[1];
+        if (code) tnLog('pairing code: ' + code, 'ok');
+        tnRefresh();
+        return;
+      }
+      // Stream new log tail so the user sees progress (apk add, DoH seed, etc).
+      const tailMatch = out.replace(/^[\s\S]*?__NO_CODE__\n?/, '');
+      const tail = (tailMatch || '').trim();
+      if (tail && tail !== lastTail) {
+        tail.split('\n').forEach(line => tnLog(line, 'out'));
+        lastTail = tail;
+      }
+    }
+    // Timed out — dump full log tail.
+    const dump = await tnExec(
+      'echo __FINAL_TAIL__; tail -n 30 /tmp/tunnel.last.log 2>/dev/null; ' +
+      'echo __WEBSOCAT__; command -v websocat || echo missing; ' +
+      'echo __PROCS__; ps | grep -E "websocat|tunnel-up" | grep -v grep || true',
+      { timeout: 6000 }
+    ).catch(() => ({ stdout: '' }));
+    tnLog('no pairing code after ' + Math.round(maxMs / 1000) + 's — dumping log:', 'err');
+    (dump.stdout || '').split('\n').forEach(line => {
+      if (line) tnLog(line, 'err');
+    });
+    tnRefresh();
   }
 
   function tnEditCmd(t) {
