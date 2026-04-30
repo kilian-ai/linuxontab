@@ -1,14 +1,36 @@
-# LinuxOnTab
+# LinuxOnTab — Real Linux in a browser tab
 
-A standalone, browser-only Linux terminal with file viewer, port tunnels, and a
-Nostr-backed public-folder social layer. Boots a real x86 kernel + Alpine Linux
-in a tab via the [v86](https://github.com/copy/v86) emulator — no server, no
-install.
+> **A real x86 Linux kernel + Alpine userland, booted inside a browser tab via
+> WebAssembly. Zero install. Zero server. A local-first, lightweight Docker
+> alternative for instant, disposable Linux shells.**
+>
+> Live at **[linuxontab.com](https://linuxontab.com/)** — boot the shell at
+> [linuxontab.com/shell/](https://linuxontab.com/shell/).
+
+**Keywords:** linux in browser · webassembly linux · v86 · x86 emulator ·
+alpine linux · docker alternative · local-first · in-browser terminal ·
+online linux shell · browser sandbox
+
+A standalone, browser-only Linux desktop with a file viewer, port tunnels, and
+a Nostr-backed public-folder social layer. Boots a real x86 kernel + Alpine
+Linux in a tab via the [v86](https://github.com/copy/v86) WebAssembly emulator
+— no server, no install, no Docker daemon.
 
 Originally extracted from the `#/shell` page of traits.build; now standalone
 under **linuxontab.com**.
 
-## Quick start (local)
+## Why?
+
+| Need                                              | LinuxOnTab        | Docker         | Cloud shell    |
+|---------------------------------------------------|-------------------|----------------|----------------|
+| Disposable Linux shell with zero install          | ✅                 | ❌ (daemon)     | ⚠️ (account)    |
+| Runs offline                                      | ✅                 | ✅              | ❌              |
+| Real Linux kernel                                 | ✅ (x86 in WASM)   | ✅              | ✅              |
+| Cleanup                                           | Close the tab     | Containers, volumes | Stop VM   |
+| Resource cost                                     | Browser RAM       | Daemon overhead| $/hour          |
+| Best for                                          | Sandboxes, demos, teaching | Reproducible builds | Long-running compute |
+
+## Quick start (local dev)
 
 ```sh
 cd shell
@@ -22,7 +44,7 @@ Or just double-click `shell/index.html` (works from `file://`).
 
 ```
 LinuxOnTab/
-├── index.html              redirect → shell/
+├── index.html              SEO landing page (CTA → shell/)
 ├── CNAME                   linuxontab.com
 ├── shell/                  v86 + xterm terminal page
 │   ├── index.html          main UI (entry point)

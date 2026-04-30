@@ -2,12 +2,384 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>LinuxOnTab</title>
-<meta http-equiv="refresh" content="0; url=./shell/">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<style>body{margin:0;background:#0b0d10;color:#d5d8dc;font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:40px;text-align:center}</style>
+
+<title>LinuxOnTab — Real Linux in your browser. No install, no server, no Docker.</title>
+<meta name="description" content="LinuxOnTab boots a real x86 Linux kernel and Alpine userland inside a browser tab using WebAssembly and the v86 emulator. A local-first, zero-install Linux terminal — a lightweight Docker alternative for sandboxes, demos, teaching, and disposable shells.">
+<meta name="keywords" content="linux in browser, browser linux, linux terminal online, v86, webassembly linux, wasm linux, x86 emulator browser, alpine linux browser, docker alternative, local-first linux, in-browser linux, online linux terminal, web linux shell, browser sandbox, virtual machine browser, linux emulator, serverless linux, offline linux terminal, linux on tab, linuxontab">
+<meta name="author" content="LinuxOnTab">
+<meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+<meta name="theme-color" content="#0b0d10">
+<meta name="color-scheme" content="dark light">
+<link rel="canonical" href="https://linuxontab.com/">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LinuxOnTab">
+<meta property="og:title" content="LinuxOnTab — Real Linux in your browser tab">
+<meta property="og:description" content="A real x86 Linux kernel + Alpine userland, booted inside a browser tab via WebAssembly. Zero install. Zero server. A local-first Docker alternative for instant, disposable Linux shells.">
+<meta property="og:url" content="https://linuxontab.com/">
+<meta property="og:image" content="https://linuxontab.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:locale" content="en_US">
+
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="LinuxOnTab — Real Linux in your browser tab">
+<meta name="twitter:description" content="A real x86 Linux kernel + Alpine userland inside a browser tab. WebAssembly + v86. Zero install. A local-first Docker alternative.">
+<meta name="twitter:image" content="https://linuxontab.com/og.png">
+
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%230b0d10'/%3E%3Ctext x='8' y='42' font-family='ui-monospace,Menlo,monospace' font-size='28' fill='%234ade80'%3E_%24%3C/text%3E%3C/svg%3E">
+
+<!-- JSON-LD: WebApplication -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  "name": "LinuxOnTab",
+  "url": "https://linuxontab.com/",
+  "description": "Real x86 Linux kernel + Alpine userland running inside a browser tab via WebAssembly and the v86 emulator. Zero-install, local-first, Docker alternative.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Any (runs in any modern web browser)",
+  "browserRequirements": "Requires a modern browser with WebAssembly support",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "featureList": [
+    "Boot real x86 Linux in a browser tab",
+    "Alpine Linux userland with apk package manager",
+    "Persistent snapshots in IndexedDB",
+    "TCP port tunnels to the host machine over WebSocket",
+    "SSH/SCP/SFTP/rsync into the in-browser guest",
+    "File viewer for the guest's ~/public directory",
+    "Nostr-backed public-folder social layer",
+    "Works offline once cached"
+  ],
+  "keywords": "linux in browser, webassembly, v86, x86 emulator, docker alternative, local-first, alpine linux, in-browser terminal"
+}
+</script>
+
+<!-- JSON-LD: FAQ -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "Is this a real Linux kernel?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. LinuxOnTab boots a real x86 Linux kernel and an Alpine userland inside the v86 WebAssembly emulator. It is not a fake terminal, a transpiled toy, or a remote shell — every system call runs against a real kernel image executing in your browser."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How is this different from Docker?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Docker requires a daemon, kernel privileges, and a host install. LinuxOnTab runs entirely inside a browser tab using WebAssembly. There is nothing to install, nothing to update, and nothing to clean up. Tabs are disposable; close the tab and the VM is gone. For ephemeral sandboxes, demos, teaching, and disposable shells, LinuxOnTab is a lightweight Docker alternative."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does it work offline?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Once the page and ISO have loaded, the VM runs fully client-side. Networking inside the guest goes through an opt-in WebSocket tunnel; without that tunnel the VM still boots and runs locally."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I SSH into it from my host?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Run the in-guest tunnel script to register a 4-character pairing code, then run a one-liner on your host to open a local TCP listener bridged to the guest. You can then ssh, scp, sftp, or rsync into the in-browser Linux guest as if it were any other host."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is my data persistent?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Snapshots of the full VM state are saved to IndexedDB on demand and restored on next boot, so installed packages and files survive page reloads. Browser data clearing or hard-reload with cache reset will wipe snapshots."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What can I do with it?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Run apk add to install packages, edit and execute scripts, compile small programs, host static files for a public viewer URL, expose TCP services through a tunnel CDN, share files via Nostr, or just have a disposable Linux shell one tab away."
+      }
+    }
+  ]
+}
+</script>
+
+<style>
+  :root { color-scheme: dark; --bg:#0b0d10; --fg:#d5d8dc; --mut:#8a929e; --line:#2a2f36; --accent:#4ade80; --accent2:#7dd3fc; --card:#11151a; }
+  *,*::before,*::after { box-sizing:border-box; }
+  html,body { margin:0; padding:0; background:var(--bg); color:var(--fg); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif; line-height:1.55; }
+  a { color:var(--accent2); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  code, pre { font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  pre { background:#0e1217; border:1px solid var(--line); border-radius:8px; padding:14px 16px; overflow-x:auto; font-size:13px; }
+  code { background:#0e1217; border:1px solid var(--line); border-radius:4px; padding:1px 6px; font-size:.92em; }
+  pre code { background:transparent; border:0; padding:0; }
+  .container { max-width:980px; margin:0 auto; padding:24px; }
+  header.site { padding:14px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  header.site .brand { font-weight:700; letter-spacing:.2px; }
+  header.site .brand .glyph { color:var(--accent); }
+  header.site nav a { color:var(--mut); margin-left:18px; font-size:14px; }
+  header.site nav a:hover { color:var(--fg); }
+  .hero { padding:64px 24px 48px; text-align:center; border-bottom:1px solid var(--line); }
+  .hero h1 { font-size:clamp(28px, 4.6vw, 48px); margin:0 0 18px; line-height:1.15; letter-spacing:-.5px; }
+  .hero h1 .glyph { color:var(--accent); }
+  .hero p.lead { font-size:clamp(15px, 1.6vw, 19px); color:#c4cad2; max-width:760px; margin:0 auto 28px; }
+  .cta { display:inline-flex; gap:10px; align-items:center; background:var(--accent); color:#0b0d10; padding:12px 22px; border-radius:8px; font-weight:600; font-size:16px; }
+  .cta:hover { background:#22c55e; text-decoration:none; }
+  .cta-row { display:flex; gap:14px; justify-content:center; flex-wrap:wrap; }
+  .cta.secondary { background:transparent; color:var(--fg); border:1px solid var(--line); }
+  .cta.secondary:hover { background:#161a1f; }
+  .badges { margin-top:22px; color:var(--mut); font-size:13px; display:flex; gap:18px; justify-content:center; flex-wrap:wrap; }
+  .badges span::before { content:"●"; color:var(--accent); margin-right:6px; }
+  section { padding:56px 24px; border-bottom:1px solid var(--line); }
+  section h2 { font-size:clamp(22px, 2.6vw, 30px); margin:0 0 18px; letter-spacing:-.3px; }
+  section p { color:#c4cad2; }
+  .grid { display:grid; gap:18px; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); margin-top:18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:18px; }
+  .card h3 { margin:0 0 8px; font-size:17px; }
+  .card p { margin:0; color:#aab2bd; font-size:14px; }
+  table { width:100%; border-collapse:collapse; margin-top:14px; font-size:14px; }
+  th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--mut); font-weight:600; font-size:13px; text-transform:uppercase; letter-spacing:.5px; }
+  td.yes { color:var(--accent); }
+  td.no  { color:#f87171; }
+  details { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 16px; margin:8px 0; }
+  details > summary { cursor:pointer; font-weight:600; }
+  details[open] > summary { margin-bottom:8px; }
+  footer.site { padding:30px 24px 50px; color:var(--mut); font-size:13px; text-align:center; }
+  footer.site a { color:var(--mut); }
+  footer.site a:hover { color:var(--fg); }
+  .terminal-mock { background:#0e1217; border:1px solid var(--line); border-radius:10px; padding:14px 16px; text-align:left; max-width:760px; margin:28px auto 0; font-family:ui-monospace,Menlo,monospace; font-size:13px; color:#d5d8dc; box-shadow:0 8px 30px rgba(0,0,0,.35); }
+  .terminal-mock .dots { display:flex; gap:6px; margin-bottom:10px; }
+  .terminal-mock .dots span { width:11px; height:11px; border-radius:50%; background:#3a424d; }
+  .terminal-mock .line { white-space:pre; }
+  .terminal-mock .prompt { color:var(--accent); }
+  .terminal-mock .out { color:#aab2bd; }
+  ul.checks { padding-left:0; list-style:none; }
+  ul.checks li { padding:4px 0 4px 24px; position:relative; }
+  ul.checks li::before { content:"✓"; color:var(--accent); position:absolute; left:0; top:4px; font-weight:700; }
+  @media (max-width:560px) {
+    header.site nav a { margin-left:10px; }
+    .hero { padding:44px 20px 36px; }
+    section { padding:40px 20px; }
+  }
+</style>
 </head>
 <body>
-<p>Loading <a href="./shell/" style="color:#4ade80">LinuxOnTab shell</a>…</p>
+
+<header class="site">
+  <div class="brand"><span class="glyph">_$</span> LinuxOnTab</div>
+  <nav>
+    <a href="#what">What</a>
+    <a href="#features">Features</a>
+    <a href="#vs-docker">vs Docker</a>
+    <a href="#quickstart">Quickstart</a>
+    <a href="#faq">FAQ</a>
+    <a href="https://github.com/copy/v86" rel="noopener">v86</a>
+  </nav>
+</header>
+
+<section class="hero">
+  <h1><span class="glyph">_$</span> Real Linux. In a browser tab. <br>No install. No server. No Docker.</h1>
+  <p class="lead">
+    LinuxOnTab boots a real x86 Linux kernel and Alpine userland inside your browser using
+    <strong>WebAssembly</strong> and the <strong>v86</strong> emulator. A zero-install,
+    local-first, in-browser Linux terminal — a lightweight Docker alternative for instant
+    sandboxes, teaching, demos, and disposable shells.
+  </p>
+  <div class="cta-row">
+    <a class="cta" href="./shell/">Launch Linux →</a>
+    <a class="cta secondary" href="#what">How it works</a>
+  </div>
+  <div class="badges">
+    <span>Real x86 kernel</span>
+    <span>Runs offline</span>
+    <span>Open source stack</span>
+    <span>Free, no signup</span>
+  </div>
+
+  <div class="terminal-mock" aria-hidden="true">
+    <div class="dots"><span></span><span></span><span></span></div>
+<div class="line"><span class="prompt">localhost:~#</span> uname -a</div>
+<div class="line out">Linux localhost 6.x.x #1 SMP i686 GNU/Linux</div>
+<div class="line"><span class="prompt">localhost:~#</span> apk add python3 git</div>
+<div class="line out">OK: 80 MiB in 35 packages</div>
+<div class="line"><span class="prompt">localhost:~#</span> python3 -c 'print("hello from a browser tab")'</div>
+<div class="line out">hello from a browser tab</div>
+<div class="line"><span class="prompt">localhost:~#</span> <span style="background:var(--accent);color:#0b0d10">&nbsp;</span></div>
+  </div>
+</section>
+
+<section id="what" class="container">
+  <h2>What is LinuxOnTab?</h2>
+  <p>
+    LinuxOnTab is a <strong>browser-only Linux desktop</strong>. Open the page and a real x86
+    Linux kernel boots inside the v86 WebAssembly emulator, presenting an
+    <a href="https://alpinelinux.org/" rel="noopener">Alpine Linux</a> shell over
+    <a href="https://xtermjs.org/" rel="noopener">xterm.js</a>. Every system call hits a
+    real kernel running in your tab — not a transpiled toy, not a remote container, not a
+    cloud VM you have to log into.
+  </p>
+  <p>
+    Networking is opt-in. When you want it, the guest connects to a backend over a
+    <strong>WISP v1</strong> WebSocket and gets full TCP egress. You can then expose
+    in-guest ports back to your host over a pairing-code tunnel and SSH, SCP, SFTP, or
+    rsync into the browser tab as if it were any other Linux box.
+  </p>
+</section>
+
+<section id="features" class="container">
+  <h2>Features</h2>
+  <div class="grid">
+    <div class="card"><h3>Real Linux kernel</h3><p>Boots an actual x86 kernel image plus an Alpine userland inside the v86 WebAssembly emulator — not a faked terminal.</p></div>
+    <div class="card"><h3>Local-first</h3><p>Code runs in your tab. Your data lives in IndexedDB. Close the tab and the VM is gone — no orphan containers, no zombie processes on your laptop.</p></div>
+    <div class="card"><h3>Zero install</h3><p>Static site over HTTPS. No daemon, no kernel modules, no admin rights, no package install. Works on Mac, Windows, Linux, ChromeOS.</p></div>
+    <div class="card"><h3>apk package manager</h3><p>Full Alpine package ecosystem: <code>apk add python3 nodejs git openssh syncthing</code> — install whatever you need, persist via snapshot.</p></div>
+    <div class="card"><h3>Persistent snapshots</h3><p>Save full VM state to IndexedDB. Restore on next boot with installed packages, files, and shell history intact.</p></div>
+    <div class="card"><h3>SSH from your host</h3><p>Tunnel guest TCP ports out through a pairing-code WebSocket bridge. Run <code>ssh -p 2222 root@localhost</code> on your Mac and you're in.</p></div>
+    <div class="card"><h3>Public file viewer</h3><p>Anything you drop in <code>~/public</code> in the guest is browsable from any HTTPS client via a 4-character pairing code.</p></div>
+    <div class="card"><h3>Nostr-backed social layer</h3><p>Share folders peer-to-peer over Nostr relays. No accounts, no servers — just keypairs and public manifests.</p></div>
+    <div class="card"><h3>Works offline</h3><p>Once the page and ISO are cached, the VM boots without a network connection. Networking inside the guest is the only piece that needs the internet.</p></div>
+  </div>
+</section>
+
+<section id="usecases" class="container">
+  <h2>Use cases</h2>
+  <ul class="checks">
+    <li><strong>Disposable sandbox.</strong> Try a CLI tool, run an untrusted script, evaluate a package, then close the tab and forget about it.</li>
+    <li><strong>Teaching Linux.</strong> Hand a student a URL. They get a real shell, a real kernel, a real <code>man</code> page — no SSH keys, no cloud accounts, no install.</li>
+    <li><strong>Demos and reproducers.</strong> Share a snapshot URL that boots straight into the broken state. Reviewers don't need to clone anything.</li>
+    <li><strong>Local-first dev environment.</strong> Run a small server (<code>python3 -m http.server</code>, a static site, a tiny API) and expose it via the tunnel CDN.</li>
+    <li><strong>Lightweight Docker alternative.</strong> When you'd reach for <code>docker run -it alpine sh</code> just to get a quick shell — open a tab instead.</li>
+    <li><strong>Self-host a public folder.</strong> Drop files in <code>~/public</code>, share <code>linuxontab.com/viewer/?code=XXXX</code>.</li>
+    <li><strong>Air-gapped tinkering.</strong> Boot once with a network connection, save a snapshot, then keep working from a plane / cafe / sealed environment.</li>
+  </ul>
+</section>
+
+<section id="vs-docker" class="container">
+  <h2>LinuxOnTab vs Docker vs cloud shells</h2>
+  <p>For ephemeral, browser-side Linux work, LinuxOnTab and Docker are not really competitors — they cover different ground. Here's the rough split:</p>
+  <table>
+    <thead>
+      <tr><th></th><th>LinuxOnTab</th><th>Docker</th><th>Cloud shell (e.g. SSH VM)</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Install required</td>                <td class="no">No</td>      <td class="no">Yes (daemon)</td><td class="no">No (but account needed)</td></tr>
+      <tr><td>Account / signup</td>                <td class="yes">No</td>     <td class="yes">No</td>         <td class="no">Yes</td></tr>
+      <tr><td>Real Linux kernel</td>               <td class="yes">Yes (in WASM)</td><td class="yes">Yes (host kernel)</td><td class="yes">Yes</td></tr>
+      <tr><td>Runs offline</td>                    <td class="yes">Yes</td>    <td class="yes">Yes</td>        <td class="no">No</td></tr>
+      <tr><td>State after closing tab</td>         <td>IndexedDB snapshots</td><td>Persistent volumes</td>    <td>Persistent disk</td></tr>
+      <tr><td>Cleanup overhead</td>                <td class="yes">Close the tab</td><td class="no">Containers, volumes, networks</td><td class="no">Stop / destroy VM</td></tr>
+      <tr><td>Resource cost</td>                   <td class="yes">Browser RAM only</td><td class="no">Daemon + kernel resources</td><td class="no">$ per hour</td></tr>
+      <tr><td>Sandboxed from host</td>             <td class="yes">Browser-grade</td><td>Namespaces only</td>  <td class="yes">Network-isolated</td></tr>
+      <tr><td>Best for</td>                        <td>Disposable shells, teaching, demos</td><td>Reproducible builds, prod images</td><td>Long-running compute</td></tr>
+    </tbody>
+  </table>
+  <p style="margin-top:16px; color:var(--mut); font-size:14px;">
+    Verdict: LinuxOnTab is a <em>complement</em> to Docker, not a replacement for it.
+    For one-off shells, demos, and "I just need a Linux box for two minutes," it is
+    dramatically faster and lighter than spinning up a container or a VM.
+  </p>
+</section>
+
+<section id="tech" class="container">
+  <h2>Technology</h2>
+  <div class="grid">
+    <div class="card"><h3><a href="https://github.com/copy/v86" rel="noopener">v86</a></h3><p>x86 emulator in WebAssembly. Boots real kernel images in any modern browser. The core that makes LinuxOnTab possible.</p></div>
+    <div class="card"><h3><a href="https://alpinelinux.org/" rel="noopener">Alpine Linux</a></h3><p>Minimal, fast-booting userland with a great package manager. Default ISO ships with BusyBox and apk.</p></div>
+    <div class="card"><h3><a href="https://xtermjs.org/" rel="noopener">xterm.js</a></h3><p>Front-end terminal that renders the guest serial console.</p></div>
+    <div class="card"><h3>WISP v1 over WebSocket</h3><p>Streaming TCP-over-WS protocol. Lets the in-browser kernel speak real TCP through a backend server.</p></div>
+    <div class="card"><h3>Cloudflare Workers + Fly.io</h3><p>Optional services for DoH, port tunnels, and TCP egress. Source is in this repo — self-host the whole stack if you want.</p></div>
+    <div class="card"><h3>IndexedDB</h3><p>Stores full VM snapshots client-side, so reload doesn't blow away your work.</p></div>
+  </div>
+</section>
+
+<section id="quickstart" class="container">
+  <h2>Quickstart</h2>
+  <p><strong>1.</strong> <a href="./shell/">Launch the shell</a>. Wait for the Alpine login prompt.</p>
+  <p><strong>2.</strong> Set a root password and install useful tools:</p>
+<pre><code>printf 'changeme\nchangeme\n' | passwd root
+apk add websocat curl jq openssh-server unbound</code></pre>
+  <p><strong>3.</strong> Open a tunnel to your host:</p>
+<pre><code>wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh
+# → prints a 4-character pairing code, e.g. ARXN</code></pre>
+  <p><strong>4.</strong> On your Mac / Linux host, open a local listener bridged to the guest:</p>
+<pre><code>sh &lt;(curl -sS https://linuxontab.com/local/tunnel-listen.sh) ARXN
+ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@localhost</code></pre>
+  <p>That's it — you're SSH'd into a Linux kernel running inside a browser tab.</p>
+</section>
+
+<section id="faq" class="container">
+  <h2>Frequently asked questions</h2>
+
+  <details>
+    <summary>Is this a real Linux kernel or some kind of fake terminal?</summary>
+    <p>Real kernel. LinuxOnTab boots an x86 Linux kernel image and an Alpine userland inside the v86 WebAssembly emulator. Every syscall, every <code>/proc</code> entry, every <code>man</code> page is genuine.</p>
+  </details>
+
+  <details>
+    <summary>Is it a Docker alternative?</summary>
+    <p>For ephemeral browser-side shells: yes. LinuxOnTab gives you a disposable Linux box without a daemon, an install, or a cleanup step. For reproducible production builds and image distribution, stick with Docker — the two are complementary.</p>
+  </details>
+
+  <details>
+    <summary>Does it work offline?</summary>
+    <p>Once the page and ISO have been fetched, the VM runs entirely in your browser and survives going offline. Networking <em>inside</em> the guest needs internet, but the kernel itself doesn't.</p>
+  </details>
+
+  <details>
+    <summary>Can I SSH into the in-browser Linux from my Mac / Linux host?</summary>
+    <p>Yes. Run the in-guest <code>tunnel-up.sh</code> script to register a pairing code, then run <code>tunnel-listen.sh</code> on your host. SSH, SCP, SFTP, and rsync all work as if the guest were a remote box.</p>
+  </details>
+
+  <details>
+    <summary>Is my data persistent across reloads?</summary>
+    <p>Snapshots are stored in IndexedDB on demand. Save before closing the tab and you'll boot back into the same state next time.</p>
+  </details>
+
+  <details>
+    <summary>What about security?</summary>
+    <p>The kernel runs inside the browser's WebAssembly sandbox. It has no direct access to your filesystem, devices, or other tabs. Network egress only happens through the explicit WISP/WebSocket tunnel — and you can disable that entirely.</p>
+  </details>
+
+  <details>
+    <summary>Is the source open?</summary>
+    <p>Yes. The shell page, helper scripts, and backend services are all in the public LinuxOnTab repo. The v86 emulator is upstream and BSD-licensed.</p>
+  </details>
+
+  <details>
+    <summary>How is this different from Replit / Codespaces / WebContainers / cloud IDEs?</summary>
+    <p>Replit and Codespaces run on remote servers — you're paying for a cloud VM. WebContainers (StackBlitz) runs Node.js in the browser via a custom kernel — fast, but it's not a real Linux kernel. LinuxOnTab is the rare combination: <strong>real kernel</strong> + <strong>fully local</strong> + <strong>no account</strong>.</p>
+  </details>
+</section>
+
+<footer class="site">
+  <div>
+    LinuxOnTab — a real Linux kernel in your browser via
+    <a href="https://github.com/copy/v86" rel="noopener">v86</a> +
+    <a href="https://webassembly.org/" rel="noopener">WebAssembly</a>.
+    Static site, open stack, local-first.
+  </div>
+  <div style="margin-top:8px;">
+    <a href="./shell/">Launch shell</a> ·
+    <a href="./viewer/">Public viewer</a> ·
+    <a href="https://github.com/copy/v86" rel="noopener">v86</a> ·
+    <a href="https://alpinelinux.org/" rel="noopener">Alpine</a>
+  </div>
+</footer>
+
 </body>
 </html>
