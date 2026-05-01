@@ -12,6 +12,8 @@
 #   claw -p openai|anthropic      provider override (this run only)
 #   claw --no-memory              don't persist this turn
 #   claw --no-instructions        skip system prompt entirely
+#   claw --no-tools               disable shell tool calling
+#   claw --yolo                   run shell tool calls without confirmation
 #   claw --reset                  wipe current session and continue
 #   claw --where                  print config + data dirs and exit
 #
@@ -24,6 +26,8 @@
 #   /save <name>                  copy current session to <name>
 #   /model <name>                 switch model (this run only)
 #   /provider openai|anthropic    switch provider (this run only)
+#   /tools on|off                 toggle shell tool calling
+#   /yolo on|off                  toggle confirm prompt for shell tools
 #   /inst add <file>              add instruction file (this run only)
 #   /inst rm  <file>              remove instruction file (this run only)
 #   /inst list                    list active instruction files
@@ -59,6 +63,11 @@ MODEL_OPENAI=gpt-5.5
 MODEL_ANTHROPIC=claude-sonnet-4-5
 OPENAI_BASE_URL=https://api.openai.com/v1
 ANTHROPIC_BASE_URL=https://api.anthropic.com/v1
+# Shell tool calling: model can run commands via <shell>...</shell> blocks.
+TOOLS=1
+TOOL_MAX_ITERS=5
+TOOL_OUTPUT_LIMIT=8192
+# Set CLAW_YOLO=1 to skip the per-command confirm prompt.
 # OPENAI_API_KEY=sk-...
 # ANTHROPIC_API_KEY=sk-ant-...
 EOF
@@ -81,6 +90,10 @@ fi
 : "${ANTHROPIC_BASE_URL:=https://api.anthropic.com/v1}"
 : "${OPENAI_API_KEY:=}"
 : "${ANTHROPIC_API_KEY:=}"
+: "${TOOLS:=1}"
+: "${TOOL_MAX_ITERS:=5}"
+: "${TOOL_OUTPUT_LIMIT:=8192}"
+: "${CLAW_YOLO:=0}"
 
 SESSION="default"
 EXTRA_INST=""
@@ -99,6 +112,8 @@ while [ $# -gt 0 ]; do
     -p) PROVIDER="$2"; shift 2 ;;
     --no-memory) NO_MEMORY=1; shift ;;
     --no-instructions) NO_INST=1; shift ;;
+    --no-tools) TOOLS=0; shift ;;
+    --yolo) CLAW_YOLO=1; shift ;;
     --reset) RESET=1; shift ;;
     --where) printf 'CFG_DIR=%s\nDATA_DIR=%s\n' "$CFG_DIR" "$DATA_DIR"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
@@ -116,6 +131,35 @@ active_model() {
   if [ "$PROVIDER" = anthropic ]; then echo "$MODEL_ANTHROPIC"; else echo "$MODEL_OPENAI"; fi
 }
 
+tool_system_prompt() {
+  [ "$TOOLS" = 1 ] || return 0
+  cat <<'EOF'
+
+# Shell tool
+
+You can execute shell commands in the user's current shell by emitting one
+or more blocks of the form:
+
+<shell>
+command here
+</shell>
+
+Rules:
+- Only emit a <shell> block when running a command is genuinely needed to
+  answer the user. For purely informational answers, do not emit one.
+- The block contents are passed verbatim to `sh -c`. Combined stdout+stderr
+  (truncated) and the exit code are returned in the next turn inside
+  <shell-result exit=N> ... </shell-result>.
+- Multiple <shell> blocks in one reply are run sequentially.
+- Do NOT wrap <shell> blocks in markdown code fences. Emit the raw tags.
+- After you receive shell-result(s), continue the conversation: either run
+  more commands, or summarize the outcome for the user. Stop emitting
+  <shell> blocks once you have what you need.
+- Prefer non-interactive, idempotent commands. Avoid destructive operations
+  unless the user explicitly asked for them.
+EOF
+}
+
 build_system_prompt() {
   [ "$NO_INST" = 1 ] && return 0
   for f in "$INST_DIR"/*.md; do
@@ -124,6 +168,7 @@ build_system_prompt() {
   for f in $EXTRA_INST; do
     [ -f "$f" ] && cat "$f" && echo
   done
+  tool_system_prompt
 }
 
 append_msg() {
@@ -217,6 +262,9 @@ send_openai() {
     append_msg user      "$user_msg"
     append_msg assistant "$reply"
   fi
+  if [ -n "${REPLY_OUT:-}" ]; then
+    printf '%s' "$reply" > "$REPLY_OUT"
+  fi
 }
 
 # ----------------------------------------------------------------------
@@ -280,14 +328,131 @@ send_anthropic() {
     append_msg user      "$user_msg"
     append_msg assistant "$reply"
   fi
+  if [ -n "${REPLY_OUT:-}" ]; then
+    printf '%s' "$reply" > "$REPLY_OUT"
+  fi
 }
 
-send() {
+send_provider() {
   case "$PROVIDER" in
     openai)    send_openai    "$1" ;;
     anthropic) send_anthropic "$1" ;;
     *) echo "clawlite: unknown provider '$PROVIDER'" >&2; return 1 ;;
   esac
+}
+
+# Extract <shell>...</shell> blocks from $1 into numbered files in dir $2.
+# Prints the count.
+extract_shell_blocks() {
+  awk -v dir="$2" '
+    BEGIN { RS="<shell>"; n=0 }
+    NR>1 {
+      p = index($0, "</shell>")
+      if (p>0) {
+        n++
+        f = sprintf("%s/cmd-%03d", dir, n)
+        printf "%s", substr($0, 1, p-1) > f
+        close(f)
+      }
+    }
+    END { print n }
+  ' "$1"
+}
+
+# Strip leading/trailing whitespace from a file's contents.
+trim_cmd() {
+  awk 'BEGIN{ORS=""} {buf=buf $0 "\n"} END{
+    sub(/^[ \t\r\n]+/,"",buf); sub(/[ \t\r\n]+$/,"",buf); print buf
+  }' "$1"
+}
+
+run_tool_loop() {
+  reply_file="$1"
+  iter=0
+  while [ "$iter" -lt "$TOOL_MAX_ITERS" ]; do
+    workdir="$(mktemp -d)"
+    n=$(extract_shell_blocks "$reply_file" "$workdir")
+    if [ "${n:-0}" -eq 0 ]; then
+      rm -rf "$workdir"
+      return 0
+    fi
+    iter=$((iter+1))
+    results_file="$(mktemp)"
+    : > "$results_file"
+    i=1
+    while [ "$i" -le "$n" ]; do
+      cmd_path="$workdir/cmd-$(printf '%03d' "$i")"
+      cmd="$(trim_cmd "$cmd_path")"
+      printf '\n\033[36m[claw] tool call %d/%d:\033[0m\n%s\n' "$i" "$n" "$cmd" >&2
+      run_it=1
+      if [ "$CLAW_YOLO" != 1 ]; then
+        if [ -r /dev/tty ]; then
+          printf '\033[33m[claw] run? [y/N/a=yes-all/q=stop] \033[0m' >&2
+          ans=""
+          read -r ans </dev/tty || ans=""
+        else
+          ans="n"
+        fi
+        case "$ans" in
+          a|A) CLAW_YOLO=1; run_it=1 ;;
+          y|Y) run_it=1 ;;
+          q|Q) run_it=0; SKIP_REST=1 ;;
+          *)   run_it=0 ;;
+        esac
+      fi
+      out_file="$(mktemp)"
+      if [ "$run_it" = 1 ]; then
+        sh -c "$cmd" >"$out_file" 2>&1
+        ec=$?
+      else
+        echo "[skipped by user]" > "$out_file"
+        ec=-1
+      fi
+      bytes=$(wc -c < "$out_file" | tr -d ' ')
+      if [ "$bytes" -gt "$TOOL_OUTPUT_LIMIT" ]; then
+        out="$(head -c "$TOOL_OUTPUT_LIMIT" "$out_file")
+[...truncated, $bytes bytes total]"
+      else
+        out="$(cat "$out_file")"
+      fi
+      printf '\033[2m%s\033[0m\n[exit %s]\n' "$out" "$ec" >&2
+      {
+        printf '<shell-result exit=%s>\n' "$ec"
+        printf '%s\n' "$out"
+        printf '</shell-result>\n'
+      } >> "$results_file"
+      rm -f "$out_file"
+      i=$((i+1))
+      if [ "${SKIP_REST:-0}" = 1 ]; then break; fi
+    done
+    rm -rf "$workdir"
+    if [ "${SKIP_REST:-0}" = 1 ]; then
+      rm -f "$results_file"; SKIP_REST=0
+      return 0
+    fi
+    follow_up="$(cat "$results_file")"
+    rm -f "$results_file"
+    REPLY_OUT="$reply_file"
+    : > "$reply_file"
+    send_provider "$follow_up" || return 1
+  done
+  echo "\n[claw] tool loop hit max iterations ($TOOL_MAX_ITERS)" >&2
+  return 0
+}
+
+send() {
+  if [ "$TOOLS" = 1 ]; then
+    reply_file="$(mktemp)"
+    REPLY_OUT="$reply_file"
+    send_provider "$1" || { rm -f "$reply_file"; REPLY_OUT=""; return 1; }
+    REPLY_OUT=""
+    run_tool_loop "$reply_file"
+    rc=$?
+    rm -f "$reply_file"
+    return $rc
+  else
+    send_provider "$1"
+  fi
 }
 
 # ----------------------------------------------------------------------
@@ -325,6 +490,24 @@ handle_slash() {
       echo "(provider: $n, model: $(active_model))"
       ;;
     /provider)  echo "current provider: $PROVIDER" ;;
+    "/tools "*)
+      n="${cmd#/tools }"
+      case "$n" in
+        on|1|true)  TOOLS=1; echo "(tools: on)" ;;
+        off|0|false) TOOLS=0; echo "(tools: off)" ;;
+        *) echo "(usage: /tools on|off)" ;;
+      esac
+      ;;
+    /tools) echo "tools: $([ "$TOOLS" = 1 ] && echo on || echo off)" ;;
+    "/yolo "*)
+      n="${cmd#/yolo }"
+      case "$n" in
+        on|1|true)  CLAW_YOLO=1; echo "(yolo: on — shell tools run without confirm)" ;;
+        off|0|false) CLAW_YOLO=0; echo "(yolo: off)" ;;
+        *) echo "(usage: /yolo on|off)" ;;
+      esac
+      ;;
+    /yolo) echo "yolo: $([ "$CLAW_YOLO" = 1 ] && echo on || echo off)" ;;
     "/inst add "*)
       f="${cmd#/inst add }"
       if [ -f "$f" ]; then EXTRA_INST="$EXTRA_INST $f"; echo "(added: $f)"
@@ -373,8 +556,10 @@ fi
 # ----------------------------------------------------------------------
 # REPL
 # ----------------------------------------------------------------------
-printf 'clawlite  provider=%s  model=%s  session=%s\n' \
-  "$PROVIDER" "$(active_model)" "$SESSION"
+printf 'clawlite  provider=%s  model=%s  session=%s  tools=%s%s\n' \
+  "$PROVIDER" "$(active_model)" "$SESSION" \
+  "$([ "$TOOLS" = 1 ] && echo on || echo off)" \
+  "$([ "$CLAW_YOLO" = 1 ] && echo ' yolo' || echo '')"
 printf '(/help for commands, /exit to quit)\n'
 
 while :; do
