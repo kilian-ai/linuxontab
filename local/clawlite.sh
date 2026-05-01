@@ -135,6 +135,23 @@ append_msg() {
 }
 
 # ----------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------
+# Run curl, strip CR from SSE, tee raw to debug log if CLAW_DEBUG=1.
+# Reads from stdin (the request body file), writes SSE lines to stdout.
+stream_curl() {
+  url="$1"; shift
+  body="$1"; shift
+  if [ "${CLAW_DEBUG:-0}" = 1 ]; then
+    raw="$(mktemp)"
+    curl -sS -N "$url" "$@" --data-binary @"$body" | tee "$raw" | tr -d '\r'
+    echo "[claw-debug] raw response saved to $raw" >&2
+  else
+    curl -sS -N "$url" "$@" --data-binary @"$body" | tr -d '\r'
+  fi
+}
+
+# ----------------------------------------------------------------------
 # Provider: OpenAI (Chat Completions, streaming SSE)
 # ----------------------------------------------------------------------
 send_openai() {
@@ -144,30 +161,28 @@ send_openai() {
     return 1
   fi
   sys="$(build_system_prompt)"
-  payload="$(
-    jq -n \
-      --arg model "$(active_model)" \
-      --arg sys "$sys" \
-      --arg user "$user_msg" \
-      --slurpfile hist "$SESS_FILE" '
-      {
-        model: $model,
-        stream: true,
-        messages:
-          ((if ($sys|length) > 0 then [{role:"system", content:$sys}] else [] end)
-           + $hist[0]
-           + [{role:"user", content:$user}])
-      }'
-  )"
+  body="$(mktemp)"
+  jq -n \
+    --arg model "$(active_model)" \
+    --arg sys "$sys" \
+    --arg user "$user_msg" \
+    --slurpfile hist "$SESS_FILE" '
+    {
+      model: $model,
+      stream: true,
+      messages:
+        ((if ($sys|length) > 0 then [{role:"system", content:$sys}] else [] end)
+         + $hist[0]
+         + [{role:"user", content:$user}])
+    }' > "$body"
   reply_file="$(mktemp)"
   : > "$reply_file"
-  # shellcheck disable=SC2094
-  curl -sN "$OPENAI_BASE_URL/chat/completions" \
+  saw_data=0
+  raw_acc="$(mktemp)"
+  stream_curl "$OPENAI_BASE_URL/chat/completions" "$body" \
     -H "Authorization: Bearer $OPENAI_API_KEY" \
     -H "Content-Type: application/json" \
-    --data-binary @- <<EOF | while IFS= read -r line; do
-$payload
-EOF
+    | tee "$raw_acc" | while IFS= read -r line; do
       case "$line" in
         "data: [DONE]") break ;;
         "data: "*)
@@ -176,6 +191,7 @@ EOF
           if [ -n "$delta" ]; then
             printf '%s' "$delta"
             printf '%s' "$delta" >> "$reply_file"
+            echo 1 > "${reply_file}.saw"
           fi
           err="$(printf '%s' "$chunk" | jq -r '.error.message // empty' 2>/dev/null)"
           [ -n "$err" ] && printf '\n[openai error: %s]\n' "$err" >&2
@@ -183,8 +199,20 @@ EOF
       esac
     done
   echo
+  # If no streamed delta arrived, the response was probably a plain JSON
+  # error (HTTP 400/401/etc). Show it.
+  [ -f "${reply_file}.saw" ] && saw_data=1
+  if [ "$saw_data" = 0 ]; then
+    msg="$(jq -r '.error.message // .error // empty' "$raw_acc" 2>/dev/null)"
+    if [ -n "$msg" ]; then
+      printf '[openai error] %s\n' "$msg" >&2
+    else
+      echo "[clawlite] no response received. raw output:" >&2
+      sed 's/^/  /' "$raw_acc" >&2
+    fi
+  fi
   reply="$(cat "$reply_file")"
-  rm -f "$reply_file"
+  rm -f "$reply_file" "${reply_file}.saw" "$body" "$raw_acc"
   if [ -n "$reply" ]; then
     append_msg user      "$user_msg"
     append_msg assistant "$reply"
@@ -201,29 +229,27 @@ send_anthropic() {
     return 1
   fi
   sys="$(build_system_prompt)"
-  payload="$(
-    jq -n \
-      --arg model "$(active_model)" \
-      --arg sys "$sys" \
-      --arg user "$user_msg" \
-      --slurpfile hist "$SESS_FILE" '
-      {
-        model: $model,
-        stream: true,
-        max_tokens: 4096,
-        system: $sys,
-        messages: ($hist[0] + [{role:"user", content:$user}])
-      }'
-  )"
+  body="$(mktemp)"
+  jq -n \
+    --arg model "$(active_model)" \
+    --arg sys "$sys" \
+    --arg user "$user_msg" \
+    --slurpfile hist "$SESS_FILE" '
+    {
+      model: $model,
+      stream: true,
+      max_tokens: 4096,
+      system: $sys,
+      messages: ($hist[0] + [{role:"user", content:$user}])
+    }' > "$body"
   reply_file="$(mktemp)"
   : > "$reply_file"
-  curl -sN "$ANTHROPIC_BASE_URL/messages" \
+  raw_acc="$(mktemp)"
+  stream_curl "$ANTHROPIC_BASE_URL/messages" "$body" \
     -H "x-api-key: $ANTHROPIC_API_KEY" \
     -H "anthropic-version: 2023-06-01" \
     -H "Content-Type: application/json" \
-    --data-binary @- <<EOF | while IFS= read -r line; do
-$payload
-EOF
+    | tee "$raw_acc" | while IFS= read -r line; do
       case "$line" in
         "data: "*)
           chunk="${line#data: }"
@@ -231,6 +257,7 @@ EOF
           if [ -n "$delta" ]; then
             printf '%s' "$delta"
             printf '%s' "$delta" >> "$reply_file"
+            echo 1 > "${reply_file}.saw"
           fi
           err="$(printf '%s' "$chunk" | jq -r 'select(.type=="error") | .error.message // empty' 2>/dev/null)"
           [ -n "$err" ] && printf '\n[anthropic error: %s]\n' "$err" >&2
@@ -238,8 +265,17 @@ EOF
       esac
     done
   echo
+  if [ ! -f "${reply_file}.saw" ]; then
+    msg="$(jq -r '.error.message // .error // empty' "$raw_acc" 2>/dev/null)"
+    if [ -n "$msg" ]; then
+      printf '[anthropic error] %s\n' "$msg" >&2
+    else
+      echo "[clawlite] no response received. raw output:" >&2
+      sed 's/^/  /' "$raw_acc" >&2
+    fi
+  fi
   reply="$(cat "$reply_file")"
-  rm -f "$reply_file"
+  rm -f "$reply_file" "${reply_file}.saw" "$body" "$raw_acc"
   if [ -n "$reply" ]; then
     append_msg user      "$user_msg"
     append_msg assistant "$reply"
