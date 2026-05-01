@@ -13,7 +13,8 @@
 #   claw --no-memory              don't persist this turn
 #   claw --no-instructions        skip system prompt entirely
 #   claw --no-tools               disable shell tool calling
-#   claw --yolo                   run shell tool calls without confirmation
+#   claw --confirm                ask y/N before each shell tool call
+#   claw --yolo                   run shell tool calls without confirmation (default)
 #   claw --reset                  wipe current session and continue
 #   claw --where                  print config + data dirs and exit
 #
@@ -67,7 +68,9 @@ ANTHROPIC_BASE_URL=https://api.anthropic.com/v1
 TOOLS=1
 TOOL_MAX_ITERS=5
 TOOL_OUTPUT_LIMIT=8192
-# Set CLAW_YOLO=1 to skip the per-command confirm prompt.
+# Shell tool calls run without confirmation by default. Set CLAW_YOLO=0
+# (or pass --confirm) to be prompted before each command.
+CLAW_YOLO=1
 # OPENAI_API_KEY=sk-...
 # ANTHROPIC_API_KEY=sk-ant-...
 EOF
@@ -93,7 +96,7 @@ fi
 : "${TOOLS:=1}"
 : "${TOOL_MAX_ITERS:=5}"
 : "${TOOL_OUTPUT_LIMIT:=8192}"
-: "${CLAW_YOLO:=0}"
+: "${CLAW_YOLO:=1}"
 
 SESSION="default"
 EXTRA_INST=""
@@ -114,6 +117,7 @@ while [ $# -gt 0 ]; do
     --no-instructions) NO_INST=1; shift ;;
     --no-tools) TOOLS=0; shift ;;
     --yolo) CLAW_YOLO=1; shift ;;
+    --confirm|--no-yolo) CLAW_YOLO=0; shift ;;
     --reset) RESET=1; shift ;;
     --where) printf 'CFG_DIR=%s\nDATA_DIR=%s\n' "$CFG_DIR" "$DATA_DIR"; exit 0 ;;
     -h|--help) usage; exit 0 ;;
