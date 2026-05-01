@@ -117,6 +117,23 @@
   #tunnels-log { font-size:11px; line-height:1.45; max-height:240px; overflow:auto; background:#0b0d10; border:1px solid #2a2f36; border-radius:4px; padding:8px; font-family:'Menlo','Monaco','Consolas',monospace; }
   #tunnels-log .tl-cmd { color:#7ab8f5; white-space:pre-wrap; word-break:break-all; }
   #tunnels-log .tl-out { color:#aab2bc; white-space:pre-wrap; word-break:break-all; padding-left:8px; }
+  #tn-ports-section { background:#161a1f; border:1px solid #2a2f36; border-radius:6px; padding:10px 12px; display:flex; flex-direction:column; gap:6px; }
+  .tn-section-hdr { display:flex; align-items:baseline; gap:8px; color:#ddd; }
+  #tn-ports-list { display:flex; flex-direction:column; gap:4px; }
+  #tn-ports-list .tn-port-row { display:flex; align-items:center; gap:8px; padding:3px 4px; border-radius:4px; }
+  #tn-ports-list .tn-port-row:hover { background:#1d2127; }
+  #tn-ports-list .tn-port-row input[type=checkbox] { accent-color:#7ab8f5; cursor:pointer; }
+  #tn-ports-list .tn-port-num { color:#7ab8f5; font-family:'Menlo','Monaco','Consolas',monospace; min-width:50px; }
+  #tn-ports-list .tn-port-label-input { background:#0b0d10; color:#ddd; border:1px solid #2a2f36; border-radius:3px; padding:1px 6px; font:inherit; flex:1; min-width:0; }
+  #tn-ports-list .tn-port-label-input:focus { outline:none; border-color:#3a424d; }
+  #tn-ports-list .tn-port-del { background:transparent; color:#7a8392; border:none; cursor:pointer; padding:2px 6px; border-radius:3px; font:inherit; }
+  #tn-ports-list .tn-port-del:hover { background:#3a2225; color:#f87171; }
+  .tn-ports-add { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .tn-ports-add input { background:#0b0d10; color:#ddd; border:1px solid #2a2f36; border-radius:3px; padding:2px 6px; font:inherit; }
+  .tn-ports-add input[type=number] { width:70px; }
+  .tn-ports-add input[type=text]   { flex:1; min-width:120px; }
+  .tn-ports-add button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:2px 10px; font:inherit; cursor:pointer; }
+  .tn-ports-add button:hover { background:#2d343d; }
   #tunnels-log .tl-ok { color:#4ade80; }
   #tunnels-log .tl-err { color:#f87171; }
   #tunnels-log .tl-info { color:#7a8392; }
@@ -219,6 +236,19 @@
       <button id="tunnels-close" style="margin-left:auto">close</button>
     </div>
     <div id="tunnels-body">
+      <div id="tn-ports-section">
+        <div class="tn-section-hdr">
+          <b>port config</b>
+          <span class="hint" style="font-size:11px">enabled ports get bridged when you (re)start a tunnel</span>
+        </div>
+        <div id="tn-ports-list"></div>
+        <form id="tn-ports-add" class="tn-ports-add">
+          <input type="number" min="1" max="65535" id="tn-ports-add-port" placeholder="port" required />
+          <input type="text" id="tn-ports-add-label" placeholder="label (optional)" />
+          <button type="submit">add port</button>
+          <button type="button" id="tn-ports-reset" title="restore default port list (22, 8080, 22000, 8384)">reset defaults</button>
+        </form>
+      </div>
       <div id="tunnels-list"></div>
       <div id="tunnels-log"></div>
     </div>
@@ -3212,13 +3242,55 @@
   const tunnelsLogEl       = $('tunnels-log');
 
   const TUNNEL_CMD_OVERRIDE_PREFIX = 'traits.tunnels.cmd.';
-  // NOTE: Default cmd must be POSIX-portable. BusyBox/hush in Alpine does NOT
-  // support bash process substitution `sh <(curl ...)`. Use wget|sh -s ... .
-  const TUNNEL_DEFAULT_CMD = 'wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh -s 22 8080 22000 8384';
+  const TUNNEL_PORTS_KEY = 'traits.tunnels.ports';
+  // NOTE: Default cmd is built from the user-editable port config below.
+  // BusyBox/hush in Alpine does NOT support bash process substitution
+  // `sh <(curl ...)`, so we always use `wget|sh -s ...` form.
+  const TUNNEL_CMD_PREFIX = 'wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh -s';
+  const TUNNEL_DEFAULT_PORTS = [
+    { port: 22,    label: 'ssh',            enabled: true },
+    { port: 8080,  label: 'public-http',    enabled: true },
+    { port: 22000, label: 'syncthing-sync', enabled: true },
+    { port: 8384,  label: 'syncthing-gui',  enabled: true },
+  ];
   const TUNNEL_RELAY_ENDPOINTS = [
     'https://linuxontab-tunnel.fly.dev',
     'https://tunnel.linuxontab.com',
   ];
+
+  function tnLoadPorts() {
+    try {
+      const raw = localStorage.getItem(TUNNEL_PORTS_KEY);
+      if (!raw) return TUNNEL_DEFAULT_PORTS.map(p => ({ ...p }));
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) throw new Error('not array');
+      return arr
+        .map(e => ({ port: parseInt(e.port, 10), label: String(e.label || ''), enabled: !!e.enabled }))
+        .filter(e => Number.isFinite(e.port) && e.port > 0 && e.port < 65536);
+    } catch (_) {
+      return TUNNEL_DEFAULT_PORTS.map(p => ({ ...p }));
+    }
+  }
+  function tnSavePorts(arr) {
+    try { localStorage.setItem(TUNNEL_PORTS_KEY, JSON.stringify(arr)); } catch (_) {}
+  }
+  function tnEnabledPorts() {
+    return tnLoadPorts().filter(e => e.enabled).map(e => e.port);
+  }
+  function tnBuildDefaultCmd() {
+    const ports = tnEnabledPorts();
+    if (!ports.length) return TUNNEL_CMD_PREFIX + ' 22'; // safety: never empty
+    return TUNNEL_CMD_PREFIX + ' ' + ports.join(' ');
+  }
+  // Pick a sensible local listen port for a given remote port. Privileged
+  // ports get a +10000 offset (22 -> 2222, 80 -> 10080, etc.) so the user
+  // can run the listener without sudo on macOS/Linux. Non-privileged ports
+  // map 1:1 by default.
+  function tnDefaultLocalPort(remote) {
+    if (remote === 22) return 2222;
+    if (remote < 1024) return 10000 + remote;
+    return remote;
+  }
 
   function tnLog(line, cls) {
     const d = document.createElement('div');
@@ -3251,7 +3323,7 @@
   }
   function tnEffectiveCmd(code) {
     // Resolution order: per-code override → __default__ override → hard-coded default.
-    return tnGetCmdOverride(code) || tnGetCmdOverride('__default__') || TUNNEL_DEFAULT_CMD;
+    return tnGetCmdOverride(code) || tnGetCmdOverride('__default__') || tnBuildDefaultCmd();
   }
 
   async function tnFetchRelayStatus(code) {
@@ -3371,7 +3443,7 @@
       relay.textContent = 'relay: (no code)';
     }
 
-    const cmdShown = t.code ? tnEffectiveCmd(t.code) : (t.cmd || TUNNEL_DEFAULT_CMD);
+    const cmdShown = t.code ? tnEffectiveCmd(t.code) : (t.cmd || tnBuildDefaultCmd());
     const cmdEl = document.createElement('div');
     cmdEl.className = 'tn-cmd';
     cmdEl.textContent = '$ ' + cmdShown;
@@ -3389,16 +3461,37 @@
     const btnEdit = document.createElement('button');
     btnEdit.textContent = 'edit cmd';
     btnEdit.onclick = () => tnEditCmd(t);
-    const btnTunSsh = document.createElement('button');
-    btnTunSsh.textContent = 'tunnel ssh';
-    btnTunSsh.title = 'Copy the tunnel-to-localhost command to clipboard. Paste it into a terminal on your host (Mac) to open a local TCP listener bridged to this guest tunnel, then ssh -p 2222 root@localhost.';
-    btnTunSsh.disabled = !t.code;
-    btnTunSsh.onclick = () => tnCopyTunnelListen(t);
     actions.appendChild(btnRestart);
     actions.appendChild(btnStop);
     actions.appendChild(btnEdit);
-    actions.appendChild(btnTunSsh);
     row.appendChild(actions);
+
+    // Per-port "tunnel" buttons. Works for any registered port — copies a
+    // host-side `tunnel-listen.sh CODE LOCAL REMOTE` invocation that opens
+    // a local TCP listener forwarding to that guest port.
+    if (t.code && t.ports && t.ports.length) {
+      const cfg = tnLoadPorts();
+      const cfgByPort = {};
+      cfg.forEach(c => { cfgByPort[String(c.port)] = c; });
+      const portActions = document.createElement('div');
+      portActions.className = 'tn-actions';
+      portActions.style.marginTop = '2px';
+      t.ports.forEach(p => {
+        const portNum = parseInt(p, 10);
+        if (!Number.isFinite(portNum)) return;
+        const meta = cfgByPort[String(portNum)];
+        const label = (meta && meta.label) ? meta.label : ('port ' + portNum);
+        const local = tnDefaultLocalPort(portNum);
+        const btn = document.createElement('button');
+        btn.textContent = 'tunnel ' + label + ' (:' + portNum + ')';
+        btn.title =
+          'Copy `tunnel-listen.sh ' + t.code + ' ' + local + ' ' + portNum + '` to clipboard. ' +
+          'Run on your host to open localhost:' + local + ' bridged to guest:' + portNum + '.';
+        btn.onclick = () => tnCopyTunnelListen(t, portNum, local);
+        portActions.appendChild(btn);
+      });
+      row.appendChild(portActions);
+    }
 
     return row;
   }
@@ -3423,7 +3516,7 @@
       empty.className = 'tn-row tn-empty';
       empty.innerHTML =
         'no tunnels detected. start one with the default command below or click <b>restart</b> after editing.<br>' +
-        '<div class="tn-cmd" style="margin-top:6px">$ ' + (tnGetCmdOverride('__default__') || TUNNEL_DEFAULT_CMD) + '</div>';
+        '<div class="tn-cmd" style="margin-top:6px">$ ' + (tnGetCmdOverride('__default__') || tnBuildDefaultCmd()) + '</div>';
       const actions = document.createElement('div');
       actions.className = 'tn-actions';
       const startBtn = document.createElement('button');
@@ -3460,7 +3553,7 @@
   async function tnRestartTunnel(t) {
     const code = t.code || (t.id !== 'default' ? t.id : null);
     // Even for the default (no code yet), honor a stored __default__ override.
-    const cmd = code ? tnEffectiveCmd(code) : (tnGetCmdOverride('__default__') || TUNNEL_DEFAULT_CMD);
+    const cmd = code ? tnEffectiveCmd(code) : (tnGetCmdOverride('__default__') || tnBuildDefaultCmd());
     tnLog('$ restart ' + (code || '(default)'), 'cmd');
     tnLog(cmd, 'out');
     // Stop first so respawn loops are gone, then start fresh.
@@ -3526,7 +3619,7 @@
 
   function tnEditCmd(t) {
     const code = t.code || (t.id && t.id !== 'default' ? t.id : null);
-    const current = code ? tnEffectiveCmd(code) : (tnGetCmdOverride('__default__') || TUNNEL_DEFAULT_CMD);
+    const current = code ? tnEffectiveCmd(code) : (tnGetCmdOverride('__default__') || tnBuildDefaultCmd());
     const next = window.prompt(
       'Edit start command for ' + (code ? 'code ' + code : 'default tunnel') +
       '.\n\nLeave empty to clear override and revert to default.',
@@ -3544,13 +3637,17 @@
     tnRefresh();
   }
 
-  async function tnCopyTunnelListen(t) {
+  async function tnCopyTunnelListen(t, remotePort, localPort) {
     const code = t.code || (t.id && t.id !== 'default' ? t.id : null);
     if (!code) {
       tnLog('no pairing code yet — start the tunnel first', 'err');
       return;
     }
-    const cmd = 'sh <(curl -sS https://linuxontab.com/local/tunnel-listen.sh) ' + code;
+    // Default to ssh (22) when called without an explicit port.
+    const remote = remotePort || 22;
+    const local  = localPort  || tnDefaultLocalPort(remote);
+    const cmd = 'sh <(curl -sS https://linuxontab.com/local/tunnel-listen.sh) '
+              + code + ' ' + local + ' ' + remote;
     let copied = false;
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -3573,7 +3670,11 @@
     if (copied) {
       tnLog('copied to clipboard — paste in a host terminal:', 'ok');
       tnLog('$ ' + cmd, 'out');
-      tnLog('then: ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@localhost', 'hint');
+      if (remote === 22) {
+        tnLog('then: ssh -p ' + local + ' -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@localhost', 'hint');
+      } else {
+        tnLog('then: connect localhost:' + local + ' (forwards to guest:' + remote + ')', 'hint');
+      }
     } else {
       tnLog('clipboard copy failed; copy manually:', 'err');
       tnLog('$ ' + cmd, 'out');
@@ -3591,10 +3692,105 @@
     // mutually exclusive with social/follow panel
     if (followPanel && !followPanel.hidden) followPanel.hidden = true;
     tunnelsPanel.hidden = false;
+    tnRenderPortsConfig();
     tnRefresh();
   };
   tunnelsCloseBtn.onclick = () => { tunnelsPanel.hidden = true; term.focus(); };
-  tunnelsRefreshBtn.onclick = () => tnRefresh();
+  tunnelsRefreshBtn.onclick = () => { tnRenderPortsConfig(); tnRefresh(); };
+
+  // ── Port config UI ────────────────────────────────────────────────────
+  const tnPortsListEl    = document.getElementById('tn-ports-list');
+  const tnPortsAddForm   = document.getElementById('tn-ports-add');
+  const tnPortsAddPort   = document.getElementById('tn-ports-add-port');
+  const tnPortsAddLabel  = document.getElementById('tn-ports-add-label');
+  const tnPortsResetBtn  = document.getElementById('tn-ports-reset');
+
+  function tnRenderPortsConfig() {
+    if (!tnPortsListEl) return;
+    const ports = tnLoadPorts();
+    tnPortsListEl.innerHTML = '';
+    if (!ports.length) {
+      const empty = document.createElement('div');
+      empty.className = 'tn-meta';
+      empty.style.color = '#7a8392';
+      empty.textContent = 'no ports configured — add one below.';
+      tnPortsListEl.appendChild(empty);
+      return;
+    }
+    ports.forEach((p, idx) => {
+      const row = document.createElement('div');
+      row.className = 'tn-port-row';
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !!p.enabled;
+      cb.title = p.enabled ? 'enabled — included on next start' : 'disabled';
+      cb.onchange = () => {
+        const arr = tnLoadPorts();
+        if (arr[idx]) { arr[idx].enabled = cb.checked; tnSavePorts(arr); }
+      };
+      row.appendChild(cb);
+
+      const num = document.createElement('span');
+      num.className = 'tn-port-num';
+      num.textContent = ':' + p.port;
+      row.appendChild(num);
+
+      const lbl = document.createElement('input');
+      lbl.type = 'text';
+      lbl.className = 'tn-port-label-input';
+      lbl.value = p.label || '';
+      lbl.placeholder = 'label';
+      lbl.onchange = () => {
+        const arr = tnLoadPorts();
+        if (arr[idx]) { arr[idx].label = lbl.value; tnSavePorts(arr); }
+      };
+      row.appendChild(lbl);
+
+      const del = document.createElement('button');
+      del.className = 'tn-port-del';
+      del.textContent = '✕';
+      del.title = 'remove this port from the config';
+      del.onclick = () => {
+        const arr = tnLoadPorts();
+        arr.splice(idx, 1);
+        tnSavePorts(arr);
+        tnRenderPortsConfig();
+      };
+      row.appendChild(del);
+
+      tnPortsListEl.appendChild(row);
+    });
+  }
+
+  if (tnPortsAddForm) {
+    tnPortsAddForm.onsubmit = (ev) => {
+      ev.preventDefault();
+      const port = parseInt(tnPortsAddPort.value, 10);
+      if (!Number.isFinite(port) || port < 1 || port > 65535) {
+        tnLog('invalid port: ' + tnPortsAddPort.value, 'err');
+        return;
+      }
+      const label = (tnPortsAddLabel.value || '').trim();
+      const arr = tnLoadPorts();
+      if (arr.some(e => e.port === port)) {
+        tnLog('port ' + port + ' already in config', 'err');
+        return;
+      }
+      arr.push({ port, label, enabled: true });
+      tnSavePorts(arr);
+      tnPortsAddPort.value = '';
+      tnPortsAddLabel.value = '';
+      tnRenderPortsConfig();
+    };
+  }
+  if (tnPortsResetBtn) {
+    tnPortsResetBtn.onclick = () => {
+      tnSavePorts(TUNNEL_DEFAULT_PORTS.map(p => ({ ...p })));
+      tnRenderPortsConfig();
+      tnLog('port config reset to defaults', 'ok');
+    };
+  }
 
   setInterval(() => { tunnelsBtn.disabled = !emulator; }, 800);
 
