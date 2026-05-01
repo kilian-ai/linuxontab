@@ -137,6 +137,28 @@
   #tunnels-log .tl-ok { color:#4ade80; }
   #tunnels-log .tl-err { color:#f87171; }
   #tunnels-log .tl-info { color:#7a8392; }
+  /* ── profile modal ── */
+  #profile-modal { position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center; }
+  #profile-modal[hidden] { display:none; }
+  #profile-modal .pm-backdrop { position:absolute; inset:0; background:rgba(0,0,0,0.6); }
+  #profile-modal .pm-dialog { position:relative; background:#0b0d10; color:#ddd; border:1px solid #2a2f36; border-radius:8px; box-shadow:0 12px 40px rgba(0,0,0,0.6); width:560px; max-width:92vw; max-height:88vh; display:flex; flex-direction:column; font-size:12px; }
+  #profile-modal .pm-hdr { display:flex; align-items:center; gap:6px; padding:10px 14px; background:#161a1f; border-bottom:1px solid #2a2f36; border-radius:8px 8px 0 0; }
+  #profile-modal .pm-hdr button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
+  #profile-modal .pm-body { padding:14px 16px; overflow:auto; display:flex; flex-direction:column; gap:10px; }
+  #profile-modal .pm-row { display:flex; flex-direction:column; gap:3px; }
+  #profile-modal .pm-row label { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:#7a8392; }
+  #profile-modal .pm-row input, #profile-modal .pm-row textarea { background:#161a1f; color:#ddd; border:1px solid #2a2f36; border-radius:4px; padding:6px 8px; font:inherit; width:100%; box-sizing:border-box; }
+  #profile-modal .pm-row input:focus, #profile-modal .pm-row textarea:focus { outline:none; border-color:#3a424d; background:#1a1f25; }
+  #profile-modal .pm-row textarea { resize:vertical; min-height:54px; font-family:inherit; }
+  #profile-modal .pm-hint { color:#7a8392; font-size:10.5px; }
+  #profile-modal .pm-hint code { background:#161a1f; padding:0 4px; border-radius:3px; }
+  #profile-modal .pm-status { font-size:11px; color:#7a8392; min-height:14px; padding-top:4px; }
+  #profile-modal .pm-actions { display:flex; gap:8px; align-items:center; padding-top:6px; border-top:1px solid #2a2f36; margin-top:4px; }
+  #profile-modal .pm-actions button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:5px 14px; font:inherit; cursor:pointer; }
+  #profile-modal .pm-actions button:hover:not(:disabled) { background:#2d343d; }
+  #profile-modal .pm-actions button:disabled { opacity:0.4; cursor:not-allowed; }
+  #profile-modal .pm-actions button.primary { background:#1d4ed8; border-color:#3b82f6; color:#fff; }
+  #profile-modal .pm-actions button.primary:hover:not(:disabled) { background:#2563eb; }
   /* Always reserve scrollbar space so xterm's fit calculation doesn't
      oscillate by 2 cols when a scrollbar appears/disappears. */
   #term .xterm-viewport { background:#0b0d10 !important; overflow-y: scroll !important; }
@@ -215,6 +237,7 @@
       <div class="fp-section">
         <div class="fp-label">actions (placeholders)</div>
         <div class="row-flex" style="display:flex;gap:6px;flex-wrap:wrap">
+          <button id="follow-action-profile" disabled title="edit your nickname / profile (kind 0 metadata)">profile…</button>
           <button id="follow-action-follow" disabled title="follow an npub (auto-syncs files)">follow user…</button>
           <button id="follow-action-sync" disabled title="re-sync all followed users">sync all</button>
           <button id="follow-action-publish" disabled title="publish your public/ folder">publish</button>
@@ -252,6 +275,66 @@
       <div id="tunnels-list"></div>
       <div id="tunnels-log"></div>
     </div>
+  </div>
+</div>
+
+<!-- ── profile modal (kind 0 / Nostr metadata editor) ─────────────── -->
+<div id="profile-modal" hidden>
+  <div class="pm-backdrop"></div>
+  <div class="pm-dialog" role="dialog" aria-labelledby="pm-title">
+    <div class="pm-hdr">
+      <b id="pm-title">profile (Nostr kind 0)</b>
+      <span class="hint" style="font-size:11px;margin-left:6px">your public nickname &amp; metadata, signed with your nsec</span>
+      <button id="pm-close" type="button" style="margin-left:auto">close</button>
+    </div>
+    <form id="pm-form" class="pm-body">
+      <div class="pm-row">
+        <label for="pm-name">name</label>
+        <input id="pm-name" type="text" placeholder="kilian" maxlength="64" />
+        <span class="pm-hint">handle. lowercase, no spaces.</span>
+      </div>
+      <div class="pm-row">
+        <label for="pm-display">display name</label>
+        <input id="pm-display" type="text" placeholder="Kilian" maxlength="64" />
+        <span class="pm-hint">human-readable. shown by most clients.</span>
+      </div>
+      <div class="pm-row">
+        <label for="pm-about">about</label>
+        <textarea id="pm-about" rows="3" placeholder="bio / one-liner" maxlength="500"></textarea>
+        <span class="pm-hint">short bio (NIP-01).</span>
+      </div>
+      <div class="pm-row">
+        <label for="pm-picture">picture URL</label>
+        <input id="pm-picture" type="url" placeholder="https://…/avatar.png" />
+        <span class="pm-hint">avatar image.</span>
+      </div>
+      <div class="pm-row">
+        <label for="pm-banner">banner URL</label>
+        <input id="pm-banner" type="url" placeholder="https://…/banner.jpg" />
+        <span class="pm-hint">cover image (optional).</span>
+      </div>
+      <div class="pm-row">
+        <label for="pm-nip05">NIP-05</label>
+        <input id="pm-nip05" type="text" placeholder="kilian@linuxontab.com" />
+        <span class="pm-hint">verified handle <code>name@domain</code>. requires a <code>/.well-known/nostr.json</code> on that domain.</span>
+      </div>
+      <div class="pm-row">
+        <label for="pm-lud16">lightning</label>
+        <input id="pm-lud16" type="text" placeholder="kilian@getalby.com" />
+        <span class="pm-hint">LUD-16 lightning address (zaps).</span>
+      </div>
+      <div class="pm-row">
+        <label for="pm-website">website</label>
+        <input id="pm-website" type="url" placeholder="https://…" />
+      </div>
+      <div class="pm-status" id="pm-status">idle</div>
+      <div class="pm-actions">
+        <button id="pm-fetch" type="button" title="fetch latest kind 0 from relays into form">fetch from relays</button>
+        <span style="flex:1"></span>
+        <button id="pm-cancel" type="button">cancel</button>
+        <button id="pm-save" type="submit" class="primary" title="sign with your nsec and broadcast a kind-0 event">save &amp; publish</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -3015,6 +3098,8 @@
         followListBtn.title = 'Show who you currently follow';
         followSearchBtn.disabled = false;
         followSearchBtn.title = 'NIP-50 keyword search across relays';
+        followProfileBtn.disabled = false;
+        followProfileBtn.title = 'Edit your Nostr profile (kind 0 metadata: name, display name, about, picture, NIP-05, lightning, …)';
       } else {
         followNpubEl.innerHTML = '<span class="hint">(could not determine npub — see log)</span>';
         fStatus('failed to obtain npub', 'err');
@@ -3062,6 +3147,7 @@
   const followSyncBtn    = $('follow-action-sync');
   const followListBtn    = $('follow-action-list');
   const followSearchBtn  = $('follow-action-search');
+  const followProfileBtn = $('follow-action-profile');
   let followPublishInFlight = false;
   async function followPublish() {
     if (followPublishInFlight) return;
@@ -3223,6 +3309,157 @@
     // shell-escape: replace single-quotes with '\''
     const safe = q.replace(/'/g, "'\\''");
     followAction('search ' + q, "social search '" + safe + "' 2>&1", 60000);
+  };
+
+  // ── profile modal ────────────────────────────────────────────────────
+  // Edits Nostr kind-0 metadata (name, display_name, about, picture, nip05,
+  // lud16, banner, website). Reads via `social profile show`, fetches from
+  // relays via `social profile get`, writes via `social profile set --json`.
+  const profileModal     = $('profile-modal');
+  const pmCloseBtn       = $('pm-close');
+  const pmCancelBtn      = $('pm-cancel');
+  const pmFetchBtn       = $('pm-fetch');
+  const pmSaveBtn        = $('pm-save');
+  const pmForm           = $('pm-form');
+  const pmStatus         = $('pm-status');
+  const pmName           = $('pm-name');
+  const pmDisplay        = $('pm-display');
+  const pmAbout          = $('pm-about');
+  const pmPicture        = $('pm-picture');
+  const pmBanner         = $('pm-banner');
+  const pmNip05          = $('pm-nip05');
+  const pmLud16          = $('pm-lud16');
+  const pmWebsite        = $('pm-website');
+
+  function pmStatusSet(msg, cls) {
+    pmStatus.textContent = msg;
+    pmStatus.style.color = cls === 'err' ? '#f87171'
+                          : cls === 'ok'  ? '#4ade80'
+                          : '#7a8392';
+  }
+  function pmFillFromJson(jsonStr) {
+    if (!jsonStr) return false;
+    try {
+      const o = JSON.parse(jsonStr);
+      pmName.value    = o.name || '';
+      pmDisplay.value = o.display_name || o.displayName || '';
+      pmAbout.value   = o.about || '';
+      pmPicture.value = o.picture || '';
+      pmBanner.value  = o.banner || '';
+      pmNip05.value   = o.nip05 || '';
+      pmLud16.value   = o.lud16 || o.lud06 || '';
+      pmWebsite.value = o.website || '';
+      return true;
+    } catch (_) { return false; }
+  }
+  function pmFormToJson() {
+    const o = {};
+    const v = (el) => (el.value || '').trim();
+    if (v(pmName))    o.name         = v(pmName);
+    if (v(pmDisplay)) o.display_name = v(pmDisplay);
+    if (v(pmAbout))   o.about        = v(pmAbout);
+    if (v(pmPicture)) o.picture      = v(pmPicture);
+    if (v(pmBanner))  o.banner       = v(pmBanner);
+    if (v(pmNip05))   o.nip05        = v(pmNip05);
+    if (v(pmLud16))   o.lud16        = v(pmLud16);
+    if (v(pmWebsite)) o.website      = v(pmWebsite);
+    return JSON.stringify(o);
+  }
+
+  function pmOpen() { profileModal.hidden = false; setTimeout(() => pmName.focus(), 30); }
+  function pmClose() { profileModal.hidden = true; }
+  pmCloseBtn.onclick  = pmClose;
+  pmCancelBtn.onclick = pmClose;
+  profileModal.querySelector('.pm-backdrop').onclick = pmClose;
+  document.addEventListener('keydown', (ev) => {
+    if (!profileModal.hidden && ev.key === 'Escape') { ev.preventDefault(); pmClose(); }
+  });
+
+  let pmInFlight = false;
+  function pmSetBusy(busy) {
+    pmInFlight = busy;
+    [pmFetchBtn, pmSaveBtn, pmCancelBtn].forEach(b => b.disabled = busy);
+  }
+
+  followProfileBtn.onclick = async () => {
+    pmOpen();
+    pmStatusSet('loading cached profile…');
+    pmSetBusy(true);
+    try {
+      // Best-effort: load cached profile from $SOCIAL_HOME/.profile.json
+      const r = await followRun('social profile show 2>&1', { timeout: 15000 });
+      const out = (r.stdout || '').trim();
+      if (r.exitCode === 0 && out && out.charAt(0) === '{') {
+        if (pmFillFromJson(out)) {
+          pmStatusSet('loaded cached profile', 'ok');
+        } else {
+          pmStatusSet('cached profile not parseable — fields blank');
+        }
+      } else {
+        pmStatusSet('no cached profile yet — fill in fields and save, or fetch from relays');
+      }
+    } catch (e) {
+      pmStatusSet('error loading cached profile: ' + (e && e.message || e), 'err');
+    } finally {
+      pmSetBusy(false);
+    }
+  };
+
+  pmFetchBtn.onclick = async () => {
+    if (pmInFlight) return;
+    pmSetBusy(true);
+    pmStatusSet('fetching latest kind-0 from relays…');
+    try {
+      const r = await followRun('social profile get 2>&1', { timeout: 30000 });
+      const out = (r.stdout || '').trim();
+      // Output may include log lines — find the last `{...}` block.
+      const m = out.match(/\{[\s\S]*\}\s*$/);
+      const json = m ? m[0] : (out.charAt(0) === '{' ? out : '');
+      if (r.exitCode === 0 && json && pmFillFromJson(json)) {
+        pmStatusSet('fetched profile from relays', 'ok');
+      } else {
+        pmStatusSet('no kind-0 metadata found on relays (or fetch failed)', 'err');
+      }
+    } catch (e) {
+      pmStatusSet('fetch error: ' + (e && e.message || e), 'err');
+    } finally {
+      pmSetBusy(false);
+    }
+  };
+
+  pmForm.onsubmit = async (ev) => {
+    ev.preventDefault();
+    if (pmInFlight) return;
+    const json = pmFormToJson();
+    if (json === '{}') {
+      pmStatusSet('all fields empty — nothing to publish', 'err');
+      return;
+    }
+    pmSetBusy(true);
+    pmStatusSet('signing & broadcasting kind-0 event…');
+    try {
+      // POSIX-shell-escape the JSON for single-quoted `--json '...'`.
+      const safe = json.replace(/'/g, "'\\''");
+      const r = await followRun(
+        "social profile set --json '" + safe + "' 2>&1",
+        { timeout: 60000 }
+      );
+      const out = (r.stdout || '');
+      const m = out.match(/profile published as (npub1[0-9a-z]+)\s*\(ok=(\d+)\s+fail=(\d+)\)/i);
+      if (m && parseInt(m[2], 10) > 0) {
+        pmStatusSet('published ✓ (ok=' + m[2] + '/fail=' + m[3] + ')', 'ok');
+        fLog('profile published as ' + m[1], 'ok');
+        setTimeout(pmClose, 900);
+      } else if (r.exitCode === 0) {
+        pmStatusSet('publish completed but no relay confirmations', 'err');
+      } else {
+        pmStatusSet('publish failed (exit ' + r.exitCode + ') — see command log', 'err');
+      }
+    } catch (e) {
+      pmStatusSet('save error: ' + (e && e.message || e), 'err');
+    } finally {
+      pmSetBusy(false);
+    }
   };
 
   setInterval(() => { followBtn.disabled = !emulator; }, 800);

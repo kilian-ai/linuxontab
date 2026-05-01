@@ -20,6 +20,11 @@
 #   social.sh init                  # generate keypair (or import: social.sh init <nsec1...>)
 #   social.sh pubkey                # show your npub
 #   social.sh tunnel-up [ports...]  # start tunnel-up.sh (default: 8080); cache base_url
+#   social.sh profile               # show cached profile (kind 0 metadata)
+#   social.sh profile get [npub]    # fetch latest kind 0 from relays (default: own)
+#   social.sh profile set [--json J | --name X --display-name X --about X
+#                                      --picture URL --nip05 user@host
+#                                      --lud16 user@host --banner URL --website URL]
 #   social.sh publish               # build manifest of SOCIAL_HOME/public, sign, push to relays
 #   social.sh follow <npub> [--no-sync]   # add to follow list, mkdir, immediate sync
 #   social.sh unfollow <npub> [--purge]
@@ -65,6 +70,7 @@ FOLLOW_DIR="$HOME_DIR/following"
 NSEC_FILE="$HOME_DIR/.nsec"
 NPUB_FILE="$HOME_DIR/.npub"
 TUNNEL_FILE="$HOME_DIR/.social.tunnel"
+PROFILE_FILE="$HOME_DIR/.profile.json"
 FOLLOW_LIST="$FOLLOW_DIR/.list"
 
 die() { echo "social: $*" >&2; exit 1; }
@@ -687,11 +693,223 @@ cmd_help() {
     sed -n '2,40p' "$0"
 }
 
+# ─── profile (kind 0 metadata) ────────────────────────────────────────────
+# Nostr "nickname" mechanism. Publishes a replaceable kind-0 event whose
+# `content` is a JSON object with name/display_name/about/picture/nip05/lud16/
+# banner/website fields. Clients render any of these as the user's display
+# identity for a given npub. None are mandatory.
+#
+# Usage:
+#   social profile                       # show cached profile JSON
+#   social profile show                  # same
+#   social profile get [npub]            # fetch latest kind 0 from relays
+#                                        # (defaults to own pubkey; updates cache)
+#   social profile set --json '<json>'   # publish raw JSON content
+#   social profile set [--name X] [--display-name X] [--about X] [--picture URL]
+#                     [--nip05 user@host] [--lud16 user@host]
+#                     [--banner URL] [--website URL]
+
+# JSON-escape a string (basic: backslash, quote, newline, tab, CR).
+json_escape() {
+    printf '%s' "$1" | awk '
+        BEGIN { ORS = "" }
+        {
+            gsub(/\\/, "\\\\")
+            gsub(/"/,  "\\\"")
+            gsub(/\t/, "\\t")
+            gsub(/\r/, "\\r")
+            print
+            getline next_line
+            if (NR > 0) print "\\n"
+        }
+        END { }
+    ' 2>/dev/null || printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# Build a profile JSON object from key=value pairs read on stdin
+# (one "key<TAB>value" per line, value can be empty to omit the field).
+profile_json_from_kv() {
+    awk -F'\t' '
+        BEGIN { ORS = ""; first = 1; print "{" }
+        {
+            k = $1; v = $2
+            if (v == "") next
+            gsub(/\\/, "\\\\", v)
+            gsub(/"/,  "\\\"", v)
+            gsub(/\r/, "",     v)
+            gsub(/\n/, "\\n",  v)
+            if (!first) print ","
+            print "\"" k "\":\"" v "\""
+            first = 0
+        }
+        END { print "}" }
+    '
+}
+
+cmd_profile_show() {
+    if [ -s "$PROFILE_FILE" ]; then
+        cat "$PROFILE_FILE"
+    else
+        echo "(no cached profile — try: social profile get, or social profile set ...)"
+    fi
+}
+
+# Publish raw JSON content as a kind-0 event.
+profile_publish_json() {
+    content="$1"
+    [ -n "$content" ] || die "empty profile content"
+    [ -f "$NSEC_FILE" ] || die "no identity yet — run 'social init'"
+    need websocat
+    nsec=$(cat "$NSEC_FILE")
+    now=$(date +%s)
+    log "signing kind 0 metadata (${#content} bytes)"
+    resp=$(api_call sign_event "$nsec" "0" "$content" "[]" "$now") \
+        || die "sign_event failed"
+    event=$(printf '%s' "$resp" | (command -v jq >/dev/null 2>&1 \
+        && jq -c '.event // .result.event' \
+        || sed -n 's/.*"event":\({.*\}\),"ok":.*/\1/p'))
+    [ -n "$event" ] && [ "$event" != "null" ] || die "sign returned no event: $resp"
+    evid=$(printf '%s' "$event" | (command -v jq >/dev/null 2>&1 \
+        && jq -r '.id' \
+        || sed -n 's/.*"id":"\([0-9a-f]*\)".*/\1/p') | head -1)
+
+    msg='["EVENT",'"$event"']'
+    ok_count=0; fail_count=0
+    for relay in $RELAYS; do
+        out=$( ( printf '%s\n' "$msg"; sleep 3 ) \
+            | websocat --text -E - "$relay" 2>/dev/null | head -5 )
+        if printf '%s' "$out" | grep -q '"OK","'"$evid"'",true'; then
+            log "→ $relay  OK"
+            ok_count=$((ok_count + 1))
+        else
+            reason=$(printf '%s' "$out" | sed -n 's/.*"OK","[0-9a-f]*",false,"\([^"]*\)".*/\1/p' | head -1)
+            log "→ $relay  ${reason:-no-ok-reply}"
+            fail_count=$((fail_count + 1))
+        fi
+    done
+    # Cache locally on at least one ack.
+    if [ "$ok_count" -gt 0 ]; then
+        printf '%s\n' "$content" > "$PROFILE_FILE"
+        npub=$(cmd_pubkey)
+        echo "profile published as $npub  (ok=$ok_count fail=$fail_count)"
+    else
+        echo "profile not accepted by any relay (ok=0 fail=$fail_count)"
+        exit 3
+    fi
+}
+
+cmd_profile_set() {
+    [ -f "$NSEC_FILE" ] || die "no identity yet — run 'social init'"
+    raw_json=""
+    name=""; display_name=""; about=""; picture=""
+    nip05=""; lud16=""; banner=""; website=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --json)         raw_json="${2:-}"; shift 2 ;;
+            --name)         name="${2:-}";         shift 2 ;;
+            --display-name) display_name="${2:-}"; shift 2 ;;
+            --about)        about="${2:-}";        shift 2 ;;
+            --picture)      picture="${2:-}";      shift 2 ;;
+            --nip05)        nip05="${2:-}";        shift 2 ;;
+            --lud16)        lud16="${2:-}";        shift 2 ;;
+            --banner)       banner="${2:-}";       shift 2 ;;
+            --website)      website="${2:-}";      shift 2 ;;
+            *) die "unknown flag: $1 (see: social help)" ;;
+        esac
+    done
+    if [ -n "$raw_json" ]; then
+        content="$raw_json"
+    else
+        # Merge with cached profile so unspecified fields are preserved.
+        cached=""
+        [ -s "$PROFILE_FILE" ] && cached=$(cat "$PROFILE_FILE")
+        get_cached() {
+            [ -z "$cached" ] && return 0
+            command -v jq >/dev/null 2>&1 && \
+                printf '%s' "$cached" | jq -r --arg k "$1" '.[$k] // empty' && return 0
+            printf '%s' "$cached" | sed -n 's/.*"'"$1"'":"\([^"]*\)".*/\1/p'
+        }
+        [ -z "$name"         ] && name=$(get_cached name)
+        [ -z "$display_name" ] && display_name=$(get_cached display_name)
+        [ -z "$about"        ] && about=$(get_cached about)
+        [ -z "$picture"      ] && picture=$(get_cached picture)
+        [ -z "$nip05"        ] && nip05=$(get_cached nip05)
+        [ -z "$lud16"        ] && lud16=$(get_cached lud16)
+        [ -z "$banner"       ] && banner=$(get_cached banner)
+        [ -z "$website"      ] && website=$(get_cached website)
+        content=$(printf '%s\t%s\n' \
+            name "$name" \
+            display_name "$display_name" \
+            about "$about" \
+            picture "$picture" \
+            nip05 "$nip05" \
+            lud16 "$lud16" \
+            banner "$banner" \
+            website "$website" \
+            | profile_json_from_kv)
+    fi
+    profile_publish_json "$content"
+}
+
+cmd_profile_get() {
+    need websocat
+    target_npub="${1:-}"
+    if [ -z "$target_npub" ]; then
+        target_npub=$(cmd_pubkey)
+    fi
+    case "$target_npub" in npub1*) ;; *) die "expected npub1..."; ;; esac
+    resp=$(api_call decode_npub "$target_npub" || true)
+    hex_pk=$(printf '%s' "$resp" | (command -v jq >/dev/null 2>&1 \
+        && jq -r '.hex // .result.hex // empty' \
+        || sed -n 's/.*"hex":"\([0-9a-f]*\)".*/\1/p') | head -1)
+    [ -n "$hex_pk" ] || die "could not decode $target_npub"
+    filter='{"kinds":[0],"authors":["'"$hex_pk"'"],"limit":1}'
+    msg='["REQ","p1",'"$filter"']'
+    found=""
+    for relay in $RELAYS; do
+        out=$( ( printf '%s\n' "$msg"; sleep 3 ) \
+            | websocat --text -E - "$relay" 2>/dev/null | head -5 )
+        ev=$(printf '%s' "$out" | grep '^\["EVENT"' | head -1)
+        [ -z "$ev" ] && continue
+        content=$(printf '%s' "$ev" | (command -v jq >/dev/null 2>&1 \
+            && jq -r '.[2].content' \
+            || sed -n 's/.*"content":"\(.*\)","sig":.*/\1/p' \
+            | sed 's/\\"/"/g; s/\\\\/\\/g'))
+        [ -n "$content" ] || continue
+        log "← $relay  ok"
+        found="$content"
+        break
+    done
+    if [ -z "$found" ]; then
+        echo "(no kind-0 metadata found on relays for $target_npub)"
+        exit 4
+    fi
+    # Cache only if it's our own profile.
+    self_npub=$(cmd_pubkey 2>/dev/null || true)
+    if [ "$target_npub" = "$self_npub" ]; then
+        printf '%s\n' "$found" > "$PROFILE_FILE"
+        log "cached own profile to $PROFILE_FILE"
+    fi
+    echo "$found"
+}
+
+cmd_profile() {
+    sub="${1:-show}"
+    [ $# -gt 0 ] && shift || true
+    case "$sub" in
+        ''|show)        cmd_profile_show ;;
+        get|fetch)      cmd_profile_get "$@" ;;
+        set|update|put) cmd_profile_set "$@" ;;
+        *) die "unknown profile subcommand: $sub (show|get|set)" ;;
+    esac
+}
+
 case "${1:-help}" in
     init)        shift; cmd_init "$@";;
     pubkey)      shift; cmd_pubkey;;
     tunnel-up)   shift; cmd_tunnel_up "$@";;
     publish)     shift; cmd_publish;;
+    profile)     shift; cmd_profile "$@";;
     follow)      shift; cmd_follow "$@";;
     unfollow)    shift; cmd_unfollow "$@";;
     list|ls)     shift; cmd_list;;
