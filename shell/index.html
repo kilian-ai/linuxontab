@@ -1588,7 +1588,36 @@
         // TERM=vt100, which lacks altscreen and breaks fzf/openclaw/etc).
         // ----------------------------------------------------------------
         'cat > /etc/node-rlfix.cjs <<\\__NODE_RLFIX_EOF__\n' +
-        '// LinuxOnTab readline fix — see /etc/profile.d/03nodefix.sh\n' +
+        '// LinuxOnTab Node TUI fix — see /etc/profile.d/03nodefix.sh\n' +
+        '// 1) Force process.stdout.{columns,rows} to non-zero. v86 serial\n' +
+        '//    can briefly report rows=0 between snapshot restore and the\n' +
+        '//    first xterm onResize stty push; clack/ink/listr2 then divide\n' +
+        '//    by zero and render NaN/Infinity (blank screen, no echo).\n' +
+        '//    We override the getters at the prototype level so every\n' +
+        '//    tty.WriteStream — including the wrapped streams clack hands\n' +
+        '//    to readline — sees sane numbers.\n' +
+        'try {\n' +
+        '  const tty = require("tty");\n' +
+        '  for (const key of ["columns", "rows"]) {\n' +
+        '    const proto = tty.WriteStream && tty.WriteStream.prototype;\n' +
+        '    if (!proto) break;\n' +
+        '    const orig = Object.getOwnPropertyDescriptor(proto, key);\n' +
+        '    Object.defineProperty(proto, key, {\n' +
+        '      configurable: true,\n' +
+        '      get() {\n' +
+        '        let v = orig && orig.get ? orig.get.call(this) : this["_" + key];\n' +
+        '        if (!v || !Number.isFinite(v)) {\n' +
+        '          if (key === "columns") v = parseInt(process.env.COLUMNS, 10) || 120;\n' +
+        '          else                    v = parseInt(process.env.LINES,   10) || 40;\n' +
+        '        }\n' +
+        '        return v;\n' +
+        '      },\n' +
+        '    });\n' +
+        '  }\n' +
+        '} catch (_) {}\n' +
+        '// 2) Override readline.Interface.columns the same way (clack passes\n' +
+        '//    a non-TTY wrapped output, so the prototype patch above does\n' +
+        '//    not reach it).\n' +
         'try {\n' +
         '  const rl = require("readline");\n' +
         '  const orig = rl.createInterface;\n' +
