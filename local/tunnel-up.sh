@@ -335,6 +335,17 @@ echo "[tunnel] pairing code: $CODE"
 echo "[tunnel] relay: $TUNNEL_BASE"
 echo ""
 
+# Publish state files NOW (not after the slow port-bringup loop) so any
+# UI polling for /tmp/tunnel.code (e.g. the LinuxOnTab side panel)
+# reflects the live code within ~1s of registration. Previously these
+# were written at the very end of the script, so a cold guest that had
+# to apk-install openssh/httpd/vsftpd looked like "(no pairing code)"
+# for 30-60s even though the relay was already paired.
+printf '%s\n' "$CODE" > "$TUNNEL_CODE_FILE"
+printf '%s\n' "$PORTS" > /tmp/tunnel.ports
+printf '%s\n' "$0 $*" > /tmp/tunnel.cmd
+export TUNNEL_CODE="$CODE"
+
 # Auto-start sshd if port 22 requested and no listener
 auto_start_sshd() {
     if ! command -v sshd >/dev/null 2>&1; then
@@ -687,9 +698,9 @@ echo "────────────────────────�
 echo ""
 echo "[tunnel] Bridges running. Press Ctrl-C to teardown."
 
-# Save code for scripts that need it
-printf '%s\n' "$CODE" > "$TUNNEL_CODE_FILE"
-export TUNNEL_CODE="$CODE"
+# (state files /tmp/tunnel.code, /tmp/tunnel.ports, /tmp/tunnel.cmd were
+# published right after registration — see above — so the UI doesn't
+# wait for the slow port-bringup loop to finish.)
 
 # Wait for interrupt, then unregister
 trap '
@@ -705,7 +716,7 @@ trap '
     curl -sS -X POST "$TUNNEL_BASE/port/unregister" \
         -H "Content-Type: application/json" \
         -d "{\"code\":\"$CODE\"}" > /dev/null
-    rm -f "$TUNNEL_CODE_FILE" "$TUNNEL_PID_FILE"
+    rm -f "$TUNNEL_CODE_FILE" "$TUNNEL_PID_FILE" /tmp/tunnel.ports /tmp/tunnel.cmd
     echo "[tunnel] done."
     exit 0
 ' INT TERM
