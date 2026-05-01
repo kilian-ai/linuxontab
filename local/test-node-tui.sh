@@ -36,10 +36,25 @@ info "NODE_OPTIONS=$NODE_OPTIONS"
 info "TERM=$TERM  COLUMNS=$COLUMNS  LINES=$LINES"
 
 # -------- Test 1: basic stdout.columns/rows --------
-info "test 1: process.stdout.columns / rows must be finite & nonzero"
-out=$(node -e 'console.log(JSON.stringify({c:process.stdout.columns,r:process.stdout.rows}))') \
-  || fail "node crashed on startup (rlfix probably has a getter without a setter)"
+# IMPORTANT: we must NOT capture stdout (e.g. `out=$(node …)`) because
+# that makes stdout a pipe, not a TTY — `process.stdout` then isn't a
+# tty.WriteStream at all and `.columns`/`.rows` are undefined regardless
+# of any rlfix. We dump the JSON to a file so node's stdout stays the
+# real terminal.
+info "test 1: process.stdout.columns / rows must be finite & nonzero (TTY mode)"
+node -e '
+  const fs = require("fs");
+  fs.writeFileSync("/tmp/rlfix-test1.json", JSON.stringify({
+    c: process.stdout.columns,
+    r: process.stdout.rows,
+    isTTY: process.stdout.isTTY === true,
+    ctor: process.stdout.constructor && process.stdout.constructor.name,
+  }));
+' || fail "node crashed on startup (rlfix probably has a getter without a setter)"
+out=$(cat /tmp/rlfix-test1.json)
 echo "  → $out"
+echo "$out" | grep -q '"isTTY":true' || \
+  fail "stdout is not a TTY in this shell — run the test directly in the v86 console, not through ssh/scp/non-interactive"
 echo "$out" | grep -q '"c":[1-9]' || fail "stdout.columns is 0 or missing"
 echo "$out" | grep -q '"r":[1-9]' || fail "stdout.rows is 0 or missing"
 ok "stdout has nonzero dimensions"
