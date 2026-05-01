@@ -92,8 +92,8 @@ TOOL_OUTPUT_LIMIT=8192
 # (or pass --confirm) to be prompted before each command.
 CLAW_YOLO=1
 # Rolling memory windows (number of entries kept verbatim):
-USER_WINDOW=20
-ASSIST_WINDOW=20
+USER_WINDOW=2000
+ASSIST_WINDOW=2000
 # Set JOURNAL=1 (or pass --journal) to inject the per-session journal
 # (compacted AI responses) into the system prompt.
 JOURNAL=0
@@ -123,10 +123,10 @@ fi
 : "${TOOL_MAX_ITERS:=5}"
 : "${TOOL_OUTPUT_LIMIT:=8192}"
 : "${CLAW_YOLO:=1}"
-: "${USER_WINDOW:=20}"
-: "${ASSIST_WINDOW:=20}"
+: "${USER_WINDOW:=2000}"
+: "${ASSIST_WINDOW:=2000}"
 : "${JOURNAL:=0}"
-: "${MARKDOWN:=auto}"
+: "${MARKDOWN:=off}"
 
 SESSION="default"
 EXTRA_INST=""
