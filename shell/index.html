@@ -279,25 +279,32 @@
   ro.observe(termEl);
   window.addEventListener('resize', () => { try { fit.fit(); } catch (_) {} });
 
-  // When fit changes size, push *cols only* to the guest (serial has no WINCH).
-  // We deliberately don't push rows: every stty line consumes a row of scrollback,
-  // which can itself change xterm's row count → feedback loop. Cols is what
-  // matters for line wrapping in shells/ls/pipes; full-screen TUIs (vi/less/top)
-  // can set rows manually or ignore it.
-  // Deferred until `shellReady` — otherwise xterm's initial resize fires at the
-  // ISOLINUX `boot:` prompt and `stty` gets typed there, producing a visible
-  // "Loading stty... failed" error before Linux starts.
-  let sttyTimer = null, lastCols = 0, sentCols = 0, shellReady = false;
+  // When fit changes size, push cols+rows to the guest (serial has no WINCH).
+  // Pushing rows is necessary for Node CLIs (readline, @clack/prompts, ink,
+  // etc.) — they read process.stdout.rows from termios and crash with
+  // ERR_INVALID_ARG_VALUE: NaN when it's 0. We also export COLUMNS/LINES so
+  // Node tools that bypass termios (and any non-TTY child processes) still
+  // see a sane size. The earlier worry about "stty consuming a scrollback
+  // row" is not a real feedback loop: xterm's row count is driven by the
+  // container's pixel height, not by lines emitted into it.
+  // Deferred until `shellReady` — otherwise xterm's initial resize fires at
+  // the ISOLINUX `boot:` prompt and `stty` gets typed there, producing a
+  // visible "Loading stty... failed" error before Linux starts.
+  let sttyTimer = null, lastCols = 0, lastRows = 0, sentCols = 0, sentRows = 0, shellReady = false;
   const pendingGuestCommands = [];
   let flushingGuestCommands = false;
-  term.onResize(({ cols }) => {
+  term.onResize(({ cols, rows }) => {
     lastCols = cols;
+    lastRows = rows;
     clearTimeout(sttyTimer);
     sttyTimer = setTimeout(() => {
       if (!emulator || !shellReady) return;
-      if (lastCols === sentCols) return;
+      if (lastCols === sentCols && lastRows === sentRows) return;
       sentCols = lastCols;
-      const cmd = `stty cols ${lastCols} 2>/dev/null\n`;
+      sentRows = lastRows;
+      const cmd =
+        `stty cols ${lastCols} rows ${lastRows} 2>/dev/null; ` +
+        `export COLUMNS=${lastCols} LINES=${lastRows}\n`;
       for (let i = 0; i < cmd.length; i++) emulator.serial0_send(cmd[i]);
     }, 600);
   });
@@ -1925,10 +1932,16 @@
       queuedPasswordSent = false;
       serialVfs.setReady(true);
       flushPendingGuestCommands();
-      // Prime stty with current cols now that we know we're at a shell.
+      // Prime stty with current cols+rows now that we know we're at a shell.
+      // Without rows, Node CLIs (readline / @clack/prompts) crash with
+      // ERR_INVALID_ARG_VALUE: NaN — see comment on term.onResize.
       if (lastCols && emulator) {
         sentCols = lastCols;
-        const cmd = `stty cols ${lastCols} 2>/dev/null\n`;
+        sentRows = lastRows;
+        const c = lastCols, r = lastRows || 24;
+        const cmd =
+          `stty cols ${c} rows ${r} 2>/dev/null; ` +
+          `export COLUMNS=${c} LINES=${r}\n`;
         setTimeout(() => sendGuestText(cmd), 300);
       }
     }
