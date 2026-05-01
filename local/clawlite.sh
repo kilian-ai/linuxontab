@@ -14,6 +14,7 @@
 #                                 the system prompt (off by default)
 #   claw --user-window N          keep last N user prompts in memory
 #   claw --assist-window N        keep last N assistant replies in memory
+#   claw --md / --no-md           force on/off markdown rendering of reply
 #   claw --no-memory              don't persist this turn
 #   claw --no-instructions        skip system prompt entirely
 #   claw --no-tools               disable shell tool calling
@@ -32,6 +33,7 @@
 #   /model <name>                 switch model (this run only)
 #   /provider openai|anthropic    switch provider (this run only)
 #   /journal on|off|show          toggle/show per-session journal injection
+#   /md on|off|auto               toggle markdown rendering of replies
 #   /tools on|off                 toggle shell tool calling
 #   /yolo on|off                  toggle confirm prompt for shell tools
 #   /inst add <file>              add instruction file (this run only)
@@ -124,6 +126,7 @@ fi
 : "${USER_WINDOW:=20}"
 : "${ASSIST_WINDOW:=20}"
 : "${JOURNAL:=0}"
+: "${MARKDOWN:=auto}"
 
 SESSION="default"
 EXTRA_INST=""
@@ -148,6 +151,8 @@ while [ $# -gt 0 ]; do
     --reset) RESET=1; shift ;;
     --journal) JOURNAL=1; shift ;;
     --no-journal) JOURNAL=0; shift ;;
+    --md) MARKDOWN=on; shift ;;
+    --no-md) MARKDOWN=off; shift ;;
     --user-window) USER_WINDOW="$2"; shift 2 ;;
     --assist-window) ASSIST_WINDOW="$2"; shift 2 ;;
     --where) printf 'CFG_DIR=%s\nDATA_DIR=%s\n' "$CFG_DIR" "$DATA_DIR"; exit 0 ;;
@@ -220,6 +225,113 @@ Rules:
 - Prefer non-interactive, idempotent commands. Avoid destructive operations
   unless the user explicitly asked for them.
 EOF
+}
+
+# ----------------------------------------------------------------------
+# Markdown rendering for assistant replies
+# ----------------------------------------------------------------------
+has_markdown() {
+  # Quick heuristic: look for any common markdown construct.
+  grep -qE '^(#{1,6} |[-*+] |[0-9]+\. |```|>)|`[^`]+`|\*\*[^*]+\*\*|\[[^]]+\]\([^)]+\)' "$1"
+}
+
+render_markdown() {
+  if command -v glow >/dev/null 2>&1; then
+    glow -s dark "$1" 2>/dev/null && return 0
+  fi
+  if command -v mdcat >/dev/null 2>&1; then
+    mdcat "$1" 2>/dev/null && return 0
+  fi
+  if command -v bat >/dev/null 2>&1; then
+    bat -pp -l md --color=always "$1" 2>/dev/null && return 0
+  fi
+  md_awk_render "$1"
+}
+
+# Tiny built-in markdown -> ANSI renderer. Handles:
+# headings, fenced code, bullets, **bold**, *italic*, `inline code`,
+# [text](url) → text (url, dim).
+md_awk_render() {
+  awk '
+    BEGIN {
+      B="\033[1m"; D="\033[2m"; R="\033[0m"
+      I="\033[3m"; UND="\033[4m"
+      C1="\033[36m"; C2="\033[33m"; H="\033[1;35m"
+      in_code=0
+    }
+    function inline(s,    out, pre, mid, post, sm, inner, ti, text, url) {
+      out = s
+      while (match(out, /`[^`]+`/)) {
+        pre = substr(out, 1, RSTART-1)
+        mid = substr(out, RSTART+1, RLENGTH-2)
+        post = substr(out, RSTART+RLENGTH)
+        out = pre C1 mid R post
+      }
+      while (match(out, /\*\*[^*]+\*\*/)) {
+        pre = substr(out, 1, RSTART-1)
+        mid = substr(out, RSTART+2, RLENGTH-4)
+        post = substr(out, RSTART+RLENGTH)
+        out = pre B mid R post
+      }
+      while (match(out, /(^|[^*])\*[^*]+\*/)) {
+        sm = substr(out, RSTART, RLENGTH)
+        if (substr(sm,1,1) == "*") {
+          pre = substr(out, 1, RSTART-1)
+          inner = substr(sm, 2, length(sm)-2)
+          post = substr(out, RSTART+RLENGTH)
+        } else {
+          pre = substr(out, 1, RSTART-1) substr(sm, 1, 1)
+          inner = substr(sm, 3, length(sm)-3)
+          post = substr(out, RSTART+RLENGTH)
+        }
+        out = pre I inner R post
+      }
+      while (match(out, /\[[^]]+\]\([^)]+\)/)) {
+        sm = substr(out, RSTART, RLENGTH)
+        ti = index(sm, "]")
+        text = substr(sm, 2, ti-2)
+        url  = substr(sm, ti+2, length(sm)-ti-2)
+        pre  = substr(out, 1, RSTART-1)
+        post = substr(out, RSTART+RLENGTH)
+        out  = pre UND text R " " D "(" url ")" R post
+      }
+      return out
+    }
+    /^```/ {
+      in_code = !in_code
+      print D "----" R
+      next
+    }
+    in_code { print C2 $0 R; next }
+    /^#{1,6} / {
+      sub(/^#+ +/, "", $0)
+      print ""; print H $0 R; next
+    }
+    /^[ \t]*[-*+] / {
+      gsub(/^[ \t]*[-*+] /, "  - ", $0)
+      print inline($0); next
+    }
+    /^[ \t]*[0-9]+\. / { print inline($0); next }
+    /^> / {
+      sub(/^> /, "", $0)
+      print D "| " R inline($0); next
+    }
+    { print inline($0) }
+  ' "$1"
+}
+
+# Render the buffered assistant reply if appropriate.
+maybe_render() {
+  src="$1"
+  [ "$MARKDOWN" = off ] && return 0
+  [ -t 1 ] || return 0
+  [ -s "$src" ] || return 0
+  # Skip rendering when the model is in tool-use turn (would mangle <shell>).
+  grep -q '<shell>' "$src" && return 0
+  if [ "$MARKDOWN" = on ] || has_markdown "$src"; then
+    printf '\n\033[2m--- rendered ---\033[0m\n'
+    render_markdown "$src"
+  fi
 }
 
 build_system_prompt() {
@@ -427,6 +539,7 @@ send_openai() {
       sed 's/^/  /' "$raw_acc" >&2
     fi
   fi
+  maybe_render "$reply_file"
   reply="$(cat "$reply_file")"
   rm -f "$reply_file" "${reply_file}.saw" "$body" "$raw_acc"
   if [ -n "$reply" ]; then
@@ -496,6 +609,7 @@ send_anthropic() {
       sed 's/^/  /' "$raw_acc" >&2
     fi
   fi
+  maybe_render "$reply_file"
   reply="$(cat "$reply_file")"
   rm -f "$reply_file" "${reply_file}.saw" "$body" "$raw_acc"
   if [ -n "$reply" ]; then
@@ -678,6 +792,16 @@ handle_slash() {
       esac
       ;;
     /journal) echo "journal: $([ "$JOURNAL" = 1 ] && echo on || echo off)  file: $JOURNAL_FILE" ;;
+    "/md "*)
+      n="${cmd#/md }"
+      case "$n" in
+        on|1|true)   MARKDOWN=on; echo "(markdown: on)" ;;
+        off|0|false) MARKDOWN=off; echo "(markdown: off)" ;;
+        auto)        MARKDOWN=auto; echo "(markdown: auto)" ;;
+        *) echo "(usage: /md on|off|auto)" ;;
+      esac
+      ;;
+    /md) echo "markdown: $MARKDOWN" ;;
     "/model "*)
       n="${cmd#/model }"
       if [ "$PROVIDER" = anthropic ]; then MODEL_ANTHROPIC="$n"; else MODEL_OPENAI="$n"; fi
