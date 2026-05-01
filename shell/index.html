@@ -1602,15 +1602,23 @@
         '    const proto = tty.WriteStream && tty.WriteStream.prototype;\n' +
         '    if (!proto) break;\n' +
         '    const orig = Object.getOwnPropertyDescriptor(proto, key);\n' +
+        '    const stash = "__rlfix_" + key;\n' +
         '    Object.defineProperty(proto, key, {\n' +
         '      configurable: true,\n' +
         '      get() {\n' +
-        '        let v = orig && orig.get ? orig.get.call(this) : this["_" + key];\n' +
+        '        let v = this[stash];\n' +
+        '        if (v == null && orig && orig.get) {\n' +
+        '          try { v = orig.get.call(this); } catch (_) {}\n' +
+        '        }\n' +
         '        if (!v || !Number.isFinite(v)) {\n' +
         '          if (key === "columns") v = parseInt(process.env.COLUMNS, 10) || 120;\n' +
         '          else                    v = parseInt(process.env.LINES,   10) || 40;\n' +
         '        }\n' +
         '        return v;\n' +
+        '      },\n' +
+        '      set(v) {\n' +
+        '        if (orig && orig.set) { try { orig.set.call(this, v); return; } catch (_) {} }\n' +
+        '        this[stash] = v;\n' +
         '      },\n' +
         '    });\n' +
         '  }\n' +
