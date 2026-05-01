@@ -1575,7 +1575,47 @@
         '  return 1\n' +
         '}\n' +
         '__SYNC9P_EOF__\n' +
-        '. /etc/profile.d/02sync9p.sh 2>/dev/null || true\n';
+        '. /etc/profile.d/02sync9p.sh 2>/dev/null || true\n' +
+        // ----------------------------------------------------------------
+        // Node TUI workarounds. Several common Node CLIs (anything using
+        // @clack/prompts, ink, listr2, …) crash with
+        //   TypeError [ERR_INVALID_ARG_VALUE]: Received NaN
+        // because clack passes a non-TTY writable wrapper as readline's
+        // `output`, which leaves `rl.columns === 0`, and `_refreshLine`
+        // computes `pos % 0 → NaN`. The fix is to override `.columns` on
+        // every readline.Interface to fall back to process.stdout.columns.
+        // We also export TERM=xterm-256color (default Alpine getty leaves
+        // TERM=vt100, which lacks altscreen and breaks fzf/openclaw/etc).
+        // ----------------------------------------------------------------
+        'cat > /etc/node-rlfix.cjs <<\\__NODE_RLFIX_EOF__\n' +
+        '// LinuxOnTab readline fix — see /etc/profile.d/03nodefix.sh\n' +
+        'try {\n' +
+        '  const rl = require("readline");\n' +
+        '  const orig = rl.createInterface;\n' +
+        '  rl.createInterface = function(...args) {\n' +
+        '    const i = orig.apply(this, args);\n' +
+        '    try {\n' +
+        '      Object.defineProperty(i, "columns", {\n' +
+        '        configurable: true,\n' +
+        '        get() { return process.stdout.columns || 120; },\n' +
+        '      });\n' +
+        '    } catch (_) {}\n' +
+        '    return i;\n' +
+        '  };\n' +
+        '} catch (_) {}\n' +
+        '__NODE_RLFIX_EOF__\n' +
+        'cat > /etc/profile.d/03nodefix.sh <<\\__NODE_FIX_EOF__\n' +
+        '# Default TERM=vt100 from getty breaks altscreen apps. Upgrade.\n' +
+        'case "$TERM" in vt100|""|dumb) export TERM=xterm-256color ;; esac\n' +
+        '# Inject readline-columns fix for every Node process started from a shell.\n' +
+        'if [ -f /etc/node-rlfix.cjs ]; then\n' +
+        '  case " ${NODE_OPTIONS:-} " in\n' +
+        '    *" --require=/etc/node-rlfix.cjs "*) ;;\n' +
+        '    *) export NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--require=/etc/node-rlfix.cjs" ;;\n' +
+        '  esac\n' +
+        'fi\n' +
+        '__NODE_FIX_EOF__\n' +
+        '. /etc/profile.d/03nodefix.sh 2>/dev/null || true\n';
 
       // /mnt/host (9P share) is the canonical SOCIAL_HOME. Ensure the
       // expected subdirs exist with permissive modes so social.sh + the
