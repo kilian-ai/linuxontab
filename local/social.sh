@@ -1,13 +1,17 @@
 #!/bin/sh
 # social.sh — Nostr-backed public folder follow/sync for v86 Alpine guests.
 #
-# Lays out the canonical guest convention:
-#   /mnt/host/public/                     ← what YOU publish
-#   /mnt/host/.nsec                       ← your private key (hex)
-#   /mnt/host/.npub                       ← cached bech32 pubkey
-#   /mnt/host/.social.tunnel              ← cached base URL for serving public/
-#   /mnt/host/following/.list             ← npubs you follow (one per line)
-#   /mnt/host/following/<npub>/           ← mirrored content from each followed user
+# Lays out the canonical guest convention (default root: /root):
+#   /root/public/                         ← what YOU publish
+#   /root/.nsec                           ← your private key (hex)
+#   /root/.npub                           ← cached bech32 pubkey
+#   /root/.social.tunnel                  ← cached base URL for serving public/
+#   /root/following/.list                 ← npubs you follow (one per line)
+#   /root/following/<npub>/               ← mirrored content from each followed user
+#
+# (Legacy: earlier versions used /mnt/host via 9P. The viewer now reads
+#  through the tunnel CDN, so the 9P bind-mount is no longer required.
+#  /mnt/host is still honored as a fallback if it exists and is writable.)
 #
 # Crypto goes through traits-build.fly.dev REST (social.nostr trait).
 # Relay I/O via websocat. File mirror via wget.
@@ -27,7 +31,7 @@
 # Config (env overrides):
 #   SOCIAL_API     default: https://traits-build.fly.dev/traits/social/nostr
 #   SOCIAL_RELAYS  default: wss://relay.damus.io wss://nos.lol wss://relay.nostr.band
-#   SOCIAL_HOME    default: auto (/mnt/host → current working directory)
+#   SOCIAL_HOME    default: auto (/root → /mnt/host legacy → current working directory)
 
 set -eu
 
@@ -39,7 +43,10 @@ API_CANDIDATES="${SOCIAL_API_CANDIDATES:-$API https://traits-build.fly.dev/trait
 RELAYS="${SOCIAL_RELAYS:-wss://relay.damus.io wss://nos.lol wss://relay.nostr.band}"
 
 auto_home_dir() {
-    for d in /mnt/host; do
+    # Prefer /root (real ext4/tmpfs in the v86 guest, always writable as
+    # the user we run as). Fall back to /mnt/host for guests that still
+    # have a 9P bind-mount populated by an older social.sh, then $PWD.
+    for d in /root /mnt/host; do
         if [ -d "$d" ] || mkdir -p "$d" 2>/dev/null; then
             t="$d/.social.home.probe.$$"
             if (: > "$t") 2>/dev/null; then
@@ -109,7 +116,7 @@ Try ONE of:
   1) Restart the v86 guest after deleting the bad dir on the host:
        rm -rf '$d' on host, then restart.
   2) Set SOCIAL_HOME to a path inside the guest that is writable
-     (e.g. /root/social) and bind-mount or rsync to /mnt/host later:
+     (e.g. /root) — the LinuxOnTab default since /mnt/host is deprecated:
        export SOCIAL_HOME=/root/social
        social init
 EOF
@@ -373,13 +380,13 @@ cmd_tunnel_up() {
 }
 
 # Pick a non-empty public dir. Prefer $PUBLIC_DIR; otherwise scan canonical
-# roots (/mnt/host, $HOME, $PWD) for a public/ that actually has files.
+# roots (/root, /mnt/host legacy, $HOME, $PWD) for a public/ that actually has files.
 # Sets the global PUBLIC_DIR if it found a better candidate.
 resolve_public_dir() {
     if [ -d "$PUBLIC_DIR" ] && [ -n "$(find "$PUBLIC_DIR" -type f 2>/dev/null | head -1)" ]; then
         return 0
     fi
-    for cand in /mnt/host/public "$HOME/public" "$PWD/public"; do
+    for cand in /root/public /mnt/host/public "$HOME/public" "$PWD/public"; do
         [ "$cand" = "$PUBLIC_DIR" ] && continue
         if [ -d "$cand" ] && [ -n "$(find "$cand" -type f 2>/dev/null | head -1)" ]; then
             log "using non-empty public dir: $cand (was: $PUBLIC_DIR)"
@@ -460,7 +467,7 @@ social: no files to publish under $PUBLIC_DIR
 
 Drop something into one of these and re-run:
   $PUBLIC_DIR/
-  /mnt/host/public/
+  /root/public/
 Or override:  SOCIAL_HOME=/some/path social publish
 EOF
         exit 2
