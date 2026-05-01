@@ -26,36 +26,43 @@
 // during init, so we MUST provide a setter — a getter-only override
 // crashes every node invocation with
 //   "Cannot set property columns of #<WriteStream> which has only a getter".
+function __rlfix_install(target) {
+  if (!target) return;
+  for (const key of ["columns", "rows"]) {
+    const stash = "__rlfix_" + key;
+    // Capture whatever value the descriptor currently exposes (own or proto).
+    let initial;
+    try { initial = target[key]; } catch (_) {}
+    const fallback = () =>
+      key === "columns"
+        ? parseInt(process.env.COLUMNS, 10) || 120
+        : parseInt(process.env.LINES, 10) || 40;
+    if (initial && Number.isFinite(initial)) target[stash] = initial;
+    try {
+      Object.defineProperty(target, key, {
+        configurable: true,
+        enumerable: true,
+        get() {
+          const v = this[stash];
+          return v && Number.isFinite(v) ? v : fallback();
+        },
+        set(v) { this[stash] = v; },
+      });
+    } catch (_) {}
+  }
+}
+
 try {
+  // Patch the prototype too, in case anything reads via Object.create or a
+  // freshly minted WriteStream that hasn't been touched yet.
   const tty = require("tty");
   const proto = tty.WriteStream && tty.WriteStream.prototype;
-  if (proto) {
-    for (const key of ["columns", "rows"]) {
-      const orig = Object.getOwnPropertyDescriptor(proto, key);
-      const stash = "__rlfix_" + key;
-      const fallback = () =>
-        key === "columns"
-          ? parseInt(process.env.COLUMNS, 10) || 120
-          : parseInt(process.env.LINES, 10) || 40;
-      Object.defineProperty(proto, key, {
-        configurable: true,
-        get() {
-          let v = this[stash];
-          if (v == null && orig && orig.get) {
-            try { v = orig.get.call(this); } catch (_) {}
-          }
-          if (!v || !Number.isFinite(v)) v = fallback();
-          return v;
-        },
-        set(v) {
-          if (orig && orig.set) {
-            try { orig.set.call(this, v); return; } catch (_) {}
-          }
-          this[stash] = v;
-        },
-      });
-    }
-  }
+  if (proto) __rlfix_install(proto);
+  // Patch the live stdout/stderr instances — Node sets `columns`/`rows` as
+  // own data properties via `_refreshSize`, which shadows any prototype
+  // accessor. We need to replace those own descriptors with our own.
+  __rlfix_install(process.stdout);
+  __rlfix_install(process.stderr);
 } catch (_) {}
 
 try {
