@@ -367,11 +367,11 @@ trim_cmd() {
 }
 
 run_tool_loop() {
-  reply_file="$1"
+  rf="$1"
   iter=0
   while [ "$iter" -lt "$TOOL_MAX_ITERS" ]; do
     workdir="$(mktemp -d)"
-    n=$(extract_shell_blocks "$reply_file" "$workdir")
+    n=$(extract_shell_blocks "$rf" "$workdir")
     if [ "${n:-0}" -eq 0 ]; then
       rm -rf "$workdir"
       return 0
@@ -432,9 +432,10 @@ run_tool_loop() {
     fi
     follow_up="$(cat "$results_file")"
     rm -f "$results_file"
-    REPLY_OUT="$reply_file"
-    : > "$reply_file"
+    REPLY_OUT="$rf"
+    : > "$rf"
     send_provider "$follow_up" || return 1
+    REPLY_OUT=""
   done
   echo "\n[claw] tool loop hit max iterations ($TOOL_MAX_ITERS)" >&2
   return 0
@@ -442,13 +443,13 @@ run_tool_loop() {
 
 send() {
   if [ "$TOOLS" = 1 ]; then
-    reply_file="$(mktemp)"
-    REPLY_OUT="$reply_file"
-    send_provider "$1" || { rm -f "$reply_file"; REPLY_OUT=""; return 1; }
+    out_path="$(mktemp)"
+    REPLY_OUT="$out_path"
+    send_provider "$1" || { rm -f "$out_path"; REPLY_OUT=""; return 1; }
     REPLY_OUT=""
-    run_tool_loop "$reply_file"
+    run_tool_loop "$out_path"
     rc=$?
-    rm -f "$reply_file"
+    rm -f "$out_path"
     return $rc
   else
     send_provider "$1"
