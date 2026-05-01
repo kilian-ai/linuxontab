@@ -1589,43 +1589,43 @@
         // ----------------------------------------------------------------
         'cat > /etc/node-rlfix.cjs <<\\__NODE_RLFIX_EOF__\n' +
         '// LinuxOnTab Node TUI fix — see /etc/profile.d/03nodefix.sh\n' +
-        '// 1) Force process.stdout.{columns,rows} to non-zero. v86 serial\n' +
-        '//    can briefly report rows=0 between snapshot restore and the\n' +
-        '//    first xterm onResize stty push; clack/ink/listr2 then divide\n' +
-        '//    by zero and render NaN/Infinity (blank screen, no echo).\n' +
-        '//    We override the getters at the prototype level so every\n' +
-        '//    tty.WriteStream — including the wrapped streams clack hands\n' +
-        '//    to readline — sees sane numbers.\n' +
+        '// 1) Force {columns,rows} to non-zero on the live process.stdout +\n' +
+        '//    process.stderr instances AND tty.WriteStream.prototype. The\n' +
+        '//    prototype patch alone is not enough: Node sets columns/rows\n' +
+        '//    as own data properties via _refreshSize at startup, which\n' +
+        '//    shadows any prototype accessor. v86 serial reports rows=0\n' +
+        '//    until the xterm onResize stty push lands, so clack-core does\n' +
+        '//    i = max(0, numLinesAfter - 0) = numLinesAfter and bails out\n' +
+        '//    of its frame diff after only writing restoreCursor — keys are\n' +
+        '//    captured but no echo until Enter.\n' +
+        'function __rlfix_install(target) {\n' +
+        '  if (!target) return;\n' +
+        '  for (const key of ["columns", "rows"]) {\n' +
+        '    const stash = "__rlfix_" + key;\n' +
+        '    let initial;\n' +
+        '    try { initial = target[key]; } catch (_) {}\n' +
+        '    const fallback = () => key === "columns"\n' +
+        '      ? parseInt(process.env.COLUMNS, 10) || 120\n' +
+        '      : parseInt(process.env.LINES,   10) || 40;\n' +
+        '    if (initial && Number.isFinite(initial)) target[stash] = initial;\n' +
+        '    try {\n' +
+        '      Object.defineProperty(target, key, {\n' +
+        '        configurable: true,\n' +
+        '        enumerable: true,\n' +
+        '        get() { const v = this[stash]; return v && Number.isFinite(v) ? v : fallback(); },\n' +
+        '        set(v) { this[stash] = v; },\n' +
+        '      });\n' +
+        '    } catch (_) {}\n' +
+        '  }\n' +
+        '}\n' +
         'try {\n' +
         '  const tty = require("tty");\n' +
-        '  for (const key of ["columns", "rows"]) {\n' +
-        '    const proto = tty.WriteStream && tty.WriteStream.prototype;\n' +
-        '    if (!proto) break;\n' +
-        '    const orig = Object.getOwnPropertyDescriptor(proto, key);\n' +
-        '    const stash = "__rlfix_" + key;\n' +
-        '    Object.defineProperty(proto, key, {\n' +
-        '      configurable: true,\n' +
-        '      get() {\n' +
-        '        let v = this[stash];\n' +
-        '        if (v == null && orig && orig.get) {\n' +
-        '          try { v = orig.get.call(this); } catch (_) {}\n' +
-        '        }\n' +
-        '        if (!v || !Number.isFinite(v)) {\n' +
-        '          if (key === "columns") v = parseInt(process.env.COLUMNS, 10) || 120;\n' +
-        '          else                    v = parseInt(process.env.LINES,   10) || 40;\n' +
-        '        }\n' +
-        '        return v;\n' +
-        '      },\n' +
-        '      set(v) {\n' +
-        '        if (orig && orig.set) { try { orig.set.call(this, v); return; } catch (_) {} }\n' +
-        '        this[stash] = v;\n' +
-        '      },\n' +
-        '    });\n' +
-        '  }\n' +
+        '  __rlfix_install(tty.WriteStream && tty.WriteStream.prototype);\n' +
+        '  __rlfix_install(process.stdout);\n' +
+        '  __rlfix_install(process.stderr);\n' +
         '} catch (_) {}\n' +
         '// 2) Override readline.Interface.columns the same way (clack passes\n' +
-        '//    a non-TTY wrapped output, so the prototype patch above does\n' +
-        '//    not reach it).\n' +
+        '//    a non-TTY wrapped output, so the patch above does not reach it).\n' +
         'try {\n' +
         '  const rl = require("readline");\n' +
         '  const orig = rl.createInterface;\n' +
