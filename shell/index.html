@@ -2369,6 +2369,20 @@
     } finally { netRecoveryInFlight = false; }
   }
 
+  // Debug helper — exposed on window so you can simulate the freeze
+  // without waiting hours for Fly to idle-reap the WS. Run in DevTools:
+  //   __simulateNetDeath()              // close WS + trigger recovery
+  //   __simulateNetDeath({ closeOnly: true })   // just close WS
+  window.__simulateNetDeath = (opts = {}) => {
+    const s = window.__wispWsState;
+    if (!s || !s.ws) { console.warn('[sim] no WISP WS tracked'); return; }
+    try { s.ws.close(1006, 'simulated idle reap'); } catch (e) { console.warn(e); }
+    s.lastClose = Date.now();
+    console.log('[sim] WISP WS closed, readyState=', s.ws.readyState);
+    if (opts.closeOnly) return;
+    setTimeout(() => maybeRebootIfNetDead(99 * 1000), 500);
+  };
+
   async function doClear() {
     const sel = parseSel(snapEl.value);
     if (!sel || sel.isFresh) return;
