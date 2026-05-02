@@ -185,7 +185,7 @@
     <button id="clone" disabled title="clone selected snapshot — the clone becomes the active selection">clone</button>
     <button id="clear" disabled title="delete selected snapshot">delete</button>
     <label title="auto-save snapshot ~3s after any serial activity"><input type="checkbox" id="autosave"> auto-save</label>
-    <button id="viewer" disabled title="Browse the entire guest filesystem via serial shell (ls/cat). No relay or 9P mount needed.">viewer</button>
+    <button id="viewer" disabled title="Browse the entire guest filesystem via serial shell (ls/cat).">viewer</button>
     <button id="follow" disabled title="social — bootstraps social CLI, shows your npub, follow/sync/publish via guest CLI">social</button>
     <button id="tunnels" disabled title="manage running tunnels (ports, codes, lifecycle, edit CLI)">tunnels</button>
     <span id="status" class="hint">idle</span>
@@ -196,7 +196,7 @@
     <div id="viewer-bar">
       <b>viewer</b>
       <span class="hint" style="margin-left:6px">guest filesystem (serial-backed: ls / cat / base64)</span>
-      <input id="viewer-path" value="/" spellcheck="false" autocomplete="new-password" autocorrect="off" autocapitalize="off" name="viewer-path-noautofill" list="viewer-path-empty-list" title="absolute guest path — try /, /root, /etc, /mnt/host, /tmp">
+      <input id="viewer-path" value="/" spellcheck="false" autocomplete="new-password" autocorrect="off" autocapitalize="off" name="viewer-path-noautofill" list="viewer-path-empty-list" title="absolute guest path — try /, /root, /etc, /tmp">
       <datalist id="viewer-path-empty-list"></datalist>
       <button id="viewer-refresh" title="reload listing">refresh</button>
       <span class="hint" id="viewer-status"></span>
@@ -382,6 +382,10 @@
     return rs === 2 /* CLOSING */ || rs === 3 /* CLOSED */;
   }
 
+  // Hoisted so the visibility handler inside boot() and the
+  // __simulateNetDeath debug helper at module scope can both poke it.
+  let tabHiddenAt = 0;
+
   const $ = id => document.getElementById(id);
   const termEl = $('term'), snapEl = $('snap');
   // sLog: console-only stub (original wrote into #social-log which is gone)
@@ -513,14 +517,13 @@
 
   // ---- IndexedDB snapshot persistence ----
   // Snapshot key is versioned by device topology. Bump SNAP_VER whenever
-  // the v86 cfg adds/removes/reorders devices (NIC, 9P filesystem, drives,
+  // the v86 cfg adds/removes/reorders devices (NIC, filesystem, drives,
   // etc.) — v86 serializes device state into the snapshot, and loading a
   // snapshot taken with a different device set causes a silent boot hang.
-  // v2: added `filesystem: {}` (9P virtio share for in-page viewer).
   //
-  // RESCUE FLAG: append `?legacy=1` to the URL to boot the pre-v2 device
+  // RESCUE FLAG: append `?legacy=1` to the URL to boot the legacy device
   // topology AND look up the unversioned `snap:<iso>` key. Use it to recover
-  // games/files saved in pre-9P snapshots — boot legacy, copy the file out
+  // games/files saved in old snapshots — boot legacy, copy the file out
   // (e.g. via tunnel, wget upload, or paste into a terminal), then reload
   // without the flag.
   const LEGACY_BOOT = new URLSearchParams(location.search).get('legacy') === '1';
@@ -813,7 +816,7 @@
   const AUTOSAVE_MEM_LIMIT_MB = 1024;
 
   // ── SerialVfs ───────────────────────────────────────────────────────────
-  // JS↔guest filesystem bridge over serial0 — bypasses 9P entirely.
+  // JS↔guest filesystem bridge over serial0.
   //
   // Each command runs at the guest shell as:
   //
@@ -1043,8 +1046,7 @@
   // matcher via awaitGuestMarker(prefix, timeoutMs) and resolve when
   // handleHostMarker sees a line with that prefix. The fundamental
   // value of this pattern: lets us round-trip async work through the
-  // guest shell over the same serial path that everything else uses,
-  // unaffected by 9P client cache state.
+  // guest shell over the same serial path that everything else uses.
   const oneShotMarkers = []; // [{ re, resolve, reject, timer }]
   function awaitGuestMarker(re, timeoutMs) {
     return new Promise((resolve, reject) => {
@@ -1538,7 +1540,7 @@
     // user comes back after hours. Browsers freeze rAF on hidden tabs, so
     // the WISP WS gets idle-reaped by Fly's edge proxy (~60s) — eth0 stays
     // "up" inside the guest but no frames flow until we bounce it.
-    let tabHiddenAt = 0;
+    tabHiddenAt = 0;
     // On restore the shell is already up, so enable stty sync immediately.
     if (doRestore) {
       shellReady = true;
@@ -1615,9 +1617,6 @@
       //   is reported as overflow/nobody by the 9P bridge on fresh tabs.
       // - always remount: snapshot restore can keep stale old mount options.
       // The symlink puts a `~/host` shortcut in $HOME for ergonomic access.
-      // For destructive ops that still trip 9P (legacy snapshots etc), the
-      // browser exposes window.wipe9p(path) which deletes via emulator.fs9p
-      // directly — no kernel 9P client involved.
       const mount9pCmd =
         'mkdir -p /mnt/host 2>/dev/null\n' +
         // Unstack any existing host9p mounts. If snapshot restore or a prior
@@ -1647,92 +1646,6 @@
         'mkdir -p -m 0777 /mnt/host/vfs/following /mnt/host/vfs/following_new /mnt/host/vfs/social_following 2>/dev/null\n' +
         'chmod 0777 /mnt/host/public /mnt/host/following /mnt/host/following_new /mnt/host/social_following 2>/dev/null || true\n' +
         'chmod 0777 /mnt/host/vfs/public /mnt/host/vfs/following /mnt/host/vfs/following_new /mnt/host/vfs/social_following 2>/dev/null || true\n' +
-        // sync9p: ask the host page to refresh its 9P view of /mnt/host
-        // and confirm via a receipt the guest reads back. Flow:
-        //   1. `sync` flushes guest writes to fs9p.
-        //   2. Guest emits "__HOST_SYNC__:<nonce>" on serial0 and blocks
-        //      in `read -t` on its own stdin.
-        //   3. Host catches marker, refreshes viewer (renderTree),
-        //      writes /.tb-sync-<nonce> to fs9p (best-effort, for
-        //      observability), and echoes "SYNC9P_RECEIPT:<nonce>\n"
-        //      back over serial0.
-        //   4. Guest's `read` returns with the receipt line; sync9p prints
-        //      "sync9p: ok <nonce>".
-        //
-        // The previous design polled /mnt/host/.tb-sync-<nonce> from the
-        // guest, but the Linux 9P client's dentry + readdir caches can
-        // survive snapshot restore in stale states that hide host-written
-        // files even from per-nonce stat() probes. Serial is the same
-        // bidirectional path the shell already uses, so it cannot be
-        // poisoned by 9P client-side caching.
-        'cat > /etc/profile.d/02sync9p.sh <<\\__SYNC9P_EOF__\n' +
-        'SYNC9P_VERSION="v6-remount-instrumented"\n' +
-        'sync9p() {\n' +
-        '  __n=$$-$(date +%s 2>/dev/null)-$RANDOM-$RANDOM\n' +
-        '  __v="${SYNC9P_VERSION:-unset}"\n' +
-        '  sync 2>/dev/null\n' +
-        '  printf "sync9p[%s]: nonce=%s\\n" "$__v" "$__n"\n' +
-        '  printf "__HOST_SYNC__:%s\\n" "$__n"\n' +
-        '  # Wait for host to echo SYNC9P_RECEIPT:<nonce> back over serial.\n' +
-        '  __i=0\n' +
-        '  while [ $__i -lt 30 ]; do\n' +
-        '    if IFS= read -r -t 1 __line 2>/dev/null; then\n' +
-        '      case "$__line" in\n' +
-        '        *SYNC9P_RECEIPT:$__n*)\n' +
-        '          printf "sync9p: receipt matched after %ds\\n" "$__i"\n' +
-        '          # 1. drop VFS caches (cheap, may help dentry negative cache)\n' +
-        '          if echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; then\n' +
-        '            printf "sync9p: drop_caches ok\\n"\n' +
-        '          else\n' +
-        '            printf "sync9p: drop_caches FAILED\\n"\n' +
-        '          fi\n' +
-        '          # 2. save cwd, escape if under /mnt/host\n' +
-        '          __cwd=$(pwd 2>/dev/null)\n' +
-        '          printf "sync9p: cwd=%s\\n" "$__cwd"\n' +
-        '          case "$__cwd" in /mnt/host*) cd / 2>/dev/null && printf "sync9p: cd / (was under /mnt/host)\\n" ;; esac\n' +
-        '          # 3. show current mount\n' +
-        '          printf "sync9p: pre-mounts: "; grep " /mnt/host " /proc/mounts || printf "(none)\\n"\n' +
-        '          # 4. umount loop\n' +
-        '          __ri=0\n' +
-        '          while grep -q " /mnt/host " /proc/mounts && [ $__ri -lt 8 ]; do\n' +
-        '            if umount /mnt/host 2>/dev/null; then\n' +
-        '              printf "sync9p: umount #%d ok\\n" "$__ri"\n' +
-        '            elif umount -l /mnt/host 2>/dev/null; then\n' +
-        '              printf "sync9p: umount -l #%d ok\\n" "$__ri"\n' +
-        '            else\n' +
-        '              printf "sync9p: umount #%d FAILED — break\\n" "$__ri"\n' +
-        '              break\n' +
-        '            fi\n' +
-        '            __ri=$((__ri+1))\n' +
-        '          done\n' +
-        '          printf "sync9p: post-umount: "; grep " /mnt/host " /proc/mounts || printf "(unmounted)\\n"\n' +
-        '          # 5. remount\n' +
-        '          if mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192,cache=none,access=any,dfltuid=0,dfltgid=0,uid=0,gid=0,rw host9p /mnt/host 2>/dev/null; then\n' +
-        '            printf "sync9p: remount ok (cache=none)\\n"\n' +
-        '          elif mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192,cache=loose,access=any,dfltuid=0,dfltgid=0,uid=0,gid=0,rw host9p /mnt/host 2>/dev/null; then\n' +
-        '            printf "sync9p: remount ok (cache=loose fallback)\\n"\n' +
-        '          else\n' +
-        '            printf "sync9p: remount FAILED\\n"\n' +
-        '          fi\n' +
-        '          printf "sync9p: post-mounts: "; grep " /mnt/host " /proc/mounts || printf "(none)\\n"\n' +
-        '          # 6. peek root listing for reality check\n' +
-        '          printf "sync9p: ls /mnt/host: "\n' +
-        '          ls -1 /mnt/host 2>/dev/null | tr "\\n" " "\n' +
-        '          printf "\\n"\n' +
-        '          # 7. restore cwd\n' +
-        '          case "$__cwd" in /mnt/host*) cd "$__cwd" 2>/dev/null || cd / ;; esac\n' +
-        '          printf "sync9p: ok %s\\n" "$__n"\n' +
-        '          return 0\n' +
-        '          ;;\n' +
-        '      esac\n' +
-        '    fi\n' +
-        '    __i=$((__i+1))\n' +
-        '  done\n' +
-        '  printf "sync9p: timeout (no receipt for %s)\\n" "$__n" >&2\n' +
-        '  return 1\n' +
-        '}\n' +
-        '__SYNC9P_EOF__\n' +
-        '. /etc/profile.d/02sync9p.sh 2>/dev/null || true\n' +
         // ----------------------------------------------------------------
         // Node TUI workarounds. Several common Node CLIs (anything using
         // @clack/prompts, ink, listr2, …) crash with
@@ -1961,201 +1874,14 @@
         return (typeof v === 'string' && v.length) ? v : '';
       } catch (_) { return ''; }
     }
-    const HOST_SYNC_RE = /__HOST_SYNC__:([^\s]+)\s*$/;
-    const GUEST_SYNC_OK_RE = /sync9p:\s*ok\s+(\S+)/i;
-    const GUEST_SYNC_TIMEOUT_RE = /sync9p:\s*timeout\s+\(no receipt for\s+(\S+)\)/i;
-
-    // ----- sync9p diagnostics ------------------------------------------------
-    // Inspect from DevTools:
-    //   window._sync9pDiag.recent      // last 200 entries (host + guest)
-    //   window._sync9pDiag.stats       // aggregate counters
-    //   window._sync9pDiag.errors      // last 50 errors
-    //   window._sync9pDiag.fsWrites    // fs write API stats
-    //   window._sync9pDiag.summary()   // compact snapshot
-    //   window._sync9pDiag.reset()
-    // Enable verbose console output with ?sync9p_debug=1 or
-    // localStorage['sync9p.debug']==='1'.
-    const SYNC9P_DEBUG = (() => {
-      try {
-        const q = new URLSearchParams(location.search).get('sync9p_debug');
-        if (q === '1' || q === 'true') return true;
-        if (typeof localStorage !== 'undefined' && localStorage.getItem('sync9p.debug') === '1') return true;
-      } catch (_) {}
-      return false;
-    })();
-    const SYNC9P_RING_MAX = 200;
-    const SYNC9P_ERRORS_MAX = 50;
-    function makeSync9pStats() {
-      return {
-        started: 0, ok: 0, timeout: 0, fs_unavailable: 0, exceptions: 0,
-        write_errors: 0, verify_failures: 0, total_attempts: 0,
-        guest_ok: 0, guest_timeout: 0,
-        max_duration_ms: 0, total_duration_ms: 0,
-        last_nonce: null, last_status: null,
-        started_at: Date.now(),
-      };
-    }
-    const sync9pDiag = (window._sync9pDiag = window._sync9pDiag || {
-      recent: [], errors: [], stats: makeSync9pStats(),
-      fsWrites: { count: 0, byApi: {}, errors: [], last: null },
-      enabled: SYNC9P_DEBUG,
-      reset() { this.recent.length = 0; this.errors.length = 0;
-        this.stats = makeSync9pStats();
-        this.fsWrites = { count: 0, byApi: {}, errors: [], last: null }; },
-      summary() {
-        const s = this.stats;
-        const ok = s.ok, to = s.timeout, total = s.started || 0;
-        return {
-          host: { started: s.started, ok, timeout: to, fs_unavailable: s.fs_unavailable, exceptions: s.exceptions,
-            success_rate: total ? (ok / total) : null,
-            avg_duration_ms: ok ? Math.round((s.total_duration_ms / Math.max(ok, 1))) : null,
-            max_duration_ms: s.max_duration_ms,
-            total_attempts: s.total_attempts, write_errors: s.write_errors, verify_failures: s.verify_failures,
-            last_nonce: s.last_nonce, last_status: s.last_status },
-          guest: { ok: s.guest_ok, timeout: s.guest_timeout },
-          fsWrites: { count: this.fsWrites.count, byApi: { ...this.fsWrites.byApi },
-            error_count: this.fsWrites.errors.length, last: this.fsWrites.last },
-          last10: this.recent.slice(-10),
-          recent_errors: this.errors.slice(-5),
-        };
-      },
-    });
-    function sync9pPush(entry) {
-      sync9pDiag.recent.push(entry);
-      if (sync9pDiag.recent.length > SYNC9P_RING_MAX) sync9pDiag.recent.shift();
-      if (entry.error) {
-        sync9pDiag.errors.push({ t: entry.t_end || entry.t_start, phase: entry.phase || 'host',
-          nonce: entry.nonce, state: entry.state, error: entry.error });
-        if (sync9pDiag.errors.length > SYNC9P_ERRORS_MAX) sync9pDiag.errors.shift();
-      }
-      if (sync9pDiag.enabled) { try { console.debug('[sync9p]', entry); } catch (_) {} }
-    }
 
     // Watch for guest-emitted action markers on serial0 and execute them
-    // host-side. Handles sync9p host receipt + records guest-perceived outcome.
+    // host-side. Currently only used for the umount/remount handshake
+    // around save_state (see umountBeforeSave / remountAfterSave).
     function handleHostMarker(line) {
       // Strip ANSI escapes the guest shell may have wrapped around output.
       const clean = line.replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
-
-      // Resolve any pending one-shot markers (e.g. umount/remount handshake).
-      // Done first so async save flows resume promptly even if other markers
-      // would have matched.
       try { consumeOneShotMarker(clean); } catch (_) {}
-
-      // Record guest-side sync9p outcomes (printed by the guest function
-      // after polling /mnt/host/.tb-sync-<nonce>). These reveal cases where
-      // the host wrote+verified the receipt but the Linux 9P client never
-      // saw it (cache poisoning, mount race, etc.).
-      const gOk = GUEST_SYNC_OK_RE.exec(clean);
-      if (gOk) {
-        sync9pDiag.stats.guest_ok++;
-        sync9pPush({ phase: 'guest', nonce: gOk[1], t_end: Date.now(), state: 'guest_ok' });
-      }
-      const gTo = GUEST_SYNC_TIMEOUT_RE.exec(clean);
-      if (gTo) {
-        sync9pDiag.stats.guest_timeout++;
-        sync9pPush({ phase: 'guest', nonce: gTo[1], t_end: Date.now(), state: 'guest_timeout',
-          error: 'guest_poll_timeout' });
-      }
-
-      const sm = HOST_SYNC_RE.exec(clean);
-      if (!sm) return;
-      const nonce = sm[1].trim();
-      const entry = { phase: 'host', nonce, t_start: Date.now(),
-        attempts: [], state: 'started', verified: false };
-      sync9pDiag.stats.started++;
-      sync9pDiag.stats.last_nonce = nonce;
-      sync9pPush(entry);
-      // PRIMARY receipt channel: echo the nonce back over serial0. The
-      // guest's sync9p() function is blocked in `read -t` on stdin and
-      // will see this line. Serial is the same path everything else
-      // uses (shell input/output) and is unaffected by 9P client-side
-      // dentry/readdir caches that survive snapshot restore.
-      try { sendGuestText('SYNC9P_RECEIPT:' + nonce + '\n'); } catch (_) {}
-      (async () => {
-        try {
-          // Note: we used to call renderTree() here for live refresh,
-          // but it could fire while the user was editing the path field
-          // and caused perceived "auto-replace" of their typing. The
-          // user can hit the refresh button or press Enter to reload.
-          const fs = emulator && emulator.fs9p;
-          if (!fs) {
-            entry.state = 'fs_unavailable';
-            entry.error = 'fs9p unavailable';
-            entry.t_end = Date.now();
-            entry.duration_ms = entry.t_end - entry.t_start;
-            sync9pDiag.stats.fs_unavailable++;
-            sync9pDiag.stats.last_status = 'fs_unavailable';
-            sLog('sync9p: fs9p unavailable', 'err');
-            return;
-          }
-          const receiptText = nonce + ' ' + Date.now() + '\n';
-          const bytes = new TextEncoder().encode(receiptText);
-          const path = '/.tb-sync-' + nonce;
-          // Write-verify-retry: fsWriteFileCompat occasionally returns
-          // success without the byte stream being readable back through
-          // fs.read_file (silent drop, esp. after snapshot restore). Verify
-          // by reading back; retry up to 4× with 120ms backoff. Without
-          // this the guest's `ls /mnt/host/.tb-sync-<nonce>` poll loop
-          // times out (sync9p: timeout) even though the host JS thinks
-          // the write succeeded.
-          let verified = false;
-          for (let attempt = 0; attempt < 4 && !verified; attempt++) {
-            const a = { i: attempt, t_start: Date.now() };
-            sync9pDiag.stats.total_attempts++;
-            try {
-              const ws = Date.now();
-              await fsWriteFileCompat(fs, path, bytes);
-              a.write_ms = Date.now() - ws;
-            } catch (e) {
-              a.write_error = String(e && e.message || e);
-              sync9pDiag.stats.write_errors++;
-            }
-            try {
-              const rs = Date.now();
-              const back = await fs.read_file(path);
-              a.read_ms = Date.now() - rs;
-              a.bytes_back = back ? back.length : -1;
-              a.bytes_expected = bytes.length;
-              if (back && back.length === bytes.length) { a.verified = true; verified = true; }
-              else { a.verified = false; sync9pDiag.stats.verify_failures++; }
-            } catch (e) {
-              a.read_error = String(e && e.message || e);
-              a.verified = false;
-              sync9pDiag.stats.verify_failures++;
-            }
-            a.duration_ms = Date.now() - a.t_start;
-            entry.attempts.push(a);
-            if (verified) break;
-            if (attempt < 3) await new Promise(r => setTimeout(r, 120));
-          }
-          entry.t_end = Date.now();
-          entry.duration_ms = entry.t_end - entry.t_start;
-          entry.verified = verified;
-          entry.state = verified ? 'ok' : 'timeout';
-          if (!verified) entry.error = 'verify_failed_after_4_retries';
-          if (verified) {
-            sync9pDiag.stats.ok++;
-            sync9pDiag.stats.total_duration_ms += entry.duration_ms;
-          } else {
-            sync9pDiag.stats.timeout++;
-          }
-          if (entry.duration_ms > sync9pDiag.stats.max_duration_ms) {
-            sync9pDiag.stats.max_duration_ms = entry.duration_ms;
-          }
-          sync9pDiag.stats.last_status = entry.state;
-          if (verified) sLog('sync9p: ack ' + nonce + ' (' + entry.duration_ms + 'ms, ' + entry.attempts.length + 'x)', 'ok');
-          else sLog('sync9p: ack ' + nonce + ' write not verifiable after 4 retries (' + entry.duration_ms + 'ms)', 'err');
-        } catch (e) {
-          entry.t_end = Date.now();
-          entry.duration_ms = entry.t_end - entry.t_start;
-          entry.state = 'exception';
-          entry.error = String(e && e.message || e);
-          sync9pDiag.stats.exceptions++;
-          sync9pDiag.stats.last_status = 'exception';
-          sLog('sync9p ack failed: ' + entry.error, 'err');
-        }
-      })();
     }
 
     function markShellReady() {
@@ -2200,7 +1926,8 @@
       byteCount++; pushByte(b); markDirty();
       const ch = String.fromCharCode(b);
       // Accumulate full lines so we can detect host-side action markers
-      // emitted by guest scripts (e.g. sync9p prints "__HOST_SYNC__:<nonce>").
+      // emitted by guest scripts (e.g. __UMOUNT_OK__:<tag> from the
+      // umount/remount handshake around save_state).
       if (ch === '\n' || ch === '\r') {
         if (markerLine) {
           const line = markerLine; markerLine = '';
@@ -2369,19 +2096,43 @@
     } finally { netRecoveryInFlight = false; }
   }
 
-  // Debug helper — exposed on window so you can simulate the freeze
-  // without waiting hours for Fly to idle-reap the WS. Run in DevTools:
-  //   __simulateNetDeath()              // close WS + trigger recovery
-  //   __simulateNetDeath({ closeOnly: true })   // just close WS
+  // Debug helpers — exposed on window so you can simulate the freeze
+  // without waiting hours for Fly to idle-reap the WS.
+  //
+  //   __simulateNetDeath()
+  //     Kill the tracked wisps:// WebSocket. The guest's network is now
+  //     dead — verify with `wget -qO- 1.1.1.1` or `apk update` in the
+  //     terminal (they will hang). The shell itself stays responsive
+  //     because v86's CPU loop is independent of the network.
+  //     Also pre-arms tabHiddenAt so a quick tab switch (Cmd+T then back)
+  //     fires the visibility-heal path.
+  //
+  //   __simulateNetDeath({ recover: true })
+  //     Kill the WS and immediately invoke the recovery flow (no need
+  //     to switch tabs). Useful for testing the save+reboot logic.
+  //
+  //   __triggerNetRecovery()
+  //     Manually invoke the heal path against whatever the current
+  //     WS state is. Skips the "isWispWsDead" gate is NOT done — call
+  //     __simulateNetDeath() first if you want it to actually do work.
   window.__simulateNetDeath = (opts = {}) => {
     const s = window.__wispWsState;
     if (!s || !s.ws) { console.warn('[sim] no WISP WS tracked'); return; }
     try { s.ws.close(1006, 'simulated idle reap'); } catch (e) { console.warn(e); }
     s.lastClose = Date.now();
-    console.log('[sim] WISP WS closed, readyState=', s.ws.readyState);
-    if (opts.closeOnly) return;
-    setTimeout(() => maybeRebootIfNetDead(99 * 1000), 500);
+    console.log('[sim] WISP WS closed, readyState=', s.ws.readyState,
+                '— guest network is now frozen. Try `wget -qO- 1.1.1.1` in the shell to confirm.');
+    // Arm the visibility-heal path so any subsequent tab show event
+    // (even a brief one) crosses the >60s threshold and triggers reboot.
+    tabHiddenAt = Date.now() - (61 * 1000);
+    if (opts.recover) {
+      console.log('[sim] auto-recovering in 500ms…');
+      setTimeout(() => maybeRebootIfNetDead(99 * 1000), 500);
+    } else {
+      console.log('[sim] armed: switch tabs and come back, OR run __triggerNetRecovery() to heal.');
+    }
   };
+  window.__triggerNetRecovery = () => maybeRebootIfNetDead(99 * 1000);
 
   async function doClear() {
     const sel = parseSel(snapEl.value);
@@ -2612,68 +2363,9 @@
 
   function vSet(msg, cls) { vStatusEl.textContent = msg || ''; vStatusEl.className = 'hint ' + (cls || ''); }
 
-  function fs9p() { return emulator && emulator.fs9p; }
-
-  // Host-side wipe — bypasses the guest's 9P kernel client entirely.
-  // Use when `rm -rf /mnt/host/foo` returns EOVERFLOW ("Value too large for
-  // data type") or any other 9P-side error. Operates directly on the v86
-  // in-memory inode tree via fs9p.DeleteNode/Unlink/RecursiveDelete.
-  // Path is relative to the 9P root (i.e. drop the `/mnt/host` prefix).
-  // Examples (devtools console):
-  //   wipe9p('/public')              -> wipes everything under /public
-  //   wipe9p('/following/npub1xxx')  -> wipes one followed user's mirror
-  //   ls9p('/public')                -> list children
-  //   stat9p('/public/manifest.json')-> show inode info
-  window.wipe9p = function (path) {
-    const fs = fs9p(); if (!fs) return 'fs9p not ready';
-    if (!path || path === '/' || path === '') return 'refuse to wipe root';
-    // Strip /mnt/host prefix if user passes the guest path by accident.
-    path = String(path).replace(/^\/mnt\/host/, '') || '/';
-    const r = fs.SearchPath(path);
-    if (!r || r.id === -1) return 'not found: ' + path;
-    try { fs.DeleteNode(path); return 'wiped: ' + path; }
-    catch (e) { return 'wipe failed: ' + (e && e.message || e); }
-  };
-  window.ls9p = function (path) {
-    const fs = fs9p(); if (!fs) return 'fs9p not ready';
-    path = String(path || '/').replace(/^\/mnt\/host/, '') || '/';
-    const r = fs.SearchPath(path);
-    if (!r || r.id === -1) return 'not found: ' + path;
-    if (!fs.IsDirectory(r.id)) return 'not a dir: ' + path;
-    return fs.GetChildren(r.id);
-  };
-  window.stat9p = function (path) {
-    const fs = fs9p(); if (!fs) return 'fs9p not ready';
-    path = String(path || '/').replace(/^\/mnt\/host/, '') || '/';
-    const r = fs.SearchPath(path);
-    if (!r || r.id === -1) return 'not found: ' + path;
-    const inode = fs.GetInode(r.id);
-    return {
-      id: r.id, mode: '0' + (inode.mode & 0o7777).toString(8),
-      type: (inode.mode & 0o170000).toString(8),
-      uid: inode.uid, gid: inode.gid, size: inode.size,
-      qid: { path: inode.qid.path, version: inode.qid.version, type: inode.qid.type },
-      nlinks: inode.nlinks, status: inode.status,
-    };
-  };
-
   function joinPath(base, name) {
     if (base === '/' || base === '') return '/' + name;
     return base.replace(/\/+$/, '') + '/' + name;
-  }
-  function isDir(path) {
-    const fs = fs9p(); if (!fs) return false;
-    const r = fs.SearchPath(path);
-    if (!r || r.id === -1) return false;
-    return fs.IsDirectory(r.id);
-  }
-  function listDir(path) {
-    const fs = fs9p(); if (!fs) return [];
-    const names = fs.read_dir(path) || [];
-    return names.map(n => {
-      const p = joinPath(path, n);
-      return { name: n, path: p, dir: isDir(p) };
-    }).sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
   }
 
   // ── Serial-backed filesystem helpers (whole guest FS) ──────────────────

@@ -1517,80 +1517,6 @@ export class RelaySession {
   }
 }
 
-// ── FsBridge ─────────────────────────────────────────────────────────────────
-// Pairs a "host" WebSocket (a fs-sync helper on the user's machine) with a
-// "client" WebSocket (typically a browser-side 9P client). Bytes flow raw and
-// unframed in both directions. Only one host + one client per code.
-//
-// Protocol: binary WebSocket frames are opaque byte streams (9P2000.L frames
-// from the client side; 9P replies from the host side). Text frames are
-// reserved for future control messages and currently ignored.
-export class FsBridge {
-  constructor(state, env) {
-    this.created = Date.now();
-    this.hostWs = null;
-    this.clientWs = null;
-    this.hostAt = null;
-    this.clientAt = null;
-  }
-
-  async fetch(request) {
-    const url = new URL(request.url);
-    switch (url.pathname) {
-      case "/host":   return this._accept(request, "host");
-      case "/client": return this._accept(request, "client");
-      case "/status": return this._status();
-      default: return new Response("not found", { status: 404 });
-    }
-  }
-
-  _accept(request, role) {
-    if (request.headers.get("Upgrade") !== "websocket") {
-      return new Response("websocket required", { status: 426 });
-    }
-    const existing = role === "host" ? this.hostWs : this.clientWs;
-    if (existing) {
-      // Boot the previous peer — pairing is 1:1 per code.
-      try { existing.close(1000, "replaced"); } catch (_) {}
-      if (role === "host") this.hostWs = null; else this.clientWs = null;
-    }
-
-    const pair = new WebSocketPair();
-    const server = pair[1];
-    server.accept();
-    if (role === "host") { this.hostWs = server; this.hostAt = Date.now(); }
-    else                 { this.clientWs = server; this.clientAt = Date.now(); }
-
-    const other = () => (role === "host" ? this.clientWs : this.hostWs);
-
-    server.addEventListener("message", (ev) => {
-      const peer = other();
-      if (!peer) return; // drop until the other side joins
-      try { peer.send(ev.data); } catch (_) { /* swallow; close will fire */ }
-    });
-    const teardown = (code, reason) => {
-      if (role === "host") this.hostWs = null; else this.clientWs = null;
-      const peer = other();
-      if (peer) {
-        try { peer.close(code || 1000, reason || "peer closed"); } catch (_) {}
-      }
-    };
-    server.addEventListener("close", (ev) => teardown(ev.code, ev.reason));
-    server.addEventListener("error", () => teardown(1011, "peer error"));
-
-    return new Response(null, { status: 101, webSocket: pair[0] });
-  }
-
-  _status() {
-    return json({
-      host_connected: !!this.hostWs,
-      client_connected: !!this.clientWs,
-      host_age_seconds: this.hostAt ? Math.floor((Date.now() - this.hostAt) / 1000) : null,
-      client_age_seconds: this.clientAt ? Math.floor((Date.now() - this.clientAt) / 1000) : null,
-    });
-  }
-}
-
 // ── Main Worker ───────────────────────────────────────────────────────────────
 
 export default {
@@ -1730,22 +1656,6 @@ export default {
         return new Response(null, { status: 204, headers: cors() });
       }
       return _dnsQuery(request);
-    }
-
-    // /fs9p — WebSocket pair bridge for fs-sync 9P traffic.
-    //   /fs9p/host?code=XXXX    ← host (fs-sync helper on user's machine)
-    //   /fs9p/client?code=XXXX  ← client (browser-side 9P client, etc.)
-    //   /fs9p/status?code=XXXX  → { host_connected, client_connected, ... }
-    if (url.pathname.startsWith("/fs9p/")) {
-      const role = url.pathname.slice("/fs9p/".length);
-      const code = normalizeCode(url.searchParams.get("code"));
-      if (!code) return json({ error: "missing code" }, 400);
-      if (role !== "host" && role !== "client" && role !== "status") {
-        return json({ error: "unknown role" }, 404);
-      }
-      return env.FSBRIDGE.get(env.FSBRIDGE.idFromName(code)).fetch(
-        new Request(`http://do/${role}`, request),
-      );
     }
 
     if (url.pathname === '/linux/tunnel' || url.pathname === '/x/net' || url.pathname === '/x/sys') {

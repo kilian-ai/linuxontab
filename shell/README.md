@@ -59,7 +59,6 @@ Tested on macOS Chrome + Playwright Chromium (file://). Confirmed:
 
 ## Not included (yet)
 
-- Host↔guest filesystem bridge (9p host_url) — would need network or manual per-file transfer
 - xterm.js-grade colors/cursor (current renderer strips ANSI, just good enough for line-oriented shell)
 - Network (linux4.iso has no network adapter configured)
 

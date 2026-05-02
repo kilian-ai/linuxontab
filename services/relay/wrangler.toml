@@ -11,7 +11,6 @@ routes = [
 [durable_objects]
 bindings = [
   { name = "RELAY", class_name = "RelaySession" },
-  { name = "FSBRIDGE", class_name = "FsBridge" },
 ]
 
 [[migrations]]
@@ -31,3 +30,7 @@ new_sqlite_classes = []
 [[migrations]]
 tag = "v4"
 new_sqlite_classes = ["FsBridge"]
+
+[[migrations]]
+tag = "v5"
+deleted_classes = ["FsBridge"]
