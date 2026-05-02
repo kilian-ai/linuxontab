@@ -532,15 +532,18 @@
     if (__dlgEl) return __dlgEl;
     const wrap = document.createElement('div');
     wrap.id = 'ui-dlg';
-    wrap.hidden = true;
+    // Use explicit display toggle (not [hidden] attribute) so inline
+    // display:flex doesn't conflict with the UA `[hidden]{display:none}`
+    // rule. Also mount on documentElement so no ancestor can break
+    // position:fixed via transform/contain/filter.
     wrap.style.cssText =
-      'position:fixed; inset:0; z-index:99999; background:rgba(0,0,0,0.55);' +
-      'display:flex; align-items:center; justify-content:center;' +
+      'position:fixed; inset:0; z-index:2147483647; background:rgba(0,0,0,0.55);' +
+      'display:none; align-items:center; justify-content:center;' +
       'font:14px ui-monospace,monospace; color:#ddd;';
     wrap.innerHTML =
       '<div data-card style="background:#1a1f26; border:1px solid #3a424d; border-radius:6px;' +
         'min-width:340px; max-width:80vw; padding:14px 16px;' +
-        'display:flex; flex-direction:column; gap:10px;">' +
+        'display:flex; flex-direction:column; gap:10px; pointer-events:auto;">' +
         '<div data-msg style="white-space:pre-wrap; line-height:1.4;"></div>' +
         '<input data-input type="text" style="background:#0f1318; color:#ddd;' +
           'border:1px solid #3a424d; border-radius:4px; padding:6px 8px; font:inherit;" />' +
@@ -551,47 +554,47 @@
             'border-radius:4px; padding:5px 14px; font:inherit; cursor:pointer;">OK</button>' +
         '</div>' +
       '</div>';
-    document.body.appendChild(wrap);
+    (document.body || document.documentElement).appendChild(wrap);
     __dlgEl = wrap;
     return wrap;
   }
-  // Single-listener model: handlers live on the wrap (capture phase) and
-  // dispatch to the active resolver. This avoids re-binding races and any
-  // event being eaten by upstream listeners that also stop propagation.
   let __dlgResolve = null;
+  function __dlgClose(val) {
+    if (!__dlgResolve) return;
+    const r = __dlgResolve; __dlgResolve = null;
+    if (__dlgEl) __dlgEl.style.display = 'none';
+    try { r(val); } catch (_) {}
+  }
   function __dlgInit(w) {
     if (w.__wired) return;
     w.__wired = true;
     const inEl  = w.querySelector('[data-input]');
     const okBtn = w.querySelector('[data-ok]');
     const cBtn  = w.querySelector('[data-cancel]');
-    const close = (val) => {
-      if (!__dlgResolve) return;
-      const r = __dlgResolve; __dlgResolve = null;
-      w.hidden = true;
-      r(val);
+    // Use pointerdown (fires earlier than click and isn't subject to the
+    // click-suppression that some embeddings apply to nested iframes).
+    const onOk = (e) => {
+      try { console.debug('[ui-dlg] OK', w.__mode); } catch(_) {}
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      __dlgClose(w.__mode === 'confirm' ? true : inEl.value);
     };
-    okBtn.addEventListener('click', (e) => {
-      e.preventDefault(); e.stopPropagation();
-      close(w.__mode === 'confirm' ? true : inEl.value);
+    const onCancel = (e) => {
+      try { console.debug('[ui-dlg] CANCEL', w.__mode); } catch(_) {}
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      __dlgClose(w.__mode === 'confirm' ? false : null);
+    };
+    okBtn.addEventListener('pointerdown', onOk);
+    okBtn.addEventListener('click', onOk);
+    cBtn.addEventListener('pointerdown', onCancel);
+    cBtn.addEventListener('click', onCancel);
+    // Backdrop click = cancel.
+    w.addEventListener('pointerdown', (e) => {
+      if (e.target === w) onCancel(e);
     });
-    cBtn.addEventListener('click', (e) => {
-      e.preventDefault(); e.stopPropagation();
-      close(w.__mode === 'confirm' ? false : null);
-    });
-    // Backdrop click = cancel
-    w.addEventListener('click', (e) => {
-      if (e.target === w) close(w.__mode === 'confirm' ? false : null);
-    });
-    // Local keydown handlers (capture so global Esc handlers don't win).
+    // Capture-phase Enter/Escape so global hotkeys don't win.
     w.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault(); e.stopPropagation();
-        close(w.__mode === 'confirm' ? true : inEl.value);
-      } else if (e.key === 'Escape') {
-        e.preventDefault(); e.stopPropagation();
-        close(w.__mode === 'confirm' ? false : null);
-      }
+      if (e.key === 'Enter') onOk(e);
+      else if (e.key === 'Escape') onCancel(e);
     }, true);
   }
   function uiPrompt(msg, def) {
@@ -605,7 +608,7 @@
       w.querySelector('[data-msg]').textContent = String(msg == null ? '' : msg);
       inEl.style.display = '';
       inEl.value = def == null ? '' : String(def);
-      w.hidden = false;
+      w.style.display = 'flex';
       setTimeout(() => { try { inEl.focus(); inEl.select(); } catch (_) {} }, 30);
     });
   }
@@ -618,7 +621,7 @@
       w.__mode = 'confirm';
       w.querySelector('[data-msg]').textContent = String(msg == null ? '' : msg);
       w.querySelector('[data-input]').style.display = 'none';
-      w.hidden = false;
+      w.style.display = 'flex';
       setTimeout(() => { try { w.querySelector('[data-ok]').focus(); } catch (_) {} }, 30);
     });
   }
