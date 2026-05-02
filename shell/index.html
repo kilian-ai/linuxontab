@@ -1258,6 +1258,19 @@
     // non-DNS packets, we REPLACE the array: save v86's existing listener,
     // then install ours as the sole listener (which forwards to v86 for
     // non-DNS packets).
+    //
+    // CRITICAL: forward call must be try/catch'd. v86's WispNetworkAdapter
+    // calls `wispws.send(...)` SYNCHRONOUSLY from inside its net0-send
+    // handler. If the WS is in CLOSING/CLOSED state (Fly idle-reap, network
+    // hiccup, browser tab throttled long enough that the keepalive lapsed),
+    // that throws "InvalidStateError: WebSocket is already in CLOSING or
+    // CLOSED state". The throw propagates through bus.send → cpu.main_loop
+    // → do_tick → freezes v86 mid-tick because next_tick never gets queued.
+    // This was the root cause of "v86 froze in VS Code browser but survived
+    // in Safari" — Chromium's stricter background-tab worker throttling
+    // outran our visibility heal, so the WS died while a packet was in
+    // flight. Catching here drops the doomed packet (TCP retransmits will
+    // recover once the WS reconnects) and keeps the emulator alive.
     const tryHook = () => {
       if (!em.bus) return false;
       const l = em.bus.listeners;
@@ -1268,7 +1281,20 @@
           const buf = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
           const q = parseOutgoingDns(buf);
           if (q) { handleDnsQuery(q); return; }
-          if (prev) prev.fn.call(prev.this_value, data);
+          if (!prev) return;
+          // Skip outright if we know the WS is already dead — saves a throw.
+          if (typeof isWispWsDead === 'function' && isWispWsDead()) return;
+          try {
+            prev.fn.call(prev.this_value, data);
+          } catch (e) {
+            // Most common: InvalidStateError on closed WS. Log once per
+            // 5s so a flapping WS doesn't spam the console.
+            const now = Date.now();
+            if (!window.__netSendErrLast || now - window.__netSendErrLast > 5000) {
+              window.__netSendErrLast = now;
+              console.warn('[net0-send] dropped (WS likely closed):', e && e.message || e);
+            }
+          }
         },
         this_value: this,
       };
