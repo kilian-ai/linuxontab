@@ -2470,24 +2470,30 @@
     const wsBase = relayBase.replace(/^http/, 'ws');
     onPhase('relay: ' + relayBase);
 
-    // 3. Spawn one-shot guest receiver. We use websocat's built-in
-    //    `writefile:` specifier instead of `sh-c:cat > file` because the
-    //    shell redirect points cat's stdout at the file (not the pipe
-    //    websocat creates), so websocat sees an immediate EOF on its
-    //    subprocess-stdout pipe and closes the WS after the first frame.
-    //    `writefile:` opens the file directly inside websocat and streams
-    //    every incoming binary frame to it for the lifetime of the WS.
+    // 3. Spawn one-shot guest receiver. websocat in `-u` (unidirectional
+    //    inbound) mode reads nothing from stdin (so there's no stdin-EOF
+    //    teardown) and writes every incoming binary WS frame to stdout in
+    //    order. The shell redirects stdout to the destination file. The
+    //    process exits only when the server side closes the WS — at which
+    //    point the file is flushed and closed cleanly.
+    //
+    //    Two earlier attempts both failed because they were one-shot:
+    //      • `sh-c:cat > file`  — the shell pointed cat's stdout fd at the
+    //        regular file rather than at websocat's subprocess-stdout pipe,
+    //        so websocat saw immediate stdout-EOF and closed the WS after
+    //        ~1 frame (256 KB observed).
+    //      • `writefile:file`   — websocat 1.x's writefile sink writes a
+    //        single message then closes (~2 frames = 512 KB observed).
     const guestUrl = wsBase + '/port/guest?code=' + code + '&port=' + port;
     const dirEsc = SerialVfs._q(tmpDst.replace(/\/[^/]*$/, '') || '/');
-    const sinkArg = 'writefile:' + tmpDst;
     const startCmd =
       'mkdir -p -- ' + dirEsc + ' 2>/dev/null; ' +
       'rm -f -- ' + SerialVfs._q(tmpDst) + ' 2>/dev/null; ' +
       'rm -f /tmp/snap-recv.log 2>/dev/null; ' +
-      '(setsid websocat --binary ' +
-        SerialVfs._q(guestUrl) + ' ' +
-        SerialVfs._q(sinkArg) +
-        ' </dev/null >/tmp/snap-recv.log 2>&1 &); ' +
+      '(setsid sh -c ' + SerialVfs._q(
+        'websocat --binary -u ' + SerialVfs._q(guestUrl) + ' - ' +
+        '> ' + SerialVfs._q(tmpDst) + ' 2>/tmp/snap-recv.log'
+      ) + ' </dev/null >/dev/null 2>&1 &); ' +
       'sleep 0.2; ' +
       'pgrep -nf "websocat.*port=' + port + '" 2>/dev/null | head -1 | ' +
         'awk \'{print "PID="$1}\'';
