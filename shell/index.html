@@ -2470,13 +2470,16 @@
     const wsBase = relayBase.replace(/^http/, 'ws');
     onPhase('relay: ' + relayBase);
 
-    // 3. Spawn one-shot guest receiver: websocat pipes incoming WS bytes
-    //    into `cat > tmpDst` via sh-c. When the host WS closes websocat
-    //    sees EOF, the shell flushes + closes the file, and both exit.
-    //    sh-c is universally supported by websocat 1.x; writefile: is not.
+    // 3. Spawn one-shot guest receiver. We use websocat's built-in
+    //    `writefile:` specifier instead of `sh-c:cat > file` because the
+    //    shell redirect points cat's stdout at the file (not the pipe
+    //    websocat creates), so websocat sees an immediate EOF on its
+    //    subprocess-stdout pipe and closes the WS after the first frame.
+    //    `writefile:` opens the file directly inside websocat and streams
+    //    every incoming binary frame to it for the lifetime of the WS.
     const guestUrl = wsBase + '/port/guest?code=' + code + '&port=' + port;
     const dirEsc = SerialVfs._q(tmpDst.replace(/\/[^/]*$/, '') || '/');
-    const sinkArg = 'sh-c:cat > ' + SerialVfs._q(tmpDst);
+    const sinkArg = 'writefile:' + tmpDst;
     const startCmd =
       'mkdir -p -- ' + dirEsc + ' 2>/dev/null; ' +
       'rm -f -- ' + SerialVfs._q(tmpDst) + ' 2>/dev/null; ' +
@@ -2513,8 +2516,15 @@
         ws.onclose = (e) => { clearTimeout(t); reject(new Error('client WS closed before open (code=' + (e && e.code) + ')')); };
       });
       onPhase('WS open, streaming');
-      ws.onerror = () => {};
-      ws.onclose = () => {};
+      // Track close/error so we don't silently feed bytes into a dead socket.
+      let wsDead = null;
+      ws.onerror = () => { wsDead = wsDead || new Error('client WS error mid-transfer'); };
+      ws.onclose = (e) => {
+        wsDead = wsDead || new Error(
+          'client WS closed mid-transfer (code=' + (e && e.code) +
+          (e && e.reason ? ' reason=' + e.reason : '') + ')'
+        );
+      };
 
       const buf = blob instanceof ArrayBuffer
         ? blob
@@ -2524,8 +2534,10 @@
       const HIGH  = 4 * 1024 * 1024;  // pause sending when WS buffer > 4 MB
       onProgress(0, total);
       for (let off = 0; off < u8.length; off += CHUNK) {
+        if (wsDead) throw wsDead;
         while (ws.bufferedAmount > HIGH) {
-          if (ws.readyState !== WebSocket.OPEN) throw new Error('WS closed mid-transfer');
+          if (wsDead) throw wsDead;
+          if (ws.readyState !== WebSocket.OPEN) throw new Error('WS not open mid-transfer');
           await new Promise(r => setTimeout(r, 25));
         }
         const end = Math.min(off + CHUNK, u8.length);
