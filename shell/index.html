@@ -538,16 +538,16 @@
       'display:flex; align-items:center; justify-content:center;' +
       'font:14px ui-monospace,monospace; color:#ddd;';
     wrap.innerHTML =
-      '<div style="background:#1a1f26; border:1px solid #3a424d; border-radius:6px;' +
+      '<div data-card style="background:#1a1f26; border:1px solid #3a424d; border-radius:6px;' +
         'min-width:340px; max-width:80vw; padding:14px 16px;' +
         'display:flex; flex-direction:column; gap:10px;">' +
         '<div data-msg style="white-space:pre-wrap; line-height:1.4;"></div>' +
         '<input data-input type="text" style="background:#0f1318; color:#ddd;' +
           'border:1px solid #3a424d; border-radius:4px; padding:6px 8px; font:inherit;" />' +
         '<div style="display:flex; gap:8px; justify-content:flex-end;">' +
-          '<button data-cancel style="background:#222830; color:#ddd; border:1px solid #3a424d;' +
+          '<button type="button" data-cancel style="background:#222830; color:#ddd; border:1px solid #3a424d;' +
             'border-radius:4px; padding:5px 14px; font:inherit; cursor:pointer;">Cancel</button>' +
-          '<button data-ok style="background:#1d4ed8; color:#fff; border:1px solid #3b82f6;' +
+          '<button type="button" data-ok style="background:#1d4ed8; color:#fff; border:1px solid #3b82f6;' +
             'border-radius:4px; padding:5px 14px; font:inherit; cursor:pointer;">OK</button>' +
         '</div>' +
       '</div>';
@@ -555,52 +555,71 @@
     __dlgEl = wrap;
     return wrap;
   }
+  // Single-listener model: handlers live on the wrap (capture phase) and
+  // dispatch to the active resolver. This avoids re-binding races and any
+  // event being eaten by upstream listeners that also stop propagation.
+  let __dlgResolve = null;
+  function __dlgInit(w) {
+    if (w.__wired) return;
+    w.__wired = true;
+    const inEl  = w.querySelector('[data-input]');
+    const okBtn = w.querySelector('[data-ok]');
+    const cBtn  = w.querySelector('[data-cancel]');
+    const close = (val) => {
+      if (!__dlgResolve) return;
+      const r = __dlgResolve; __dlgResolve = null;
+      w.hidden = true;
+      r(val);
+    };
+    okBtn.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      close(w.__mode === 'confirm' ? true : inEl.value);
+    });
+    cBtn.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      close(w.__mode === 'confirm' ? false : null);
+    });
+    // Backdrop click = cancel
+    w.addEventListener('click', (e) => {
+      if (e.target === w) close(w.__mode === 'confirm' ? false : null);
+    });
+    // Local keydown handlers (capture so global Esc handlers don't win).
+    w.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault(); e.stopPropagation();
+        close(w.__mode === 'confirm' ? true : inEl.value);
+      } else if (e.key === 'Escape') {
+        e.preventDefault(); e.stopPropagation();
+        close(w.__mode === 'confirm' ? false : null);
+      }
+    }, true);
+  }
   function uiPrompt(msg, def) {
     return new Promise((resolve) => {
       const w = __ensureDlg();
-      const msgEl = w.querySelector('[data-msg]');
+      __dlgInit(w);
+      if (__dlgResolve) { try { __dlgResolve(null); } catch (_) {} }
+      __dlgResolve = resolve;
+      w.__mode = 'prompt';
       const inEl  = w.querySelector('[data-input]');
-      const okBtn = w.querySelector('[data-ok]');
-      const cBtn  = w.querySelector('[data-cancel]');
-      msgEl.textContent = String(msg == null ? '' : msg);
+      w.querySelector('[data-msg]').textContent = String(msg == null ? '' : msg);
       inEl.style.display = '';
       inEl.value = def == null ? '' : String(def);
       w.hidden = false;
       setTimeout(() => { try { inEl.focus(); inEl.select(); } catch (_) {} }, 30);
-      const done = (val) => {
-        w.hidden = true;
-        okBtn.onclick = cBtn.onclick = inEl.onkeydown = null;
-        resolve(val);
-      };
-      okBtn.onclick = () => done(inEl.value);
-      cBtn.onclick  = () => done(null);
-      inEl.onkeydown = (e) => {
-        if (e.key === 'Enter')  { e.preventDefault(); done(inEl.value); }
-        if (e.key === 'Escape') { e.preventDefault(); done(null); }
-      };
     });
   }
   function uiConfirm(msg) {
     return new Promise((resolve) => {
       const w = __ensureDlg();
-      const msgEl = w.querySelector('[data-msg]');
-      const inEl  = w.querySelector('[data-input]');
-      const okBtn = w.querySelector('[data-ok]');
-      const cBtn  = w.querySelector('[data-cancel]');
-      msgEl.textContent = String(msg == null ? '' : msg);
-      inEl.style.display = 'none';
+      __dlgInit(w);
+      if (__dlgResolve) { try { __dlgResolve(false); } catch (_) {} }
+      __dlgResolve = resolve;
+      w.__mode = 'confirm';
+      w.querySelector('[data-msg]').textContent = String(msg == null ? '' : msg);
+      w.querySelector('[data-input]').style.display = 'none';
       w.hidden = false;
-      setTimeout(() => { try { okBtn.focus(); } catch (_) {} }, 30);
-      const done = (val) => {
-        w.hidden = true;
-        okBtn.onclick = cBtn.onclick = okBtn.onkeydown = null;
-        resolve(val);
-      };
-      okBtn.onclick = () => done(true);
-      cBtn.onclick  = () => done(false);
-      okBtn.onkeydown = (e) => {
-        if (e.key === 'Escape') { e.preventDefault(); done(false); }
-      };
+      setTimeout(() => { try { w.querySelector('[data-ok]').focus(); } catch (_) {} }, 30);
     });
   }
   // sLog: console-only stub (original wrote into #social-log which is gone)
