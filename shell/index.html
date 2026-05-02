@@ -393,16 +393,17 @@
   // 1. Main-thread heartbeat: a 500ms interval. If the gap between two
   //    fires exceeds 1500ms the page's main thread was stalled (GC, sync
   //    XHR, throttled timer, infinite loop, modal dialog, etc).
-  // 2. v86 tick liveness: hook emulator-tick. If no tick for >3s while the
-  //    tab is visible AND the emulator has started, v86 is frozen.
+  // 2. v86 CPU liveness: poll emulator.get_instruction_counter(). If the
+  //    counter doesn't advance for >3s while the tab is visible AND the
+  //    emulator is_running(), v86 is frozen. (libv86 has no emulator-tick
+  //    event, so we poll the public instruction counter API.)
   // 3. WS lifecycle: log every wisp WS open/close/error with readyState.
   // 4. Global error + unhandledrejection: tag any uncaught exception (this
   //    is what catches the InvalidStateError throws if our hijacker misses).
   window.__probes = {
     lastBeat: Date.now(),
-    lastTick: 0,
-    ticks: 0,
-    started: false,
+    lastInsnCounter: 0,
+    lastInsnAdvanceAt: 0,
     maxBeatGap: 0,
     wsEvents: [],
     errors: [],
@@ -419,16 +420,32 @@
       console.warn('[probe:heartbeat] main thread stalled', gap + 'ms');
     }
   }, 500);
-  // 2. v86 tick liveness — wired up after the emulator object exists
-  // (see the V86 instantiation site). We just check it from a watchdog:
+  // 2. v86 CPU liveness: poll the WASM instruction counter every 2s. The
+  //    counter is a uint32 that wraps; a freeze is detected when the value
+  //    does not change between two consecutive samples while the tab is
+  //    visible and the emulator is_running(). Note: a guest sitting at the
+  //    `hlt` instruction with no interrupts will pause the counter too,
+  //    but that's rare on Linux (timer ticks always advance it). To avoid
+  //    false positives, we only warn after 6s of no advance.
   setInterval(() => {
+    if (document.hidden) return;
+    const em = window.emulator;
+    if (!em || typeof em.is_running !== 'function' || !em.is_running()) return;
     const p = window.__probes;
-    if (!p.started || document.hidden) return;
-    const sinceTick = Date.now() - p.lastTick;
-    if (sinceTick > 3000) {
-      console.warn('[probe:v86] no ticks for', sinceTick + 'ms',
-        '— emulator likely frozen. ws=', window.__wispWsState && window.__wispWsState.ws && window.__wispWsState.ws.readyState,
-        'totalTicks=', p.ticks);
+    let counter;
+    try { counter = em.get_instruction_counter(); } catch (_) { return; }
+    const now = Date.now();
+    if (counter !== p.lastInsnCounter) {
+      p.lastInsnCounter = counter;
+      p.lastInsnAdvanceAt = now;
+      return;
+    }
+    if (!p.lastInsnAdvanceAt) { p.lastInsnAdvanceAt = now; return; }
+    const stalled = now - p.lastInsnAdvanceAt;
+    if (stalled > 6000) {
+      const ws = window.__wispWsState && window.__wispWsState.ws;
+      console.warn('[probe:v86] CPU instruction counter stalled', stalled + 'ms',
+        'at', counter, '— emulator frozen. ws.readyState=', ws ? ws.readyState : 'n/a');
     }
   }, 2000);
   // 3. WS lifecycle augment — patch the existing tracker hook below by
@@ -468,12 +485,15 @@
   window.__probeReport = () => {
     const p = window.__probes;
     const s = window.__wispWsState || {};
+    const em = window.emulator;
+    let insnCounter = null;
+    try { insnCounter = em && em.get_instruction_counter && em.get_instruction_counter(); } catch (_) {}
     return {
       now: Date.now(),
       maxBeatGap: p.maxBeatGap,
-      lastTickAgoMs: p.lastTick ? Date.now() - p.lastTick : null,
-      totalTicks: p.ticks,
-      emulatorStarted: p.started,
+      emulatorRunning: !!(em && em.is_running && em.is_running()),
+      insnCounter,
+      insnStalledMs: p.lastInsnAdvanceAt ? Date.now() - p.lastInsnAdvanceAt : null,
       tabHidden: document.hidden,
       tabHiddenAtAgoMs: tabHiddenAt ? Date.now() - tabHiddenAt : null,
       wispReadyState: s.ws ? s.ws.readyState : null,
@@ -1599,10 +1619,8 @@
     window.kickVirtio9pAfterRestore = kickVirtio9pAfterRestore;
 
     emulator.add_listener('emulator-ready',   () => { sanitizeInodeOwnership(); if (doRestore) kickVirtio9pAfterRestore(); setStatus('ready'); });
-    emulator.add_listener('emulator-started', () => { sanitizeInodeOwnership(); if (doRestore) kickVirtio9pAfterRestore(); setStatus(doRestore ? 'restored' : 'running', 'ok'); window.__probes.started = true; window.__probes.lastTick = Date.now(); });
-    emulator.add_listener('emulator-stopped', () => { setStatus('stopped'); window.__probes.started = false; });
-    // Probe: every v86 tick refreshes lastTick. Cheap (just a Date.now()).
-    emulator.add_listener('emulator-tick', () => { window.__probes.lastTick = Date.now(); window.__probes.ticks++; });
+    emulator.add_listener('emulator-started', () => { sanitizeInodeOwnership(); if (doRestore) kickVirtio9pAfterRestore(); setStatus(doRestore ? 'restored' : 'running', 'ok'); });
+    emulator.add_listener('emulator-stopped', () => setStatus('stopped'));
 
     // ── Restore-path instrumentation ───────────────────────────────────────
     // Visible in browser console. Captures WispNetworkAdapter WS lifecycle so
