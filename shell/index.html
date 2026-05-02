@@ -188,6 +188,7 @@
     <button id="rename" disabled title="rename selected snapshot">rename</button>
     <button id="clone" disabled title="clone selected snapshot — the clone becomes the active selection">clone</button>
     <button id="clear" disabled title="delete selected snapshot">delete</button>
+    <button id="push-snap" disabled title="push selected snapshot file into guest /root via tunnel WS (so social.sh can publish it)">push</button>
     <label title="auto-save snapshot ~3s after any serial activity"><input type="checkbox" id="autosave"> auto-save</label>
     <button id="viewer" disabled title="Browse the entire guest filesystem via serial shell (ls/cat).">viewer</button>
     <button id="follow" disabled title="social — bootstraps social CLI, shows your npub, follow/sync/publish via guest CLI">social</button>
@@ -525,6 +526,7 @@
   function sLog(msg, cls) { try { console.log('[social]', msg, cls || ''); } catch (_) {} }
   const bootBtn = $('boot'), resetBtn = $('reset'), saveBtn = $('save');
   const restoreBtn = $('restore'), clearBtn = $('clear');
+  const pushSnapBtn = $('push-snap');
   const renameBtn = $('rename'), cloneBtn = $('clone');
   const autosaveEl = $('autosave');
   const statusEl = $('status'), statsEl = $('stats');
@@ -856,6 +858,9 @@
     // a shutdown+reboot path via doRestore().)
     restoreBtn.disabled = !isSnap;
     clearBtn.disabled   = !isSnap;
+    // push: requires a saved snapshot AND a running guest (we drive the
+    // receiver via serial). Tunnel-up state is verified at click time.
+    if (pushSnapBtn) pushSnapBtn.disabled = !(isSnap && running);
     // save: always allowed while emulator running. From a fresh-boot
     // selection, save creates the "default" snapshot for that ISO.
     saveBtn.disabled = !running;
@@ -2307,6 +2312,209 @@
     setStatus('snapshot cleared');
     await populateSnapSelect('fresh:' + sel.iso);
   }
+
+  // ---- Push: stream a host blob into the guest filesystem via the
+  // existing tunnel CDN. Used to drop snapshot files into ~/root so they
+  // can be published with social.sh, without touching v86 device state
+  // (no fs9p hot-attach is possible — that's set at new V86() time).
+  //
+  // Wire model: register an ad-hoc port on the relay → spawn a guest
+  // `websocat ... writefile:<dst>` receiver → host opens a client WS and
+  // streams binary frames → close → guest receiver exits and the file
+  // is renamed into place. Pure userspace; the receiver process exits
+  // before any subsequent snapshot, so save_state is unaffected.
+  const PUSH_DEFAULT_PORT = 8086;
+  async function pushBlobToGuestPort(blob, dstPath, opts) {
+    if (!emulator) throw new Error('emulator not running');
+    if (!serialVfs) throw new Error('serial bridge not ready');
+    opts = opts || {};
+    const port = opts.port || PUSH_DEFAULT_PORT;
+    const onProgress = opts.onProgress || (() => {});
+    const total = (blob && (blob.size || blob.byteLength)) | 0;
+    if (!total) throw new Error('empty blob');
+    const tmpDst = dstPath + '.recv';
+
+    // 1. Confirm there's an active tunnel and grab its code.
+    const codeR = await serialVfs.exec(
+      'cat /tmp/tunnel.code 2>/dev/null', { timeout: 5000 }
+    );
+    const code = stripAnsi(codeR.stdout || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+    if (!/^[A-Z0-9]{4}$/.test(code)) {
+      throw new Error('no active tunnel — start one first (tunnels panel → start)');
+    }
+
+    // 2. Extend the relay registration to allow port 8086 (idempotent add).
+    let relayBase = null;
+    let lastErr = null;
+    for (const r of TUNNEL_RELAY_ENDPOINTS) {
+      try {
+        const res = await fetch(r + '/port/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code, ports: [port] }),
+        });
+        if (res.ok) { relayBase = r; break; }
+        lastErr = new Error('register ' + res.status + ' on ' + r);
+      } catch (e) { lastErr = e; }
+    }
+    if (!relayBase) {
+      throw new Error('failed to register port ' + port + ': ' + (lastErr && lastErr.message));
+    }
+    const wsBase = relayBase.replace(/^http/, 'ws');
+
+    // 3. Spawn one-shot guest receiver: websocat pipes incoming WS bytes
+    //    into `cat > tmpDst` via sh-c. When the host WS closes websocat
+    //    sees EOF, the shell flushes + closes the file, and both exit.
+    //    sh-c is universally supported by websocat 1.x; writefile: is not.
+    const guestUrl = wsBase + '/port/guest?code=' + code + '&port=' + port;
+    const dirEsc = SerialVfs._q(tmpDst.replace(/\/[^/]*$/, '') || '/');
+    const sinkArg = 'sh-c:cat > ' + SerialVfs._q(tmpDst);
+    const startCmd =
+      'mkdir -p -- ' + dirEsc + ' 2>/dev/null; ' +
+      'rm -f -- ' + SerialVfs._q(tmpDst) + ' 2>/dev/null; ' +
+      'rm -f /tmp/snap-recv.log 2>/dev/null; ' +
+      '(setsid websocat --binary ' +
+        SerialVfs._q(guestUrl) + ' ' +
+        SerialVfs._q(sinkArg) +
+        ' </dev/null >/tmp/snap-recv.log 2>&1 &); ' +
+      'sleep 0.2; ' +
+      'pgrep -nf "websocat.*port=' + port + '" 2>/dev/null | head -1 | ' +
+        'awk \'{print "PID="$1}\'';
+    const startR = await serialVfs.exec(startCmd, { timeout: 15000 });
+    const pidM = stripAnsi(startR.stdout || '').match(/PID=(\d+)/);
+    if (!pidM) throw new Error('failed to start guest receiver — websocat installed?');
+    const guestPid = parseInt(pidM[1], 10);
+
+    // Brief wait for guest WS to register itself in the relay's port pool
+    // before the client connection arrives (reduces "no guest paired" races).
+    await new Promise(r => setTimeout(r, 700));
+
+    let ws;
+    try {
+      ws = new WebSocket(wsBase + '/port/client?code=' + code + '&port=' + port);
+      ws.binaryType = 'arraybuffer';
+      await new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('client WS open timeout')), 12000);
+        ws.onopen  = () => { clearTimeout(t); resolve(); };
+        ws.onerror = () => { clearTimeout(t); reject(new Error('client WS error')); };
+        ws.onclose = () => { clearTimeout(t); reject(new Error('client WS closed before open')); };
+      });
+      // Replace handlers so a normal close after onopen doesn't reject.
+      ws.onerror = () => {};
+      ws.onclose = () => {};
+
+      const buf = blob instanceof ArrayBuffer
+        ? blob
+        : (blob.arrayBuffer ? await blob.arrayBuffer() : blob);
+      const u8 = new Uint8Array(buf);
+      const CHUNK = 256 * 1024;
+      const HIGH  = 4 * 1024 * 1024;  // pause sending when WS buffer > 4 MB
+      onProgress(0, total);
+      for (let off = 0; off < u8.length; off += CHUNK) {
+        while (ws.bufferedAmount > HIGH) {
+          if (ws.readyState !== WebSocket.OPEN) throw new Error('WS closed mid-transfer');
+          await new Promise(r => setTimeout(r, 25));
+        }
+        const end = Math.min(off + CHUNK, u8.length);
+        ws.send(u8.subarray(off, end));
+        onProgress(end, total);
+      }
+      // Drain so all bytes reach the relay before close.
+      const drainStart = Date.now();
+      while (ws.bufferedAmount > 0 && ws.readyState === WebSocket.OPEN) {
+        if (Date.now() - drainStart > 60000) break;
+        await new Promise(r => setTimeout(r, 25));
+      }
+      try { ws.close(1000, 'done'); } catch (_) {}
+
+      // 4. Wait for guest websocat to exit (= file fully written + closed).
+      let exited = false;
+      for (let i = 0; i < 120; i++) {
+        const r = await serialVfs.exec(
+          '[ -d /proc/' + guestPid + ' ] && echo a || echo d',
+          { timeout: 5000 }
+        );
+        if (stripAnsi(r.stdout).trim() === 'd') { exited = true; break; }
+        await new Promise(r2 => setTimeout(r2, 500));
+      }
+      if (!exited) {
+        // Best effort: kill it so writefile flushes via SIGTERM cleanup path.
+        await serialVfs.exec('kill ' + guestPid + ' 2>/dev/null; sleep 0.3', { timeout: 5000 });
+      }
+
+      // 5. Verify size matches what we sent, then atomically rename.
+      const verifyR = await serialVfs.exec(
+        'wc -c < ' + SerialVfs._q(tmpDst) + ' 2>/dev/null',
+        { timeout: 5000 }
+      );
+      const got = parseInt(stripAnsi(verifyR.stdout).trim(), 10);
+      if (!Number.isFinite(got) || got === 0) {
+        throw new Error('guest received 0 bytes (relay/tunnel issue?)');
+      }
+      if (got !== total) {
+        throw new Error('size mismatch: sent ' + total + ' B, guest has ' + got + ' B');
+      }
+      await serialVfs.exec(
+        'mv -- ' + SerialVfs._q(tmpDst) + ' ' + SerialVfs._q(dstPath),
+        { timeout: 5000 }
+      );
+      return { bytes: got, path: dstPath };
+    } catch (e) {
+      try { ws && ws.close(); } catch (_) {}
+      try {
+        await serialVfs.exec(
+          'kill ' + guestPid + ' 2>/dev/null; ' +
+          'rm -f -- ' + SerialVfs._q(tmpDst),
+          { timeout: 5000 }
+        );
+      } catch (_) {}
+      throw e;
+    }
+  }
+  // expose for console debugging
+  window.__pushBlobToGuestPort = pushBlobToGuestPort;
+
+  async function doPushSnap() {
+    const sel = parseSel(snapEl.value);
+    if (!sel || sel.isFresh) return;
+    if (!emulator) { setStatus('boot the VM first', 'err'); return; }
+    const blob = await idbGet(sel.key);
+    if (!blob) { setStatus('snapshot missing in IDB', 'err'); return; }
+    const total = blob.byteLength | 0;
+    const sizeMB = (total / 1048576).toFixed(1);
+    const isoStem = (sel.iso || 'snap').replace(/\.iso$/i, '');
+    const safeName = (sel.name || 'snap').replace(/[^\w.\-]+/g, '_');
+    const defaultPath = '/root/' + isoStem + '__' + safeName + '.v86snap';
+    const dstPath = window.prompt(
+      'Push snapshot to guest path:\n\n' +
+      'Size: ' + sizeMB + ' MB → streamed via tunnel WS (port ' + PUSH_DEFAULT_PORT + ').\n' +
+      'Tunnel must be running. The receiver process exits when done so\n' +
+      'this transfer does not interfere with future snapshots.',
+      defaultPath
+    );
+    if (!dstPath) return;
+    pushSnapBtn.disabled = true;
+    const startedAt = Date.now();
+    try {
+      setStatus('push: starting (' + sizeMB + ' MB)…');
+      const res = await pushBlobToGuestPort(blob, dstPath, {
+        onProgress(sent, tot) {
+          const pct = tot ? Math.floor((sent / tot) * 100) : 0;
+          const sentMB = (sent / 1048576).toFixed(1);
+          setStatus('push: ' + sentMB + '/' + sizeMB + ' MB (' + pct + '%)');
+        },
+      });
+      const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
+      setStatus(
+        'pushed ' + (res.bytes / 1048576).toFixed(1) + ' MB → ' + res.path + ' in ' + secs + 's',
+        'ok'
+      );
+    } catch (e) {
+      setStatus('push failed: ' + e.message, 'err');
+    } finally {
+      updateSnapButtonsState();
+    }
+  }
   async function doSave() {
     if (!emulator) return;
     // save_state() is synchronous on the JS main thread and serializes the
@@ -2404,6 +2612,7 @@
   saveBtn.onclick    = doSave;
   restoreBtn.onclick = doRestore;
   clearBtn.onclick   = doClear;
+  if (pushSnapBtn) pushSnapBtn.onclick = doPushSnap;
   if (renameBtn) renameBtn.onclick = doRename;
   if (cloneBtn)  cloneBtn.onclick  = doClone;
 
