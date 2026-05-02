@@ -352,12 +352,22 @@ function getOrCreateSession(code) {
   return s;
 }
 
+// GC only sweeps sessions that were never (or no longer) registered. A
+// session with `registeredPorts` is the durable contract for a guest's
+// pairing code — destroying it loses the registration even though the
+// guest's tunnel-up.sh respawn loop will reconnect within seconds. We'd
+// rather grow the map slightly than silently invalidate live codes.
+//
+// WS pools self-clean via 'close' handlers, so an idle session with no
+// peers and no registered ports is just a stale create-on-WS-attach
+// remnant — those we still want to drop.
 setInterval(() => {
   const now = Date.now();
   for (const [code, s] of sessions) {
     const idle = now - s.lastActivity;
     const hasPeers = s.guestWs.size > 0 || s.clientWs.size > 0;
-    if (idle > IDLE_TTL_MS && !hasPeers) {
+    const isRegistered = s.registeredPorts.size > 0;
+    if (idle > IDLE_TTL_MS && !hasPeers && !isRegistered) {
       s.destroy();
       sessions.delete(code);
     }

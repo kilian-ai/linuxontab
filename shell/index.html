@@ -1495,6 +1495,11 @@
     // Network is always enabled (the old #net checkbox was removed). Net
     // init runs as soon as the guest reaches a shell prompt.
     let netInited = false;
+    // Track tab-hidden timestamp so we can self-heal the v86 NIC when the
+    // user comes back after hours. Browsers freeze rAF on hidden tabs, so
+    // the WISP WS gets idle-reaped by Fly's edge proxy (~60s) — eth0 stays
+    // "up" inside the guest but no frames flow until we bounce it.
+    let tabHiddenAt = 0;
     // On restore the shell is already up, so enable stty sync immediately.
     if (doRestore) {
       shellReady = true;
@@ -2229,6 +2234,38 @@
         netInitTimer = setTimeout(() => { netInitTimer = null; runNetInit(); }, 1800);
       }
     }
+
+    // Tab visibility self-heal. When the user comes back after the tab
+    // was hidden long enough for Fly's edge proxy to drop the WISP WS
+    // (~60s+), the v86 NIC is detached from the network even though the
+    // guest still thinks eth0 is up. Bounce it without re-running the
+    // full netInit (which would re-mount 9p / re-seed DoH / etc.).
+    const VIS_HEAL_MIN_HIDDEN_MS = 60 * 1000;
+    const visBounceCmd =
+      'killall -q udhcpc 2>/dev/null; ' +
+      'ip link set eth0 down 2>/dev/null; sleep 1; ' +
+      'for i in 1 2 3 4 5; do ip link set eth0 up 2>/dev/null; sleep 1; ' +
+        'st=$(cat /sys/class/net/eth0/operstate 2>/dev/null); ' +
+        '[ "$st" != "down" ] && break; done; ' +
+      'ip addr flush dev eth0 2>/dev/null; ' +
+      'ip addr add 192.168.86.100/24 dev eth0 2>/dev/null; ' +
+      'ip route replace default via 192.168.86.1 dev eth0 2>/dev/null; ' +
+      'arp -d 192.168.86.1 2>/dev/null; ' +
+      'arp -s 192.168.86.1 52:54:00:01:02:03 2>/dev/null; ' +
+      'echo "[vis-heal] eth0 bounced (operstate=$st)"\n';
+    document.addEventListener('visibilitychange', () => {
+      if (!emulator) return;
+      if (document.hidden) {
+        tabHiddenAt = Date.now();
+        return;
+      }
+      if (!tabHiddenAt) return;
+      const hiddenMs = Date.now() - tabHiddenAt;
+      tabHiddenAt = 0;
+      if (hiddenMs < VIS_HEAL_MIN_HIDDEN_MS) return;
+      if (!netInited) return;  // boot path will handle it
+      sendGuestText(visBounceCmd);
+    });
 
     resetBtn.disabled = false;
     saveBtn.disabled = false;
