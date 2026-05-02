@@ -343,6 +343,45 @@
 <script src="./xterm-addon-fit.js"></script>
 <script>
 (async () => {
+  // ── WISP WebSocket health tracker ─────────────────────────────────────
+  // v86's WispNetworkAdapter has no auto-reconnect. When the underlying
+  // WS closes (e.g. Fly edge proxy idle-reaps it after ~60s of a
+  // backgrounded tab), every subsequent v86 packet send throws
+  // "WebSocket is already in CLOSING or CLOSED state" and the guest's
+  // network is permanently dead until the emulator is recreated.
+  //
+  // Hook the global WebSocket constructor to track the latest wisps://
+  // connection so the visibility-change handler below can detect a
+  // dead tunnel and trigger a save+reboot.
+  window.__wispWsState = { ws: null, lastClose: 0, openedAt: 0 };
+  const _OrigWebSocket = window.WebSocket;
+  window.WebSocket = function(url, protocols) {
+    const ws = protocols !== undefined ? new _OrigWebSocket(url, protocols) : new _OrigWebSocket(url);
+    try {
+      const u = String(url || '');
+      if (/^wisps?:\/\//i.test(u) || /\/wisp\/?($|\?)/i.test(u)) {
+        window.__wispWsState.ws = ws;
+        window.__wispWsState.openedAt = Date.now();
+        ws.addEventListener('close', () => {
+          window.__wispWsState.lastClose = Date.now();
+        });
+      }
+    } catch (_) {}
+    return ws;
+  };
+  window.WebSocket.prototype = _OrigWebSocket.prototype;
+  window.WebSocket.CONNECTING = _OrigWebSocket.CONNECTING;
+  window.WebSocket.OPEN       = _OrigWebSocket.OPEN;
+  window.WebSocket.CLOSING    = _OrigWebSocket.CLOSING;
+  window.WebSocket.CLOSED     = _OrigWebSocket.CLOSED;
+
+  function isWispWsDead() {
+    const s = window.__wispWsState;
+    if (!s || !s.ws) return false;
+    const rs = s.ws.readyState;
+    return rs === 2 /* CLOSING */ || rs === 3 /* CLOSED */;
+  }
+
   const $ = id => document.getElementById(id);
   const termEl = $('term'), snapEl = $('snap');
   // sLog: console-only stub (original wrote into #social-log which is gone)
@@ -2235,24 +2274,20 @@
       }
     }
 
-    // Tab visibility self-heal. When the user comes back after the tab
-    // was hidden long enough for Fly's edge proxy to drop the WISP WS
-    // (~60s+), the v86 NIC is detached from the network even though the
-    // guest still thinks eth0 is up. Bounce it without re-running the
-    // full netInit (which would re-mount 9p / re-seed DoH / etc.).
+    // Tab visibility self-heal. When the user backgrounds the tab,
+    // browsers throttle rAF/setTimeout — the v86 CPU loop slows to a
+    // crawl, the WispNetworkAdapter's WebSocket gets idle-reaped by
+    // Fly's edge proxy (~60s), and v86 has no auto-reconnect. On
+    // return, every outbound packet throws "WebSocket is already in
+    // CLOSING or CLOSED state" and the guest looks frozen (any
+    // network syscall hangs).
+    //
+    // Fix is browser-side, not guest-side: detect the dead WS, save
+    // a snapshot, and reboot the emulator with restore=true so a
+    // fresh WispNetworkAdapter + WS is wired up. Eth0 inside the
+    // guest is fine — the network adapter on the JS side is what's
+    // broken, and only re-creating the emulator fixes that.
     const VIS_HEAL_MIN_HIDDEN_MS = 60 * 1000;
-    const visBounceCmd =
-      'killall -q udhcpc 2>/dev/null; ' +
-      'ip link set eth0 down 2>/dev/null; sleep 1; ' +
-      'for i in 1 2 3 4 5; do ip link set eth0 up 2>/dev/null; sleep 1; ' +
-        'st=$(cat /sys/class/net/eth0/operstate 2>/dev/null); ' +
-        '[ "$st" != "down" ] && break; done; ' +
-      'ip addr flush dev eth0 2>/dev/null; ' +
-      'ip addr add 192.168.86.100/24 dev eth0 2>/dev/null; ' +
-      'ip route replace default via 192.168.86.1 dev eth0 2>/dev/null; ' +
-      'arp -d 192.168.86.1 2>/dev/null; ' +
-      'arp -s 192.168.86.1 52:54:00:01:02:03 2>/dev/null; ' +
-      'echo "[vis-heal] eth0 bounced (operstate=$st)"\n';
     document.addEventListener('visibilitychange', () => {
       if (!emulator) return;
       if (document.hidden) {
@@ -2264,7 +2299,10 @@
       tabHiddenAt = 0;
       if (hiddenMs < VIS_HEAL_MIN_HIDDEN_MS) return;
       if (!netInited) return;  // boot path will handle it
-      sendGuestText(visBounceCmd);
+      // Defer to next tick so the browser actually starts un-throttling
+      // before we probe the WS — newly visible tabs sometimes still
+      // have rAF paused for ~100ms.
+      setTimeout(() => { maybeRebootIfNetDead(hiddenMs); }, 250);
     });
 
     resetBtn.disabled = false;
@@ -2289,6 +2327,48 @@
 
   async function doReset() { await shutdown(); await boot({ restore: false }); }
   async function doRestore() { await shutdown(); await boot({ restore: true }); }
+
+  // Visibility-driven recovery. Called when the tab returns from a
+  // long hidden period. If the WispNetworkAdapter's WS is dead (Fly
+  // idle-reaped it), v86 is effectively unrecoverable in-place — any
+  // outbound packet throws. Save current state, then reboot from
+  // snapshot to wire up a fresh adapter + WS.
+  let netRecoveryInFlight = false;
+  async function maybeRebootIfNetDead(hiddenMs) {
+    if (netRecoveryInFlight) return;
+    if (!emulator) return;
+    if (!isWispWsDead()) return;
+    netRecoveryInFlight = true;
+    try {
+      setStatus(`network died while tab was hidden (${Math.round(hiddenMs/1000)}s) — saving + reconnecting…`, 'warn');
+      // Best-effort autosave so we don't lose serial scrollback / RAM
+      // state on restore. Skip if VM is too large to snapshot quickly.
+      try {
+        if (currentMemMB && currentMemMB <= AUTOSAVE_MEM_LIMIT_MB) {
+          // Mark dirty + force-flush regardless of cooldown.
+          dirty = true;
+          lastAutosaveAt = 0;
+          await runAutosave();
+        }
+      } catch (e) { console.warn('[vis-heal] autosave failed:', e); }
+      // Decide whether to restore from snapshot or just cold-reboot.
+      // currentSnapName + currentIso are set after a successful boot
+      // and updated by autosave; if either is missing we have no
+      // snapshot to restore.
+      try {
+        const haveSnap = currentSnapName && currentIso &&
+          await idbHas(snapKeyFor(currentIso, currentSnapName));
+        if (haveSnap) {
+          await doRestore();
+        } else {
+          await doReset();
+        }
+      } catch (e) {
+        setStatus('reconnect failed: ' + e.message, 'err');
+      }
+    } finally { netRecoveryInFlight = false; }
+  }
+
   async function doClear() {
     const sel = parseSel(snapEl.value);
     if (!sel || sel.isFresh) return;
