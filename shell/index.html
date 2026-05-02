@@ -1570,6 +1570,12 @@
         'apk update 2>&1 | tail -3\n' +
         'echo "[setup] apk upgrade (rebasing libc/libcrypto)…"\n' +
         'apk upgrade --available 2>&1 | tail -3\n' +
+        // Pre-install the staple toolset so a freshly booted ISO is
+        // immediately usable: websocat (tunnels), curl/jq (scripts +
+        // social.sh), openssh-server (ssh tunnels), unbound (DNS-over-TCP
+        // workaround for Fly WISP dropping UDP/53). Idempotent.
+        'echo "[setup] apk add websocat curl jq openssh-server unbound…"\n' +
+        'apk add --no-cache websocat curl jq openssh-server unbound 2>&1 | tail -5\n' +
         'echo "[setup] ready — apk add <pkg> works now. snapshot to skip on next boot."\n';
       // Snapshot restore: WISP WebSocket is freshly reconnected (JS adapter
       // is not in the x86 snapshot), and the Wisp router config is known
