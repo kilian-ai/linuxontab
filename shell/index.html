@@ -1730,13 +1730,13 @@
         '__NODE_FIX_EOF__\n' +
         '. /etc/profile.d/03nodefix.sh 2>/dev/null || true\n';
 
-      // /mnt/host (9P share) is the canonical SOCIAL_HOME. Ensure the
-      // expected subdirs exist with permissive modes so social.sh + the
-      // overlay can write into them without UID translation surprises.
+      // SOCIAL_HOME defaults to /root (real ext4/tmpfs in the guest) so
+      // `social publish` ships ~/public and `social sync` mirrors into
+      // ~/following — independent of the 9P bridge. social.sh's own
+      // auto_home_dir() also prefers /root, so we just seed the dirs
+      // and let the CLI resolve the path.
       const ensureHostDirsCmd =
-        'mkdir -p -m 0777 /mnt/host/public /mnt/host/following /mnt/host/following_new /mnt/host/social_following 2>/dev/null || true\n' +
-        'chmod 0777 /mnt/host/public /mnt/host/following /mnt/host/following_new /mnt/host/social_following 2>/dev/null || true\n' +
-        'export SOCIAL_HOME=/mnt/host\n';
+        'mkdir -p -m 0755 /root/public /root/following 2>/dev/null || true\n';
 
       // Seed /etc/hosts via DoH (DNS-over-HTTPS to 1.1.1.1).
       // The Fly WISP backend doesn't pass UDP/53 reliably, so plain
@@ -2918,7 +2918,7 @@
         fLog('── bootstrap ok ──', 'ok');
         // Enable real actions now that we have an identity.
         followPublishBtn.disabled = false;
-        followPublishBtn.title = 'Publish $SOCIAL_HOME/public to Nostr relays';
+        followPublishBtn.title = 'Publish ~/public to Nostr relays';
         followFollowBtn.disabled = false;
         followFollowBtn.title = 'Follow an npub and mirror their published files';
         followSyncBtn.disabled = false;
@@ -2997,14 +2997,15 @@
     fLog('── publish start ──', 'info');
     try {
       // 1. Locate SOCIAL_HOME via the nsec file social.sh writes.
+      // Default convention is /root (~/.nsec). /mnt/host kept as legacy fallback.
       const home = await followRun(
-        'for d in /mnt/host "$HOME" "$PWD"; do if [ -f "$d/.nsec" ]; then echo "$d"; break; fi; done',
+        'for d in "$HOME" /root /mnt/host "$PWD"; do if [ -f "$d/.nsec" ]; then echo "$d"; break; fi; done',
         { timeout: 10000 }
       );
       const socialHome = (home.stdout || '').trim();
       if (!socialHome) {
         fStatus('no identity yet — run refresh', 'err');
-        fLog('no .nsec file found in /mnt/host, $HOME, or $PWD', 'err');
+        fLog('no .nsec file found in $HOME, /root, /mnt/host, or $PWD', 'err');
         return;
       }
       fLog('SOCIAL_HOME = ' + socialHome, 'ok');
