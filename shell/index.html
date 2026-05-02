@@ -3854,12 +3854,13 @@
 
   setInterval(() => { tunnelsBtn.disabled = !emulator; }, 800);
 
-  // ?autoboot=1 [&restore=0|1]
+  // Autoboot by default — the page is dedicated to running Linux, so make
+  // the green "boot" button click itself on load. Opt out with `?autoboot=0`.
   // When `restore` is unspecified, auto-restore if a snapshot exists for the
   // current iso (the common SPA case at /shell — users save snapshots and
   // expect file persistence across reloads). Pass `&restore=0` for a clean boot.
   const qs = new URLSearchParams(location.search);
-  if (qs.get('autoboot') === '1') {
+  if (qs.get('autoboot') !== '0') {
     window.__v86AutoLogin = true;
     (async () => {
       const restoreParam = qs.get('restore');
