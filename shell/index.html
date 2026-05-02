@@ -2433,11 +2433,13 @@
     opts = opts || {};
     const port = opts.port || PUSH_DEFAULT_PORT;
     const onProgress = opts.onProgress || (() => {});
-    const total = (blob && (blob.size || blob.byteLength)) | 0;
+    const onPhase = opts.onPhase || (() => {});
+    const total = (blob && (blob.size != null ? blob.size : blob.byteLength)) || 0;
     if (!total) throw new Error('empty blob');
     const tmpDst = dstPath + '.recv';
 
     // 1. Confirm there's an active tunnel and grab its code.
+    onPhase('reading /tmp/tunnel.code');
     const codeR = await serialVfs.exec(
       'cat /tmp/tunnel.code 2>/dev/null', { timeout: 5000 }
     );
@@ -2445,8 +2447,10 @@
     if (!/^[A-Z0-9]{4}$/.test(code)) {
       throw new Error('no active tunnel — start one first (tunnels panel → start)');
     }
+    onPhase('tunnel code: ' + code);
 
     // 2. Extend the relay registration to allow port 8086 (idempotent add).
+    onPhase('registering port ' + port + ' with relay');
     let relayBase = null;
     let lastErr = null;
     for (const r of TUNNEL_RELAY_ENDPOINTS) {
@@ -2464,6 +2468,7 @@
       throw new Error('failed to register port ' + port + ': ' + (lastErr && lastErr.message));
     }
     const wsBase = relayBase.replace(/^http/, 'ws');
+    onPhase('relay: ' + relayBase);
 
     // 3. Spawn one-shot guest receiver: websocat pipes incoming WS bytes
     //    into `cat > tmpDst` via sh-c. When the host WS closes websocat
@@ -2485,8 +2490,12 @@
         'awk \'{print "PID="$1}\'';
     const startR = await serialVfs.exec(startCmd, { timeout: 15000 });
     const pidM = stripAnsi(startR.stdout || '').match(/PID=(\d+)/);
-    if (!pidM) throw new Error('failed to start guest receiver — websocat installed?');
+    if (!pidM) {
+      const dump = stripAnsi(startR.stdout || '').slice(0, 200);
+      throw new Error('failed to start guest receiver — websocat installed? (got: ' + dump + ')');
+    }
     const guestPid = parseInt(pidM[1], 10);
+    onPhase('receiver PID ' + guestPid + ', waiting for relay pairing');
 
     // Brief wait for guest WS to register itself in the relay's port pool
     // before the client connection arrives (reduces "no guest paired" races).
@@ -2494,15 +2503,16 @@
 
     let ws;
     try {
+      onPhase('opening client WS');
       ws = new WebSocket(wsBase + '/port/client?code=' + code + '&port=' + port);
       ws.binaryType = 'arraybuffer';
       await new Promise((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error('client WS open timeout')), 12000);
+        const t = setTimeout(() => reject(new Error('client WS open timeout (12s)')), 12000);
         ws.onopen  = () => { clearTimeout(t); resolve(); };
-        ws.onerror = () => { clearTimeout(t); reject(new Error('client WS error')); };
-        ws.onclose = () => { clearTimeout(t); reject(new Error('client WS closed before open')); };
+        ws.onerror = (e) => { clearTimeout(t); reject(new Error('client WS error')); };
+        ws.onclose = (e) => { clearTimeout(t); reject(new Error('client WS closed before open (code=' + (e && e.code) + ')')); };
       });
-      // Replace handlers so a normal close after onopen doesn't reject.
+      onPhase('WS open, streaming');
       ws.onerror = () => {};
       ws.onclose = () => {};
 
@@ -2583,7 +2593,7 @@
     if (!emulator) { setStatus('boot the VM first', 'err'); return; }
     const blob = await idbGet(sel.key);
     if (!blob) { setStatus('snapshot missing in IDB', 'err'); return; }
-    const total = blob.byteLength | 0;
+    const total = (blob.byteLength != null ? blob.byteLength : (blob.size || 0)) >>> 0;
     const sizeMB = (total / 1048576).toFixed(1);
     const isoStem = (sel.iso || 'snap').replace(/\.iso$/i, '');
     const safeName = (sel.name || 'snap').replace(/[^\w.\-]+/g, '_');
@@ -2601,6 +2611,10 @@
     try {
       setStatus('push: starting (' + sizeMB + ' MB)…');
       const res = await pushBlobToGuestPort(blob, dstPath, {
+        onPhase(msg) {
+          try { console.log('[push]', msg); } catch (_) {}
+          setStatus('push: ' + msg);
+        },
         onProgress(sent, tot) {
           const pct = tot ? Math.floor((sent / tot) * 100) : 0;
           const sentMB = (sent / 1048576).toFixed(1);
