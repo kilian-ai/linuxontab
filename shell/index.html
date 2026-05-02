@@ -522,6 +522,87 @@
 
   const $ = id => document.getElementById(id);
   const termEl = $('term'), snapEl = $('snap');
+
+  // ---- In-page prompt/confirm replacements.
+  // Cross-origin / sandboxed iframes (and some embedded contexts) throw
+  // "prompt() is not supported." for window.prompt / window.confirm. We
+  // build a tiny modal so all interactive flows keep working.
+  let __dlgEl = null;
+  function __ensureDlg() {
+    if (__dlgEl) return __dlgEl;
+    const wrap = document.createElement('div');
+    wrap.id = 'ui-dlg';
+    wrap.hidden = true;
+    wrap.style.cssText =
+      'position:fixed; inset:0; z-index:99999; background:rgba(0,0,0,0.55);' +
+      'display:flex; align-items:center; justify-content:center;' +
+      'font:14px ui-monospace,monospace; color:#ddd;';
+    wrap.innerHTML =
+      '<div style="background:#1a1f26; border:1px solid #3a424d; border-radius:6px;' +
+        'min-width:340px; max-width:80vw; padding:14px 16px;' +
+        'display:flex; flex-direction:column; gap:10px;">' +
+        '<div data-msg style="white-space:pre-wrap; line-height:1.4;"></div>' +
+        '<input data-input type="text" style="background:#0f1318; color:#ddd;' +
+          'border:1px solid #3a424d; border-radius:4px; padding:6px 8px; font:inherit;" />' +
+        '<div style="display:flex; gap:8px; justify-content:flex-end;">' +
+          '<button data-cancel style="background:#222830; color:#ddd; border:1px solid #3a424d;' +
+            'border-radius:4px; padding:5px 14px; font:inherit; cursor:pointer;">Cancel</button>' +
+          '<button data-ok style="background:#1d4ed8; color:#fff; border:1px solid #3b82f6;' +
+            'border-radius:4px; padding:5px 14px; font:inherit; cursor:pointer;">OK</button>' +
+        '</div>' +
+      '</div>';
+    document.body.appendChild(wrap);
+    __dlgEl = wrap;
+    return wrap;
+  }
+  function uiPrompt(msg, def) {
+    return new Promise((resolve) => {
+      const w = __ensureDlg();
+      const msgEl = w.querySelector('[data-msg]');
+      const inEl  = w.querySelector('[data-input]');
+      const okBtn = w.querySelector('[data-ok]');
+      const cBtn  = w.querySelector('[data-cancel]');
+      msgEl.textContent = String(msg == null ? '' : msg);
+      inEl.style.display = '';
+      inEl.value = def == null ? '' : String(def);
+      w.hidden = false;
+      setTimeout(() => { try { inEl.focus(); inEl.select(); } catch (_) {} }, 30);
+      const done = (val) => {
+        w.hidden = true;
+        okBtn.onclick = cBtn.onclick = inEl.onkeydown = null;
+        resolve(val);
+      };
+      okBtn.onclick = () => done(inEl.value);
+      cBtn.onclick  = () => done(null);
+      inEl.onkeydown = (e) => {
+        if (e.key === 'Enter')  { e.preventDefault(); done(inEl.value); }
+        if (e.key === 'Escape') { e.preventDefault(); done(null); }
+      };
+    });
+  }
+  function uiConfirm(msg) {
+    return new Promise((resolve) => {
+      const w = __ensureDlg();
+      const msgEl = w.querySelector('[data-msg]');
+      const inEl  = w.querySelector('[data-input]');
+      const okBtn = w.querySelector('[data-ok]');
+      const cBtn  = w.querySelector('[data-cancel]');
+      msgEl.textContent = String(msg == null ? '' : msg);
+      inEl.style.display = 'none';
+      w.hidden = false;
+      setTimeout(() => { try { okBtn.focus(); } catch (_) {} }, 30);
+      const done = (val) => {
+        w.hidden = true;
+        okBtn.onclick = cBtn.onclick = okBtn.onkeydown = null;
+        resolve(val);
+      };
+      okBtn.onclick = () => done(true);
+      cBtn.onclick  = () => done(false);
+      okBtn.onkeydown = (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); done(false); }
+      };
+    });
+  }
   // sLog: console-only stub (original wrote into #social-log which is gone)
   function sLog(msg, cls) { try { console.log('[social]', msg, cls || ''); } catch (_) {} }
   const bootBtn = $('boot'), resetBtn = $('reset'), saveBtn = $('save');
@@ -2485,7 +2566,7 @@
     const isoStem = (sel.iso || 'snap').replace(/\.iso$/i, '');
     const safeName = (sel.name || 'snap').replace(/[^\w.\-]+/g, '_');
     const defaultPath = '/root/' + isoStem + '__' + safeName + '.v86snap';
-    const dstPath = window.prompt(
+    const dstPath = await uiPrompt(
       'Push snapshot to guest path:\n\n' +
       'Size: ' + sizeMB + ' MB → streamed via tunnel WS (port ' + PUSH_DEFAULT_PORT + ').\n' +
       'Tunnel must be running. The receiver process exits when done so\n' +
@@ -2522,7 +2603,7 @@
     // first when the snapshot will be expensive.
     if (currentMemMB && currentMemMB > AUTOSAVE_MEM_LIMIT_MB) {
       const sec = Math.ceil(currentMemMB / 100);
-      const ok = window.confirm(
+      const ok = await uiConfirm(
         `Saving will freeze this tab for ~${sec}s and write ~${currentMemMB} MB to IndexedDB.\n\n` +
         `(VM has ${currentMemMB} MB RAM. Boot with ?mem=512 in the URL for fast snapshots.)\n\n` +
         `Continue?`
@@ -2569,7 +2650,7 @@
       const sel = parseSel(snapEl.value);
       if (!sel) { setStatus('rename: no selection', 'err'); return; }
       if (sel.isFresh) { setStatus('rename: pick a saved snapshot first', 'err'); return; }
-      const next = window.prompt('Rename snapshot', sel.name);
+      const next = await uiPrompt('Rename snapshot', sel.name);
       if (next == null) { setStatus('rename: cancelled'); return; }
       const trimmed = next.trim();
       if (!trimmed) { setStatus('rename: name cannot be empty', 'err'); return; }
@@ -4175,10 +4256,10 @@
     tnRefresh();
   }
 
-  function tnEditCmd(t) {
+  async function tnEditCmd(t) {
     const code = t.code || (t.id && t.id !== 'default' ? t.id : null);
     const current = code ? tnEffectiveCmd(code) : (tnGetCmdOverride('__default__') || tnBuildDefaultCmd());
-    const next = window.prompt(
+    const next = await uiPrompt(
       'Edit start command for ' + (code ? 'code ' + code : 'default tunnel') +
       '.\n\nLeave empty to clear override and revert to default.',
       current
