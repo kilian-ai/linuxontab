@@ -2615,7 +2615,7 @@
     const sizeMB = (total / 1048576).toFixed(1);
     const isoStem = (sel.iso || 'snap').replace(/\.iso$/i, '');
     const safeName = (sel.name || 'snap').replace(/[^\w.\-]+/g, '_');
-    const defaultPath = '/root/' + isoStem + '__' + safeName + '.v86snap';
+    const defaultPath = '/root/snapshots/' + isoStem + '__' + safeName + '.v86snap';
     const dstPath = await uiPrompt(
       'Push snapshot to guest path:\n\n' +
       'Size: ' + sizeMB + ' MB → streamed via tunnel WS (port ' + PUSH_DEFAULT_PORT + ').\n' +
