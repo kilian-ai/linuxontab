@@ -2565,29 +2565,32 @@
     return base + ' ' + Date.now();
   }
   async function doRename() {
-    const sel = parseSel(snapEl.value);
-    if (!sel || sel.isFresh) return;
-    const next = window.prompt('Rename snapshot', sel.name);
-    if (next == null) return;
-    const trimmed = next.trim();
-    if (!trimmed || trimmed === sel.name) return;
-    if (/[:\\/]/.test(trimmed)) {
-      setStatus('rename failed: name cannot contain : / \\', 'err');
-      return;
-    }
-    const newKey = snapKeyFor(sel.iso, trimmed);
-    if (await idbHas(newKey)) {
-      setStatus('rename failed: name already exists', 'err');
-      return;
-    }
     try {
+      const sel = parseSel(snapEl.value);
+      if (!sel) { setStatus('rename: no selection', 'err'); return; }
+      if (sel.isFresh) { setStatus('rename: pick a saved snapshot first', 'err'); return; }
+      const next = window.prompt('Rename snapshot', sel.name);
+      if (next == null) { setStatus('rename: cancelled'); return; }
+      const trimmed = next.trim();
+      if (!trimmed) { setStatus('rename: name cannot be empty', 'err'); return; }
+      if (trimmed === sel.name) { setStatus('rename: name unchanged'); return; }
+      if (/[:\\/]/.test(trimmed)) {
+        setStatus('rename failed: name cannot contain : / \\', 'err');
+        return;
+      }
+      const newKey = snapKeyFor(sel.iso, trimmed);
+      if (await idbHas(newKey)) {
+        setStatus('rename failed: name already exists', 'err');
+        return;
+      }
       await idbCopy(sel.key, newKey);
       await idbDel(sel.key);
       if (currentIso === sel.iso && currentSnapName === sel.name) currentSnapName = trimmed;
       setStatus(`renamed to ${sel.iso}/${trimmed}`, 'ok');
       await populateSnapSelect(newKey);
     } catch (e) {
-      setStatus('rename failed: ' + e.message, 'err');
+      setStatus('rename failed: ' + (e && e.message || e), 'err');
+      try { console.error('[rename]', e); } catch (_) {}
     }
   }
   async function doClone() {
