@@ -2532,6 +2532,39 @@
         );
       };
 
+      // Ground-truth progress: poll the guest file size every 1.2s. If it
+      // stops growing for >7s while we still have bytes left to send, abort
+      // — this catches receivers that silently drop frames after the WS
+      // accepts them (websocat writefile: bug, sh-c subprocess EOF bug, etc.)
+      // without waiting for the worthless final wc -c at the end.
+      let stopPolling = false;
+      let lastGuestBytes = 0;
+      let lastGuestProgressAt = Date.now();
+      let pollErr = null;
+      const tmpDstQ = SerialVfs._q(tmpDst);
+      const pollPromise = (async () => {
+        while (!stopPolling) {
+          await new Promise(r => setTimeout(r, 1200));
+          if (stopPolling) break;
+          try {
+            const r = await serialVfs.exec('wc -c < ' + tmpDstQ + ' 2>/dev/null', { timeout: 4000 });
+            const got = parseInt(stripAnsi(r.stdout).trim(), 10) || 0;
+            if (got > lastGuestBytes) {
+              lastGuestBytes = got;
+              lastGuestProgressAt = Date.now();
+              try { console.log('[push] guest has', got, '/', total, 'B'); } catch (_) {}
+            } else if (Date.now() - lastGuestProgressAt > 7000) {
+              pollErr = new Error(
+                'guest stopped receiving at ' + lastGuestBytes + ' B ' +
+                '(WS still ' + (ws.readyState === 1 ? 'OPEN' : 'closed') + '; ' +
+                'receiver likely dropped frames — check /tmp/snap-recv.log in guest)'
+              );
+              return;
+            }
+          } catch (_) { /* swallow transient serial timeouts */ }
+        }
+      })();
+
       const buf = blob instanceof ArrayBuffer
         ? blob
         : (blob.arrayBuffer ? await blob.arrayBuffer() : blob);
@@ -2540,9 +2573,11 @@
       const HIGH  = 4 * 1024 * 1024;  // pause sending when WS buffer > 4 MB
       onProgress(0, total);
       for (let off = 0; off < u8.length; off += CHUNK) {
-        if (wsDead) throw wsDead;
+        if (wsDead)  throw wsDead;
+        if (pollErr) throw pollErr;
         while (ws.bufferedAmount > HIGH) {
-          if (wsDead) throw wsDead;
+          if (wsDead)  throw wsDead;
+          if (pollErr) throw pollErr;
           if (ws.readyState !== WebSocket.OPEN) throw new Error('WS not open mid-transfer');
           await new Promise(r => setTimeout(r, 25));
         }
@@ -2557,6 +2592,9 @@
         await new Promise(r => setTimeout(r, 25));
       }
       try { ws.close(1000, 'done'); } catch (_) {}
+      stopPolling = true;
+      try { await pollPromise; } catch (_) {}
+      if (pollErr) throw pollErr;
 
       // 4. Wait for guest websocat to exit (= file fully written + closed).
       let exited = false;
@@ -2627,7 +2665,7 @@
     pushSnapBtn.disabled = true;
     const startedAt = Date.now();
     try {
-      setStatus('push: starting (' + sizeMB + ' MB)…');
+      setStatus('push: starting (' + sizeMB + ' MB) [build push-v3]…');
       const res = await pushBlobToGuestPort(blob, dstPath, {
         onPhase(msg) {
           try { console.log('[push]', msg); } catch (_) {}
