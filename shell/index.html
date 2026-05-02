@@ -2486,7 +2486,9 @@
     //    and exits cleanly — file is fully flushed.
     const guestUrl = wsBase + '/port/guest?code=' + code + '&port=' + port;
     const dirEsc = SerialVfs._q(tmpDst.replace(/\/[^/]*$/, '') || '/');
-    // Marker so we can pgrep specifically for this run's pipeline.
+    // Unique tag so we can find this run's websocat in pgrep -f (which
+    // matches /proc/PID/cmdline, not env). We pass it as a harmless
+    // sh -c positional ($0) — visible in cmdline, ignored by the script.
     const marker = 'snappush-' + Math.random().toString(36).slice(2, 8);
     const startCmd =
       'mkdir -p -- ' + dirEsc + ' 2>/dev/null; ' +
@@ -2494,22 +2496,33 @@
       'rm -f /tmp/snap-recv.log 2>/dev/null; ' +
       // Kill any lingering receivers from prior failed attempts.
       'pkill -f "snappush-" 2>/dev/null; sleep 0.2; ' +
-      // The `MARKER=...` env var is just a tag we can pgrep for; nothing
-      // reads it. Pipeline runs in a setsid-detached subshell.
-      'MARKER=' + marker + ' ' +
+      // setsid → sh -c SCRIPT TAG …  ($0 = TAG, baked into cmdline)
       '(setsid sh -c ' + SerialVfs._q(
         'websocat --binary -u ' + SerialVfs._q(guestUrl) + ' - ' +
         '| cat > ' + SerialVfs._q(tmpDst) + ' 2>>/tmp/snap-recv.log'
-      ) + ' </dev/null >>/tmp/snap-recv.log 2>&1 &); ' +
-      'sleep 0.3; ' +
-      // Find the websocat pid for our marker (parent shell carries the env).
-      'pgrep -nf "MARKER=' + marker + '" 2>/dev/null | head -1 | ' +
-        'awk \'{print "PID="$1}\'';
+      ) + ' ' + marker + ' </dev/null >>/tmp/snap-recv.log 2>&1 &); ' +
+      'sleep 0.5; ' +
+      // Match the websocat child by the unique URL fragment (code+port
+      // are already unique to this push). Falls back to the marker.
+      'pgrep -nf "websocat.*code=' + code + '.*port=' + port + '" 2>/dev/null | ' +
+        'head -1 | awk \'{print "PID="$1}\'; ' +
+      'pgrep -nf "' + marker + '" 2>/dev/null | head -1 | awk \'{print "TAG="$1}\'';
     const startR = await serialVfs.exec(startCmd, { timeout: 15000 });
-    const pidM = stripAnsi(startR.stdout || '').match(/PID=(\d+)/);
+    const out = stripAnsi(startR.stdout || '');
+    const pidM = out.match(/PID=(\d+)/) || out.match(/TAG=(\d+)/);
     if (!pidM) {
-      const dump = stripAnsi(startR.stdout || '').slice(0, 200);
-      throw new Error('failed to start guest receiver — websocat installed? (got: ' + dump + ')');
+      // Dump diagnostics — log + ps + which-websocat — so we can tell why.
+      let diag = '';
+      try {
+        const rd = await serialVfs.exec(
+          'echo "---- which ----"; command -v websocat || echo NO-websocat; ' +
+          'echo "---- log ----"; cat /tmp/snap-recv.log 2>/dev/null; ' +
+          'echo "---- ps ----"; ps -ef 2>/dev/null | grep -E "websocat|' + marker + '" | grep -v grep',
+          { timeout: 5000 }
+        );
+        diag = '\n' + stripAnsi(rd.stdout || '').slice(0, 800);
+      } catch (_) {}
+      throw new Error('failed to find guest receiver PID (got: ' + out.slice(0, 200) + ')' + diag);
     }
     const guestPid = parseInt(pidM[1], 10);
     onPhase('receiver PID ' + guestPid + ' (websocat | cat > file)');
@@ -2688,7 +2701,7 @@
     pushSnapBtn.disabled = true;
     const startedAt = Date.now();
     try {
-      setStatus('push: starting (' + sizeMB + ' MB) [build push-v5]…');
+      setStatus('push: starting (' + sizeMB + ' MB) [build push-v6]…');
       const res = await pushBlobToGuestPort(blob, dstPath, {
         onPhase(msg) {
           try { console.log('[push]', msg); } catch (_) {}
