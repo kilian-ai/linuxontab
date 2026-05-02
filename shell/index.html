@@ -49,6 +49,10 @@
   #viewer-bar input { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 8px; font:inherit; flex:0 1 320px; }
   #viewer-bar button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
   #viewer-bar button:hover { background:#2d343d; }
+  #viewer-bar button.icon { padding:3px 6px; display:inline-flex; align-items:center; justify-content:center; }
+  #viewer-bar button.icon svg { width:14px; height:14px; display:block; fill:none; stroke:currentColor; stroke-width:1.6; stroke-linecap:round; stroke-linejoin:round; }
+  #viewer-bar button.icon:disabled { opacity:0.4; cursor:not-allowed; }
+  #viewer-bar .icon-group { display:inline-flex; gap:2px; margin-left:4px; }
   #viewer-body { flex:1; min-height:0; display:flex; }
   #viewer-tree { width:280px; overflow:auto; border-right:1px solid #2a2f36; padding:6px 0; font-size:12px; }
   #viewer-tree .row { padding:3px 12px; cursor:pointer; white-space:nowrap; user-select:none; }
@@ -199,6 +203,17 @@
       <input id="viewer-path" value="/" spellcheck="false" autocomplete="new-password" autocorrect="off" autocapitalize="off" name="viewer-path-noautofill" list="viewer-path-empty-list" title="absolute guest path — try /, /root, /etc, /tmp">
       <datalist id="viewer-path-empty-list"></datalist>
       <button id="viewer-refresh" title="reload listing">refresh</button>
+      <span class="icon-group">
+        <button id="viewer-new-file" class="icon" title="new file (in selected folder, or current root)">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 1.5H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5.5L9 1.5z"/><path d="M9 1.5V5.5h4"/><path d="M8 8.5v4M6 10.5h4"/></svg>
+        </button>
+        <button id="viewer-new-folder" class="icon" title="new folder (in selected folder, or current root)">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5V12a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1H8L6.5 3.5h-4a1 1 0 0 0-1 1z"/><path d="M8 7.5v4M6 9.5h4"/></svg>
+        </button>
+        <button id="viewer-delete" class="icon" title="delete selected file or folder" disabled>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M4.5 4.5l.6 8.4a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 1-.9l.6-8.4M7 7.5v4M9 7.5v4"/></svg>
+        </button>
+      </span>
       <span class="hint" id="viewer-status"></span>
       <button id="viewer-fullscreen" style="margin-left:auto" title="hide terminal — full-screen viewer">⤢</button>
       <button id="viewer-close" title="close viewer">close</button>
@@ -2482,6 +2497,9 @@
   const emptyEl     = $('viewer-empty');
   const pathEl      = $('viewer-path');
   const refreshBtn  = $('viewer-refresh');
+  const newFileBtn  = $('viewer-new-file');
+  const newFolderBtn= $('viewer-new-folder');
+  const deleteBtn   = $('viewer-delete');
   const closeBtn    = $('viewer-close');
   const vStatusEl   = $('viewer-status');
   let lastBlobUrl   = null;
@@ -2835,12 +2853,16 @@
   treeEl.addEventListener('click', e => {
     const row = e.target.closest('.row'); if (!row) return;
     const path = row.dataset.path;
-    if (row.dataset.dir === '1') {
+    const isDir = row.dataset.dir === '1';
+    treeEl.querySelectorAll('.row.sel').forEach(r => r.classList.remove('sel'));
+    row.classList.add('sel');
+    selection.path = path;
+    selection.isDir = isDir;
+    if (deleteBtn) deleteBtn.disabled = false;
+    if (isDir) {
       if (expanded.has(path)) expanded.delete(path); else expanded.add(path);
       renderTree();
     } else {
-      treeEl.querySelectorAll('.row.sel').forEach(r => r.classList.remove('sel'));
-      row.classList.add('sel');
       openFile(path);
     }
   });
@@ -2848,6 +2870,108 @@
     dirCache.clear();
     renderTree();
     vSet('reloaded');
+  };
+
+  // ── New file / New folder / Delete ─────────────────────────────────────
+  // VS Code-style action buttons. Target dir is derived from the current
+  // selection (selected dir → that dir; selected file → its parent;
+  // nothing selected → current viewer root).
+  const selection = { path: null, isDir: false };
+  function targetDir() {
+    if (selection.path && selection.isDir) return selection.path;
+    if (selection.path && !selection.isDir) {
+      const i = selection.path.lastIndexOf('/');
+      return i <= 0 ? '/' : selection.path.slice(0, i);
+    }
+    return normalizeViewerPath(pathEl.value);
+  }
+  function joinChild(dir, name) {
+    return dir === '/' ? '/' + name : dir.replace(/\/+$/, '') + '/' + name;
+  }
+  // Validate: no slashes, no NUL, not '.' or '..', length 1–255.
+  function validName(name) {
+    if (!name || name.length > 255) return 'name required (≤255 chars)';
+    if (name === '.' || name === '..') return 'invalid name';
+    if (/[\x00-\x1f\/]/.test(name)) return 'no slashes or control chars';
+    return null;
+  }
+  async function refreshAfterChange(parentDir, selectPath, selectIsDir) {
+    dirCache.delete(parentDir);
+    // Also drop ancestor caches so the tree picks up the change anywhere.
+    dirCache.clear();
+    if (selectPath) {
+      // Make sure the parent is expanded so the new entry is visible.
+      expanded.add(parentDir);
+      selection.path = selectPath;
+      selection.isDir = !!selectIsDir;
+    }
+    await renderTree();
+    if (selectPath) {
+      const row = treeEl.querySelector(`.row[data-path="${CSS.escape(selectPath)}"]`);
+      if (row) {
+        treeEl.querySelectorAll('.row.sel').forEach(r => r.classList.remove('sel'));
+        row.classList.add('sel');
+        if (deleteBtn) deleteBtn.disabled = false;
+      }
+    }
+  }
+  if (newFileBtn) newFileBtn.onclick = async () => {
+    if (!serialVfs || !serialVfs.ready) { vSet('shell not ready', 'err'); return; }
+    const dir = targetDir();
+    const name = (prompt(`New file name (in ${dir}):`, 'untitled.txt') || '').trim();
+    if (!name) return;
+    const err = validName(name); if (err) { vSet(err, 'err'); return; }
+    const full = joinChild(dir, name);
+    vSet(`creating ${full}…`);
+    const r = await serialVfs.exec(
+      `mkdir -p -- ${SerialVfs._q(dir)} && [ -e ${SerialVfs._q(full)} ] && echo EXISTS || (touch ${SerialVfs._q(full)} && echo OK)`,
+      { timeout: 15000 }
+    );
+    const out = stripAnsi(r.stdout || '').trim();
+    if (out === 'EXISTS') { vSet(`already exists: ${full}`, 'err'); return; }
+    if (r.exitCode !== 0 || out !== 'OK') { vSet(`failed: ${(r.stderr || '').trim() || 'unknown'}`, 'err'); return; }
+    await refreshAfterChange(dir, full, false);
+    vSet(`created ${full}`, 'ok');
+    openFile(full);
+  };
+  if (newFolderBtn) newFolderBtn.onclick = async () => {
+    if (!serialVfs || !serialVfs.ready) { vSet('shell not ready', 'err'); return; }
+    const dir = targetDir();
+    const name = (prompt(`New folder name (in ${dir}):`, 'new-folder') || '').trim();
+    if (!name) return;
+    const err = validName(name); if (err) { vSet(err, 'err'); return; }
+    const full = joinChild(dir, name);
+    vSet(`creating ${full}/…`);
+    const r = await serialVfs.exec(
+      `[ -e ${SerialVfs._q(full)} ] && echo EXISTS || (mkdir -p ${SerialVfs._q(full)} && echo OK)`,
+      { timeout: 15000 }
+    );
+    const out = stripAnsi(r.stdout || '').trim();
+    if (out === 'EXISTS') { vSet(`already exists: ${full}`, 'err'); return; }
+    if (r.exitCode !== 0 || out !== 'OK') { vSet(`failed: ${(r.stderr || '').trim() || 'unknown'}`, 'err'); return; }
+    await refreshAfterChange(dir, full, true);
+    vSet(`created ${full}/`, 'ok');
+  };
+  if (deleteBtn) deleteBtn.onclick = async () => {
+    if (!serialVfs || !serialVfs.ready) { vSet('shell not ready', 'err'); return; }
+    if (!selection.path) { vSet('nothing selected', 'err'); return; }
+    const target = selection.path;
+    if (target === '/' || target === '') { vSet('cannot delete /', 'err'); return; }
+    const what = selection.isDir ? 'folder (recursively)' : 'file';
+    if (!confirm(`Delete ${what}?\n\n${target}\n\nThis cannot be undone.`)) return;
+    vSet(`deleting ${target}…`);
+    const r = await serialVfs.exec(
+      `rm -rf -- ${SerialVfs._q(target)} && echo OK`,
+      { timeout: 30000 }
+    );
+    const out = stripAnsi(r.stdout || '').trim();
+    if (r.exitCode !== 0 || out !== 'OK') { vSet(`failed: ${(r.stderr || '').trim() || 'unknown'}`, 'err'); return; }
+    const i = target.lastIndexOf('/');
+    const parent = i <= 0 ? '/' : target.slice(0, i);
+    selection.path = null; selection.isDir = false;
+    deleteBtn.disabled = true;
+    await refreshAfterChange(parent, null, false);
+    vSet(`deleted ${target}`, 'ok');
   };
   pathEl.onkeydown = e => {
     if (e.key === 'Enter') {
