@@ -386,6 +386,104 @@
   // __simulateNetDeath debug helper at module scope can both poke it.
   let tabHiddenAt = 0;
 
+  // ── Freeze probes ──────────────────────────────────────────────────────
+  // Lightweight always-on watchdogs that log to the console when something
+  // looks wrong. Cheap to leave running; key for diagnosing future freezes.
+  //
+  // 1. Main-thread heartbeat: a 500ms interval. If the gap between two
+  //    fires exceeds 1500ms the page's main thread was stalled (GC, sync
+  //    XHR, throttled timer, infinite loop, modal dialog, etc).
+  // 2. v86 tick liveness: hook emulator-tick. If no tick for >3s while the
+  //    tab is visible AND the emulator has started, v86 is frozen.
+  // 3. WS lifecycle: log every wisp WS open/close/error with readyState.
+  // 4. Global error + unhandledrejection: tag any uncaught exception (this
+  //    is what catches the InvalidStateError throws if our hijacker misses).
+  window.__probes = {
+    lastBeat: Date.now(),
+    lastTick: 0,
+    ticks: 0,
+    started: false,
+    maxBeatGap: 0,
+    wsEvents: [],
+    errors: [],
+  };
+  // 1. Heartbeat
+  setInterval(() => {
+    const now = Date.now();
+    const gap = now - window.__probes.lastBeat;
+    window.__probes.lastBeat = now;
+    if (gap > window.__probes.maxBeatGap) window.__probes.maxBeatGap = gap;
+    // Ignore expected throttling while tab is hidden.
+    if (document.hidden) return;
+    if (gap > 1500) {
+      console.warn('[probe:heartbeat] main thread stalled', gap + 'ms');
+    }
+  }, 500);
+  // 2. v86 tick liveness — wired up after the emulator object exists
+  // (see the V86 instantiation site). We just check it from a watchdog:
+  setInterval(() => {
+    const p = window.__probes;
+    if (!p.started || document.hidden) return;
+    const sinceTick = Date.now() - p.lastTick;
+    if (sinceTick > 3000) {
+      console.warn('[probe:v86] no ticks for', sinceTick + 'ms',
+        '— emulator likely frozen. ws=', window.__wispWsState && window.__wispWsState.ws && window.__wispWsState.ws.readyState,
+        'totalTicks=', p.ticks);
+    }
+  }, 2000);
+  // 3. WS lifecycle augment — patch the existing tracker hook below by
+  //    listening once we already have a ws reference. Done lazily here:
+  setInterval(() => {
+    const s = window.__wispWsState;
+    if (!s || !s.ws || s.ws.__probeWired) return;
+    const ws = s.ws;
+    ws.__probeWired = true;
+    const log = (kind) => {
+      const evt = { kind, t: Date.now(), readyState: ws.readyState };
+      window.__probes.wsEvents.push(evt);
+      if (window.__probes.wsEvents.length > 50) window.__probes.wsEvents.shift();
+      console.log('[probe:ws]', kind, 'readyState=' + ws.readyState,
+        'ageMs=' + (Date.now() - (s.openedAt || 0)));
+    };
+    log('open-or-existing');
+    ws.addEventListener('close', (e) => log('close code=' + e.code + ' reason=' + (e.reason || '')));
+    ws.addEventListener('error', () => log('error'));
+  }, 1000);
+  // 4. Global error capture
+  window.addEventListener('error', (e) => {
+    const msg = (e && e.message) || String(e);
+    window.__probes.errors.push({ t: Date.now(), msg, src: 'error' });
+    if (window.__probes.errors.length > 50) window.__probes.errors.shift();
+    if (/InvalidStateError|WebSocket|wisp|cpu|do_tick/i.test(msg)) {
+      console.warn('[probe:error] suspicious uncaught error:', msg, e.filename + ':' + e.lineno);
+    }
+  });
+  window.addEventListener('unhandledrejection', (e) => {
+    const msg = (e && e.reason && (e.reason.message || String(e.reason))) || String(e);
+    window.__probes.errors.push({ t: Date.now(), msg, src: 'rejection' });
+    if (window.__probes.errors.length > 50) window.__probes.errors.shift();
+    console.warn('[probe:rejection]', msg);
+  });
+  // Convenience dump for diagnosing in DevTools.
+  window.__probeReport = () => {
+    const p = window.__probes;
+    const s = window.__wispWsState || {};
+    return {
+      now: Date.now(),
+      maxBeatGap: p.maxBeatGap,
+      lastTickAgoMs: p.lastTick ? Date.now() - p.lastTick : null,
+      totalTicks: p.ticks,
+      emulatorStarted: p.started,
+      tabHidden: document.hidden,
+      tabHiddenAtAgoMs: tabHiddenAt ? Date.now() - tabHiddenAt : null,
+      wispReadyState: s.ws ? s.ws.readyState : null,
+      wispOpenedAtAgoMs: s.openedAt ? Date.now() - s.openedAt : null,
+      wispLastCloseAgoMs: s.lastClose ? Date.now() - s.lastClose : null,
+      recentWsEvents: p.wsEvents.slice(-10),
+      recentErrors: p.errors.slice(-10),
+    };
+  };
+
   const $ = id => document.getElementById(id);
   const termEl = $('term'), snapEl = $('snap');
   // sLog: console-only stub (original wrote into #social-log which is gone)
@@ -1501,8 +1599,10 @@
     window.kickVirtio9pAfterRestore = kickVirtio9pAfterRestore;
 
     emulator.add_listener('emulator-ready',   () => { sanitizeInodeOwnership(); if (doRestore) kickVirtio9pAfterRestore(); setStatus('ready'); });
-    emulator.add_listener('emulator-started', () => { sanitizeInodeOwnership(); if (doRestore) kickVirtio9pAfterRestore(); setStatus(doRestore ? 'restored' : 'running', 'ok'); });
-    emulator.add_listener('emulator-stopped', () => setStatus('stopped'));
+    emulator.add_listener('emulator-started', () => { sanitizeInodeOwnership(); if (doRestore) kickVirtio9pAfterRestore(); setStatus(doRestore ? 'restored' : 'running', 'ok'); window.__probes.started = true; window.__probes.lastTick = Date.now(); });
+    emulator.add_listener('emulator-stopped', () => { setStatus('stopped'); window.__probes.started = false; });
+    // Probe: every v86 tick refreshes lastTick. Cheap (just a Date.now()).
+    emulator.add_listener('emulator-tick', () => { window.__probes.lastTick = Date.now(); window.__probes.ticks++; });
 
     // ── Restore-path instrumentation ───────────────────────────────────────
     // Visible in browser console. Captures WispNetworkAdapter WS lifecycle so
