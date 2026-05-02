@@ -2948,9 +2948,20 @@
     // mutually exclusive with tunnels panel
     if (tunnelsPanel && !tunnelsPanel.hidden) tunnelsPanel.hidden = true;
     followPanel.hidden = false;
-    // Auto-run bootstrap once when first opened (log empty == fresh).
+    // Auto-run bootstrap if log is empty (fresh open) OR if the `social`
+    // CLI is missing in the guest (e.g. fresh boot, no snapshot, or the
+    // binary was wiped). Cheap `which` probe — bootstrap itself no-ops
+    // when everything is already installed.
     if (!followLogEl.children.length) {
       followBootstrap();
+    } else {
+      (async () => {
+        try {
+          const w = await followRun('which social || true', { timeout: 10000 });
+          const p = (w.stdout || '').replace(/\s+/g, '');
+          if (!p || !p.startsWith('/')) followBootstrap();
+        } catch (_) { /* offline / emulator gone — leave panel as-is */ }
+      })();
     }
   };
   followCloseBtn.onclick = () => { followPanel.hidden = true; term.focus(); };
