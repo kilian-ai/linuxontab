@@ -1517,6 +1517,120 @@ export class RelaySession {
   }
 }
 
+// ── Secret-injecting proxy ────────────────────────────────────────────────────
+//
+// Endpoint:  /secret-proxy/<url-encoded-target-url>
+//   Example: /secret-proxy/https%3A%2F%2Fapi.github.com%2Fuser
+//
+// Replaces LOT_SECRET_<NAME> placeholders in request headers and body with
+// real secrets stored as CF Worker environment variables under the same key.
+// The real secret never touches the guest — only the placeholder does.
+//
+// Security:
+//   1. Destination allowlist — only well-known API hosts accepted.
+//   2. Secrets live as CF Worker env vars (wrangler secret put). They are not
+//      in KV, not in code, and not readable from the guest or browser.
+//   3. Light in-isolate rate limit to blunt abuse.
+//
+// Setup (one-time, on your Mac):
+//   cd services/relay
+//   npx wrangler secret put LOT_SECRET_GITHUB   # fine-grained PAT, repo+contents:write
+//   npx wrangler secret put LOT_SECRET_OPENAI   # sk-... key
+//
+// Usage from guest (curl / wget / git credential helper):
+//   curl -s https://relay.linuxontab.com/secret-proxy/https%3A%2F%2Fapi.github.com%2Fuser \
+//        -H "Authorization: Bearer LOT_SECRET_GITHUB" \
+//        -H "Accept: application/vnd.github+json"
+//
+//   # Git push helper (writes credential file that git uses):
+//   git config credential.helper \
+//     "!f() { echo username=x-access-token; echo password=LOT_SECRET_GITHUB; }; f"
+//   git remote set-url origin \
+//     https://relay.linuxontab.com/secret-proxy/https%3A%2F%2Fgithub.com/OWNER/REPO.git
+//   git push
+
+const SECRET_PROXY_ALLOW = new Set([
+  'api.github.com',
+  'github.com',
+  'api.openai.com',
+  'api.anthropic.com',
+]);
+
+const SECRET_PLACEHOLDER_RE = /LOT_SECRET_[A-Z0-9_]+/g;
+
+let _secretProxyReqCount = 0;
+const SECRET_PROXY_RATE_LIMIT = 1000; // per Worker isolate lifetime
+
+function injectSecrets(text, env) {
+  return text.replace(SECRET_PLACEHOLDER_RE, (placeholder) => {
+    const val = env[placeholder];
+    return (typeof val === 'string' && val.length > 0) ? val : placeholder;
+  });
+}
+
+async function handleSecretProxy(request, env) {
+  if (++_secretProxyReqCount > SECRET_PROXY_RATE_LIMIT) {
+    return new Response('rate limited', { status: 429, headers: cors() });
+  }
+
+  // Extract encoded target URL from /secret-proxy/<encoded>
+  const marker = '/secret-proxy/';
+  const markerIdx = request.url.indexOf(marker);
+  if (markerIdx === -1) return new Response('bad path', { status: 400, headers: cors() });
+  const encoded = request.url.slice(markerIdx + marker.length);
+  let targetUrl;
+  try {
+    targetUrl = new URL(decodeURIComponent(encoded));
+  } catch (_) {
+    return new Response('invalid target url', { status: 400, headers: cors() });
+  }
+
+  // Allowlist check — only forward to known API hosts
+  if (!SECRET_PROXY_ALLOW.has(targetUrl.hostname)) {
+    return new Response(`target host not allowed: ${targetUrl.hostname}`, { status: 403, headers: cors() });
+  }
+
+  // Build forwarded headers, injecting secrets into values
+  const fwdHeaders = new Headers();
+  const hopByHop = new Set(['host','connection','keep-alive','upgrade','cf-connecting-ip',
+    'cf-ray','cf-visitor','x-forwarded-for','x-forwarded-proto','x-real-ip']);
+  for (const [k, v] of request.headers.entries()) {
+    if (hopByHop.has(k.toLowerCase())) continue;
+    fwdHeaders.set(k, injectSecrets(v, env));
+  }
+
+  // Inject secrets into body for text/json/form content types
+  let body = null;
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    const ct = (request.headers.get('content-type') || '').toLowerCase();
+    if (ct.includes('json') || ct.includes('text') || ct.includes('x-www-form-urlencoded')) {
+      body = injectSecrets(await request.text(), env);
+    } else {
+      body = request.body;
+    }
+  }
+
+  let upstream;
+  try {
+    upstream = await fetch(targetUrl.toString(), {
+      method: request.method,
+      headers: fwdHeaders,
+      body,
+      redirect: 'follow',
+    });
+  } catch (e) {
+    return new Response(`upstream error: ${e?.message || e}`, { status: 502, headers: cors() });
+  }
+
+  const respHeaders = new Headers(upstream.headers);
+  for (const [k, v] of Object.entries(cors())) respHeaders.set(k, v);
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: respHeaders,
+  });
+}
+
 // ── Main Worker ───────────────────────────────────────────────────────────────
 
 export default {
@@ -1642,6 +1756,13 @@ export default {
 
     if (url.pathname === '/wisp' || url.pathname === '/wisp/') {
       return _wispTunnelWs(request);
+    }
+
+    if (url.pathname.startsWith('/secret-proxy/')) {
+      if (request.method === 'OPTIONS') {
+        return new Response(null, { status: 204, headers: cors() });
+      }
+      return handleSecretProxy(request, env);
     }
 
     if (url.pathname === '/cors' || url.pathname.startsWith('/cors/')) {
