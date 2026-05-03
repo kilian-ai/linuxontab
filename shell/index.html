@@ -4443,9 +4443,14 @@
       'pkill -f websocat 2>/dev/null; ' +
       'rm -f /tmp/tunnel.code /tmp/tunnel.pids /tmp/tunnel.cmd /tmp/tunnel.ports 2>/dev/null; ' +
       'echo stopped';
-    // Route into lot:tunnel so the user sees the stop output land in the
-    // tunnel window (which is also tail-F'ing /tmp/tunnel.last.log).
-    const r = await tnExec(cmd, { timeout: 10000, tmuxWindow: 'tunnel' });
+    // NOTE: don't route to lot:tunnel — that window is running
+    // `tail -F /tmp/tunnel.last.log` in the foreground, so any
+    // keystrokes typed into its pane go into tail's stdin (which
+    // discards them) and the wrapped command never executes.
+    // Default routing (lot:vfs, silent) is correct: this command
+    // doesn't write to /tmp/tunnel.last.log so there's nothing for
+    // the user to see anyway.
+    const r = await tnExec(cmd, { timeout: 10000 });
     tnLog((r.stdout || '').trim() || '(no output)', r.exitCode === 0 ? 'ok' : 'err');
     setTimeout(tnRefresh, 400);
   }
@@ -4462,9 +4467,13 @@
     // on websocat's foreground respawn loop. We background it via `&` and
     // detach stdout/stderr to a log so subsequent guest commands still work.
     const wrapped = '( ' + cmd + ' ) >/tmp/tunnel.last.log 2>&1 &';
-    // Route into lot:tunnel so the launch (which runs `apk add`, seeds DNS,
-    // registers with the relay, etc.) is visible in the tunnel window.
-    const r = await tnExec(wrapped, { timeout: 8000, tmuxWindow: 'tunnel' });
+    // NOTE: don't route to lot:tunnel — that window has `tail -F` of
+    // the very log we redirect to, running in the foreground. Routing
+    // here would feed our marker keystrokes into tail's stdin and the
+    // command would never execute. Instead we run it in lot:vfs
+    // (default) and the user sees the output flow into the tunnel
+    // window automatically via the existing tail -F.
+    const r = await tnExec(wrapped, { timeout: 8000 });
     tnLog('launched (exit=' + r.exitCode + ')', r.exitCode === 0 ? 'ok' : 'err');
     // tunnel-up.sh has to install packages, seed DNS, register, generate
     // ssh host keys, and start sshd before it writes /tmp/tunnel.code. On
