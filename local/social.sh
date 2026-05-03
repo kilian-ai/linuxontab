@@ -709,8 +709,25 @@ cmd_sync_one() {
         fi
         url="$base/$p"
         log "    fetch $p"
-        wget -qO "$local_path.tmp" "$url" && mv "$local_path.tmp" "$local_path" \
-            || { log "    failed: $url"; rm -f "$local_path.tmp"; }
+        if wget -qO "$local_path.tmp" "$url"; then
+            mv "$local_path.tmp" "$local_path"
+        else
+            # Compatibility fallback: some publisher guests run httpd with
+            # docroot=/root, where shared files live under /public/... .
+            # Newer setups serve docroot=/root/public directly.
+            alt=""
+            case "$p" in
+                public/*) alt="" ;;
+                *) alt="$base/public/$p" ;;
+            esac
+            if [ -n "$alt" ] && wget -qO "$local_path.tmp" "$alt"; then
+                log "    fetched via fallback: $alt"
+                mv "$local_path.tmp" "$local_path"
+            else
+                log "    failed: $url${alt:+ (also tried $alt)}"
+                rm -f "$local_path.tmp"
+            fi
+        fi
         i=$((i+1))
     done
     log "  done: $npub"
