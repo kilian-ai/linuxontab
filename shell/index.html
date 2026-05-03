@@ -2161,6 +2161,16 @@
         'esac\n' +
         'if ! tmux has-session -t "$S" 2>/dev/null; then\n' +
         '  tmux new-session  -d -s "$S" -n shell\n' +
+        // Disable the tmux status bar. When SerialVfs routing flips
+        // windows via Ctrl-B<digit> + Ctrl-B l, tmux redraws the
+        // destination pane's full screen including the green status
+        // line at the bottom row. xterm.js scrollback then captures
+        // those redraws as visible artifact lines that "bleed" into
+        // the user's history. The status bar shows nothing essential
+        // (window name + clock) — the LinuxOnTab side panels already
+        // surface what's running. Turn it off and the redraws no
+        // longer leave visible green bars.
+        '  tmux set-option -t "$S" -g status off 2>/dev/null\n' +
         '  tmux new-window   -t "$S:" -n tunnel\n' +
         '  tmux new-window   -t "$S:" -n social\n' +
         '  tmux new-window   -t "$S:" -n viewer\n' +
