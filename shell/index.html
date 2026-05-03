@@ -2846,9 +2846,9 @@
       // the v86 guest's NIC + websocat can drain. CF Durable Objects can
       // close a paired WS when their internal buffer overflows, which is
       // exactly the "WS not open mid-transfer" failure mode users hit.
-      // 8 MB lets us absorb polling latency (1.2s) while staying below
-      // typical DO buffer ceilings.
-      const MAX_INFLIGHT = 8 * 1024 * 1024;
+      // 2 MB matches the relay's per-WS pause threshold (4 MB) with
+      // headroom for the 1.2s polling lag.
+      const MAX_INFLIGHT = 2 * 1024 * 1024;
       onProgress(0, total);
       for (let off = 0; off < u8.length; off += CHUNK) {
         if (wsDead)  throw wsDead;

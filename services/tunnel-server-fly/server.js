@@ -80,6 +80,50 @@ function parsePort(s) {
   return (n > 0 && n < 65536) ? n : null;
 }
 
+// ── Backpressure ───────────────────────────────────────────────────────────
+//
+// When forwarding bytes between two paired WebSockets, we have to apply
+// flow control or large transfers (snapshot push: 1-2 GB) overflow the
+// outbound peer's send buffer. The ws library queues forever in memory
+// without complaining, so on Fly's small-RAM dynos this either OOMs the
+// process or eventually triggers a close from libuv.
+//
+// We pause the SOURCE WS's underlying TCP socket reads when the
+// DESTINATION peer's bufferedAmount exceeds HIGH, and resume it when it
+// drops below LOW. Pausing the underlying read socket exerts TCP-level
+// backpressure all the way back to the original sender (browser → relay
+// or guest → relay), which is exactly what we want — no in-memory
+// queuing in the relay.
+//
+// The drain check runs once per ~50ms via setInterval until the buffer
+// drains, then the timer is cleared.
+const BP_HIGH = 4 * 1024 * 1024;   // pause src reads above 4 MB peer buffer
+const BP_LOW  = 1 * 1024 * 1024;   // resume below 1 MB
+
+function applyBackpressure(srcWs, dstWs) {
+  if (!dstWs || dstWs.readyState !== 1) return;
+  const buffered = dstWs.bufferedAmount || 0;
+  if (buffered <= BP_HIGH) return;
+  const sock = srcWs._socket;
+  if (!sock || srcWs.__bpPaused) return;
+  srcWs.__bpPaused = true;
+  try { sock.pause(); } catch (_) {}
+  const tick = setInterval(() => {
+    // Stop if either side died — let close handlers tear down.
+    if (srcWs.readyState !== 1 || dstWs.readyState !== 1) {
+      clearInterval(tick);
+      srcWs.__bpPaused = false;
+      try { sock.resume(); } catch (_) {}
+      return;
+    }
+    if ((dstWs.bufferedAmount || 0) <= BP_LOW) {
+      clearInterval(tick);
+      srcWs.__bpPaused = false;
+      try { sock.resume(); } catch (_) {}
+    }
+  }, 50);
+}
+
 function cors(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
@@ -164,6 +208,12 @@ class PortSession {
       const peer = this.pairs.get(ws);
       if (peer && peer.readyState === 1) {
         try { peer.send(buf, { binary: true }); } catch (_) {}
+        // Backpressure: if peer's outbound buffer grows, pause this
+        // socket's underlying TCP read so the OS NIC backs up to the
+        // far end. Without this, large transfers (snapshot push) fill
+        // node's per-WS buffer and Fly OOM-kills the dyno or we hit
+        // ws library default close on overflow.
+        applyBackpressure(ws, peer);
         return;
       }
       // Unpaired: buffer for the eventual pair (sshd banner case).
@@ -254,6 +304,8 @@ class PortSession {
       const peer = this.pairs.get(ws);
       if (!peer || peer.readyState !== 1) return;
       try { peer.send(isBinary ? data : Buffer.from(data), { binary: true }); } catch (_) {}
+      // See addGuest() for backpressure rationale.
+      applyBackpressure(ws, peer);
     });
     ws.on('close', (code, reason) => {
       const cp = this.clientWs.get(port);
