@@ -1018,9 +1018,11 @@
     const prevStatus = statusEl.textContent;
     try {
       const t0 = Date.now();
-      // 9P umount/remount dance removed — was causing the guest to be in
-      // an inconsistent mount state after restore, which made subsequent
-      // mkdir/touch on /mnt/host hang.
+      // Save in unmounted state. Without this, the snapshot RAM image
+      // captures chan->inuse=1 referencing a virtqueue identity that
+      // won't match the freshly recreated Virtio9p instance on restore,
+      // and the post-restore mount fails with EBUSY.
+      await umountBeforeSave();
       const st = await emulator.save_state();
       // Auto-save always writes back into whatever snapshot is currently
       // active. If the session started from a fresh-boot selection, we
@@ -1029,6 +1031,8 @@
       const name = currentSnapName || DEFAULT_SNAP_NAME;
       await idbPut(snapKeyFor(currentIso, name), st);
       currentSnapName = name;
+      // Re-mount for the live session so the user keeps working.
+      await remountAfterSave();
       lastAutosaveAt = Date.now();
       dirty = false;
       // The autosave just materialized a snapshot under currentIso/currentSnapName.
@@ -2957,6 +2961,8 @@
     saveInProgress = true;
     setStatus('saving snapshot\u2026 (tab may freeze briefly)');
     try {
+      // Save in unmounted state to avoid stale 9P chan->inuse on restore.
+      await umountBeforeSave();
       const buf = await emulator.save_state();
       // Save into the dropdown's currently-selected slot. Fresh-boot
       // selections materialize as DEFAULT_SNAP_NAME for that ISO. Named
@@ -2969,6 +2975,7 @@
       currentSnapName = targetName;
       const key = snapKeyFor(targetIso, targetName);
       await idbPut(key, buf);
+      await remountAfterSave();
       setStatus(`snapshot saved as ${targetIso}/${targetName} (${(buf.byteLength/1048576).toFixed(1)} MB)`, 'ok');
       await populateSnapSelect(key);
     } catch (e) {
