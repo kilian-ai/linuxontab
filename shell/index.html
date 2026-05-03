@@ -193,7 +193,7 @@
     <button id="viewer" disabled title="Browse the entire guest filesystem via serial shell (ls/cat).">viewer</button>
     <button id="follow" disabled title="social — bootstraps social CLI, shows your npub, follow/sync/publish via guest CLI">social</button>
     <button id="tunnels" disabled title="manage running tunnels (ports, codes, lifecycle, edit CLI)">tunnels</button>
-    <button id="tmux-route" disabled title="route panel-fired commands (tunnel/social/viewer/etc.) into dedicated tmux windows of the persistent `lot` session, so they don't disturb whatever you're running in the active window (e.g. an openclaw REPL). Click ON only after `lot` is attached. Shift-click to force-enable without probe (use if probe keeps timing out but you know lot is up).">tmux: off</button>
+    <button id="tmux-route" disabled title="route panel-fired commands (tunnel/social/viewer/etc.) into dedicated tmux windows of the persistent `lot` session, so they don't disturb whatever you're running in the active window. Click to toggle on/off (no probe — trust the user). Shift-click for a diagnostic probe that reports lot/attach/window state.">tmux: off</button>
     <span id="status" class="hint">idle</span>
     <span class="stat" id="stats"></span>
   </div>
@@ -4853,17 +4853,28 @@
         tmuxUpdateBtn();
         return;
       }
-      // Shift-click → force-enable, skip probe. Use this when you KNOW
-      // lot is healthy but the probe keeps timing out (e.g. something
-      // about the active pane is interfering with marker capture).
-      // Recoverable: just toggle off if routing turns out to be broken.
-      if (ev && ev.shiftKey) {
+      // PLAIN CLICK → just enable (trust the user). The probe's
+      // marker capture is fragile when the user is already attached to
+      // tmux: tmux's grid renderer can split the marker line across
+      // rows with cursor-positioning escapes that have no literal LF
+      // between them, so even after ANSI strip the regex
+      //   (?:^|\n)MARKER(?:\n|$)
+      // sometimes does not match → probe times out → button silently
+      // refuses to enable, which is the opposite of what the user
+      // wants. Toggling is reversible (click again to turn off), so
+      // optimistic-enable is the right default.
+      //
+      // SHIFT-CLICK → run diagnostic probe before enabling. Useful
+      // when routing seems to misbehave and you want a verdict
+      // (NO_TMUX / NO_SESSION / NOT_ATTACHED / NO_VFS_WIN / OK)
+      // before flipping the switch.
+      if (!ev || !ev.shiftKey) {
         serialVfs.useTmux = true;
         tmuxUpdateBtn();
-        try { console.log('[tmux-route] force-enabled via shift-click (probe skipped)'); } catch (_) {}
+        try { console.log('[tmux-route] enabled (no probe). Shift-click to run diagnostic probe.'); } catch (_) {}
         return;
       }
-      // Plain probe (UNROUTED). The previous attempt to force-route
+      // Diagnostic probe (UNROUTED). The previous attempt to force-route
       // through lot:vfs introduced its own timeout failure modes (when
       // SerialVfs marker capture across a tmux window-switch hiccups,
       // probe stalls with no actionable info). Plain unrouted is more
