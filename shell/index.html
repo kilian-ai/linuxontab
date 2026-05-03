@@ -2733,100 +2733,78 @@
 
     // ---- Fast path: dst is under /mnt/host → write via fs9p directly.
     //
-    // We try to involve the guest in dentry creation (via serial bridge
-    // mkdir+touch) so the kernel dcache stays in sync, but we keep the
-    // bridge timeout short and fall back to a pure host-side write
-    // (fs9p.CreateBinaryFile) if the bridge doesn't respond. The pure
-    // host-side path may leave the guest's dcache stale until something
-    // independently invalidates it (re-mount, drop_caches, fresh ls of
-    // a never-cached subdir), but at least the file lands in fs9p and
-    // host-side tools (the viewer, save_state) can see it.
+    // We do NOT route through the serial bridge (serialVfs.exec) here:
+    // its queue is FIFO and a previous stuck job (e.g. a tmux pane in a
+    // modal state) would make the push hang forever before our 4s
+    // timeout even started. Instead we:
+    //   1. Walk + mkdir parent components host-side via fs9p.
+    //   2. Unlink any prior file at dst, write data via CreateBinaryFile.
+    //   3. Fire-and-forget a `ls /mnt/host/<parent>` keystroke directly
+    //      into the guest tty (bypassing serialVfs queueing) to nudge
+    //      the kernel 9P client into Twalk'ing the parent so the new
+    //      dentry shows up in the dcache.
     if (dstPath.indexOf(HOST_MOUNT + '/') === 0) {
       const fsPath = dstPath.slice(HOST_MOUNT.length); // keep leading '/'
       const parentGuest = dstPath.replace(/\/[^/]*$/, '') || HOST_MOUNT;
-      const parentQ = SerialVfs._q(parentGuest);
       const fs = emulator.fs9p;
-
-      // Step 1: try to get the guest to create the dentry first. Best
-      // effort — if the bridge is busy/blocked we proceed without it.
-      let guestCreated = false;
-      if (serialVfs) {
-        onPhase('asking guest to create empty dst (best effort, 4s timeout)');
-        try { console.log('[push] guest mkdir+touch (best-effort)', dstPath); } catch (_) {}
-        try {
-          const tCreate0 = Date.now();
-          const cr = await serialVfs.exec(
-            'mkdir -p -- ' + parentQ + ' && : > ' + dstQ + ' && echo OK',
-            { timeout: 4000 }
-          );
-          const crOut = stripAnsi(cr.stdout || '').trim();
-          if (crOut.indexOf('OK') !== -1) {
-            guestCreated = true;
-            try { console.log('[push] guest created dst in', Date.now() - tCreate0, 'ms'); } catch (_) {}
-          } else {
-            try { console.log('[push] guest create returned without OK:', JSON.stringify(crOut)); } catch (_) {}
-          }
-        } catch (e) {
-          try { console.log('[push] guest create timed out / failed (continuing host-only):', e && e.message || e); } catch (_) {}
-        }
-      }
 
       onPhase('writing ' + (total / 1048576).toFixed(1) + ' MB to 9P (may take 10–30s, browser will appear frozen)');
       onProgress(0, total);
       await new Promise(r => setTimeout(r, 0)); // yield so banner repaints
       const t0 = Date.now();
 
-      let inodeId, inode;
-      if (guestCreated) {
-        // Guest already touched the file; just locate the inode and
-        // stuff data in via set_data.
-        const sp = fs.SearchPath(fsPath);
-        if (!sp || sp.id === -1) {
-          throw new Error('fs9p does not see ' + fsPath + ' after guest touch');
+      // Walk parent components, creating any missing dir host-side.
+      const fsParent = parentGuest.slice('/mnt/host'.length) || '/';
+      const parts = fsParent.split('/').filter(Boolean);
+      let parentId = 0; // fs9p root inode
+      for (const name of parts) {
+        let id = fs.Search(parentId, name);
+        if (id === -1) {
+          id = fs.CreateDirectory(name, parentId);
+          try { console.log('[push] fs9p mkdir', name, '->', id); } catch (_) {}
         }
-        inodeId = sp.id;
-        await fs.set_data(inodeId, u8);
-        inode = fs.GetInode(inodeId);
-        inode.size = u8.length;
-      } else {
-        // Pure host-side path: walk parent components, create any
-        // missing dir, unlink any prior file, CreateBinaryFile.
-        const fsParent = parentGuest.slice('/mnt/host'.length) || '/';
-        const parts = fsParent.split('/').filter(Boolean);
-        let parentId = 0; // fs9p root inode
-        for (const name of parts) {
-          let id = fs.Search(parentId, name);
-          if (id === -1) {
-            id = fs.CreateDirectory(name, parentId);
-            try { console.log('[push] fs9p mkdir', name, '->', id); } catch (_) {}
-          }
-          parentId = id;
-        }
-        const existing = fs.SearchPath(fsPath);
-        if (existing && existing.id !== -1 && existing.parentid !== -1) {
-          fs.Unlink(existing.parentid, existing.name);
-        }
-        await emulator.create_file(fsPath, u8);
-        const sp2 = fs.SearchPath(fsPath);
-        if (!sp2 || sp2.id === -1) throw new Error('fs9p missing dst after CreateBinaryFile');
-        inodeId = sp2.id;
-        inode = fs.GetInode(inodeId);
+        parentId = id;
       }
+      // Unlink any prior file at dst (resume already handled exact-size).
+      const existing = fs.SearchPath(fsPath);
+      if (existing && existing.id !== -1 && existing.parentid !== -1) {
+        fs.Unlink(existing.parentid, existing.name);
+      }
+      try { console.log('[push] calling emulator.create_file', fsPath); } catch (_) {}
+      await emulator.create_file(fsPath, u8);
 
-      // Bump mtime/ctime so guest stat shows a recent timestamp.
+      // Locate the freshly-created inode and bump timestamps.
+      const sp2 = fs.SearchPath(fsPath);
+      if (!sp2 || sp2.id === -1) throw new Error('fs9p missing dst after CreateBinaryFile');
+      const inode = fs.GetInode(sp2.id);
       const now = Math.floor(Date.now() / 1000);
-      if (inode) { inode.mtime = now; inode.ctime = now; }
+      inode.mtime = now;
+      inode.ctime = now;
 
       const wMs = Date.now() - t0;
-      try { console.log('[push] 9P write done in', wMs, 'ms (guestCreated=' + guestCreated + ', inode.size=' + (inode && inode.size) + ')'); } catch (_) {}
-      onPhase('9P write done in ' + wMs + ' ms' + (guestCreated ? '' : ' (host-only — guest may need `ls`/remount to see)'));
+      try { console.log('[push] 9P write done in', wMs, 'ms, inode.size=', inode.size); } catch (_) {}
+      onPhase('9P write done in ' + wMs + ' ms');
       onProgress(total, total);
 
-      if (!inode || inode.size !== total) {
+      if (inode.size !== total) {
         throw new Error('size mismatch after 9P write: fs9p sees ' +
-          (inode && inode.size) + ' / expected ' + total);
+          inode.size + ' / expected ' + total);
       }
-      return { bytes: inode.size, path: dstPath, guestCreated };
+
+      // Nudge the guest dcache so a subsequent `ls` sees the new file.
+      // We bypass serialVfs (its queue may be blocked) and write the
+      // command directly into the guest tty. This is best-effort: if
+      // the guest is mid-prompt-read it will execute; if it's in a
+      // pager or REPL it will just inject a stray keystroke (mostly
+      // harmless, recoverable with backspace). The user can also just
+      // run `ls /mnt/host/snapshots/` themselves.
+      try {
+        if (typeof sendGuestText === 'function') {
+          sendGuestText('ls -lh ' + SerialVfs._q(parentGuest) + ' >/dev/null 2>&1\n');
+        }
+      } catch (_) {}
+
+      return { bytes: inode.size, path: dstPath };
     }
 
     // ---- Slow path: dst is in tmpfs (e.g. /root/...). Stage chunks under
