@@ -2710,6 +2710,26 @@
     // matches /proc/PID/cmdline, not env). We pass it as a harmless
     // sh -c positional ($0) — visible in cmdline, ignored by the script.
     const marker = 'snappush-' + Math.random().toString(36).slice(2, 8);
+    // Wrapper script that captures the exit codes of websocat AND cat
+    // separately. Without this we can't tell which side died — pipe
+    // exit codes get swallowed and silent failures look identical.
+    // Uses a fifo so cat is a real backgrounded child we can `wait` on.
+    const fifo = '/tmp/snap-' + marker + '.fifo';
+    const recvScript =
+      'exec 2>>/tmp/snap-recv.log; ' +
+      'echo "[recv ' + marker + '] start $(date +%s)"; ' +
+      'rm -f ' + fifo + '; mkfifo ' + fifo + ' || { echo "[recv] mkfifo failed"; exit 1; }; ' +
+      '( cat ' + fifo + ' > ' + SerialVfs._q(tmpDst) + ' 2>>/tmp/snap-recv.log; ' +
+        'echo "[recv ' + marker + '] cat exit=$? bytes=$(wc -c < ' + SerialVfs._q(tmpDst) + ' 2>/dev/null)" ) & ' +
+      'CAT_PID=$!; ' +
+      // --ping-interval 25 matches tunnel-up.sh bridges, prevents Fly
+      // edge idle timeout (60s) from killing the WS during slow patches.
+      'websocat --binary --ping-interval 25 -u ' + SerialVfs._q(guestUrl) + ' - > ' + fifo + '; ' +
+      'WSC=$?; ' +
+      'echo "[recv ' + marker + '] websocat exit=$WSC"; ' +
+      'wait $CAT_PID 2>/dev/null; ' +
+      'rm -f ' + fifo + '; ' +
+      'echo "[recv ' + marker + '] done";';
     const startCmd =
       'mkdir -p -- ' + dirEsc + ' 2>/dev/null; ' +
       'rm -f -- ' + SerialVfs._q(tmpDst) + ' 2>/dev/null; ' +
@@ -2717,10 +2737,8 @@
       // Kill any lingering receivers from prior failed attempts.
       'pkill -f "snappush-" 2>/dev/null; sleep 0.2; ' +
       // setsid → sh -c SCRIPT TAG …  ($0 = TAG, baked into cmdline)
-      '(setsid sh -c ' + SerialVfs._q(
-        'websocat --binary -u ' + SerialVfs._q(guestUrl) + ' - ' +
-        '| cat > ' + SerialVfs._q(tmpDst) + ' 2>>/tmp/snap-recv.log'
-      ) + ' ' + marker + ' </dev/null >>/tmp/snap-recv.log 2>&1 &); ' +
+      '(setsid sh -c ' + SerialVfs._q(recvScript) + ' ' + marker +
+        ' </dev/null >>/tmp/snap-recv.log 2>&1 &); ' +
       'sleep 0.5; ' +
       // Match the websocat child by the unique URL fragment (code+port
       // are already unique to this push). Falls back to the marker.
