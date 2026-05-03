@@ -2636,398 +2636,160 @@
     await populateSnapSelect('fresh:' + sel.iso);
   }
 
-  // ---- Push: stream a host blob into the guest filesystem via the
-  // existing tunnel CDN. Used to drop snapshot files into ~/root so they
-  // can be published with social.sh, without touching v86 device state
-  // (no fs9p hot-attach is possible — that's set at new V86() time).
+  // ---- Push: drop a host blob into the guest filesystem.
   //
-  // Wire model: register an ad-hoc port on the relay → spawn a guest
-  // `websocat ... writefile:<dst>` receiver → host opens a client WS and
-  // streams binary frames → close → guest receiver exits and the file
-  // is renamed into place. Pure userspace; the receiver process exits
-  // before any subsequent snapshot, so save_state is unaffected.
-  const PUSH_DEFAULT_PORT = 8086;
+  // 9P-direct push: write the blob into the guest's `host9p` virtio
+  // share (mounted at /mnt/host) using v86's in-process fs9p API, then
+  // optionally `cp` it to a tmpfs path inside the guest. No relay, no
+  // websocat, no WebSocket — direct memory→fs9p call. Bypasses every
+  // failure mode of the previous tunnel-based push (websocat 128 KB
+  // ceiling, Fly proxy timeouts, register-port races, CF DO buffer
+  // limits). Tmpfs ceiling still applies for /root/... destinations,
+  // so we default to /mnt/host/snapshots/... where there is no ceiling
+  // (the file lives in browser RAM via fs9p, alongside the snapshot
+  // blob we already loaded from IndexedDB).
+  //
+  // Resume model: before writing, we check if dstPath already exists
+  // with the expected size — if so, the push is a no-op. fs9p contents
+  // are volatile across page reloads (they live in JS heap), so true
+  // mid-transfer resume isn't possible across refreshes. Within a
+  // single session, create_file() is one synchronous call so there's
+  // nothing to resume mid-transfer either.
   async function pushBlobToGuestPort(blob, dstPath, opts) {
     if (!emulator) throw new Error('emulator not running');
     if (!serialVfs) throw new Error('serial bridge not ready');
+    if (!emulator.fs9p) throw new Error('9P filesystem not initialized');
     opts = opts || {};
-    const port = opts.port || PUSH_DEFAULT_PORT;
     const onProgress = opts.onProgress || (() => {});
     const onPhase = opts.onPhase || (() => {});
     const total = (blob && (blob.size != null ? blob.size : blob.byteLength)) || 0;
     if (!total) throw new Error('empty blob');
-    const tmpDst = dstPath + '.recv';
 
-    // 1. Confirm there's an active tunnel and grab its code.
-    onPhase('reading /tmp/tunnel.code');
-    const codeR = await serialVfs.exec(
-      'cat /tmp/tunnel.code 2>/dev/null', { timeout: 5000 }
-    );
-    const code = stripAnsi(codeR.stdout || '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
-    if (!/^[A-Z0-9]{4}$/.test(code)) {
-      throw new Error('no active tunnel — start one first (tunnels panel → start)');
-    }
-    onPhase('tunnel code: ' + code);
+    const HOST_MOUNT = '/mnt/host';
+    const dstQ = SerialVfs._q(dstPath);
 
-    // 2. Extend the relay registration to allow port 8086 (idempotent add).
-    onPhase('registering port ' + port + ' with relay');
-    let relayBase = null;
-    let lastErr = null;
-    let registerJson = null;
-    for (const r of TUNNEL_RELAY_ENDPOINTS) {
-      try {
-        const res = await fetch(r + '/port/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code, ports: [port] }),
-        });
-        if (res.ok) {
-          relayBase = r;
-          try { registerJson = await res.json(); } catch (_) {}
-          break;
-        }
-        lastErr = new Error('register ' + res.status + ' on ' + r);
-      } catch (e) { lastErr = e; }
-    }
-    if (!relayBase) {
-      throw new Error('failed to register port ' + port + ': ' + (lastErr && lastErr.message));
-    }
-    const wsBase = relayBase.replace(/^http/, 'ws');
-    onPhase('relay: ' + relayBase);
-    try { console.log('[push] register response:', registerJson); } catch (_) {}
-
-    // 2b. Sanity-check: query /port/status to confirm THIS relay's view of
-    // the session has our port in registeredPorts. If a different relay is
-    // serving guest WS than the one we registered with (DNS/CDN/proxy
-    // race), the guest WS will be socket.destroy()'d and snap-recv.log
-    // will report "websocat exit=0 cat exit=0 bytes=0" — exactly the
-    // failure mode we keep hitting. Fail fast with a clear message.
+    // ---- Resume: skip if dst already has the right size.
+    onPhase('checking existing dst');
     try {
-      const sres = await fetch(relayBase + '/port/status?code=' + code);
-      if (sres.ok) {
-        const sj = await sres.json();
-        try { console.log('[push] status post-register:', sj); } catch (_) {}
-        const regPorts = (sj && sj.registered_ports) || [];
-        if (!regPorts.includes(port)) {
-          throw new Error(
-            'register did not stick: ' + relayBase +
-            ' shows registered_ports=' + JSON.stringify(regPorts) +
-            ' (expected to contain ' + port + '). ' +
-            'Likely the relay is serving multiple machines and your ' +
-            'register call landed on a different one than the WS will.'
-          );
-        }
-      }
-    } catch (e) {
-      if (/register did not stick/.test(e.message || '')) throw e;
-      // Status fetch errors are non-fatal — we already registered ok.
-    }
-
-    // 3. Spawn the guest receiver. After two failed approaches:
-    //    (a) websocat-as-file-sink (sh-c:cat>file, writefile:, -u … >file)
-    //        all gave 1-2 frames before silently dying — websocat's stdout
-    //        being a regular file FD breaks something in v86's musl/i686
-    //        build, or its sink modes are buggy at scale.
-    //    (b) websocat WS↔tcp:127.0.0.1:18086 + nc -l -p 18086 > file
-    //        also stalled at 524288 B (= 2× BusyBox nc default read buf).
-    //
-    //    Working approach: pipe websocat's stdout into `cat`, and let cat
-    //    do the file write. websocat sees its stdout as a PIPE (not a
-    //    regular file), which is its native streaming target. cat copies
-    //    pipe → file unconditionally and reliably. When the WS closes,
-    //    websocat exits, the pipe write end closes, cat sees stdin EOF
-    //    and exits cleanly — file is fully flushed.
-    const guestUrl = wsBase + '/port/guest?code=' + code + '&port=' + port;
-    const dirEsc = SerialVfs._q(tmpDst.replace(/\/[^/]*$/, '') || '/');
-    // Unique tag so we can find this run's websocat in pgrep -f (which
-    // matches /proc/PID/cmdline, not env). We pass it as a harmless
-    // sh -c positional ($0) — visible in cmdline, ignored by the script.
-    const marker = 'snappush-' + Math.random().toString(36).slice(2, 8);
-    // Wrapper script that captures the exit codes of websocat AND cat
-    // separately. Without this we can't tell which side died — pipe
-    // exit codes get swallowed and silent failures look identical.
-    // Uses a fifo so cat is a real backgrounded child we can `wait` on.
-    const fifo = '/tmp/snap-' + marker + '.fifo';
-    const recvScript =
-      'exec 2>>/tmp/snap-recv.log; ' +
-      'echo "[recv ' + marker + '] start $(date +%s)"; ' +
-      'rm -f ' + fifo + '; mkfifo ' + fifo + ' || { echo "[recv] mkfifo failed"; exit 1; }; ' +
-      '( cat ' + fifo + ' > ' + SerialVfs._q(tmpDst) + ' 2>>/tmp/snap-recv.log; ' +
-        'echo "[recv ' + marker + '] cat exit=$? bytes=$(wc -c < ' + SerialVfs._q(tmpDst) + ' 2>/dev/null)" ) & ' +
-      'CAT_PID=$!; ' +
-      // --ping-interval 25 matches tunnel-up.sh bridges, prevents Fly
-      // edge idle timeout (60s) from killing the WS during slow patches.
-      'websocat --binary --ping-interval 25 -u ' + SerialVfs._q(guestUrl) + ' - > ' + fifo + '; ' +
-      'WSC=$?; ' +
-      'echo "[recv ' + marker + '] websocat exit=$WSC"; ' +
-      'wait $CAT_PID 2>/dev/null; ' +
-      'rm -f ' + fifo + '; ' +
-      'echo "[recv ' + marker + '] done";';
-    const startCmd =
-      'mkdir -p -- ' + dirEsc + ' 2>/dev/null; ' +
-      'rm -f -- ' + SerialVfs._q(tmpDst) + ' 2>/dev/null; ' +
-      'rm -f /tmp/snap-recv.log 2>/dev/null; ' +
-      // Kill any lingering receivers from prior failed attempts.
-      'pkill -f "snappush-" 2>/dev/null; sleep 0.2; ' +
-      // setsid → sh -c SCRIPT TAG …  ($0 = TAG, baked into cmdline)
-      '(setsid sh -c ' + SerialVfs._q(recvScript) + ' ' + marker +
-        ' </dev/null >>/tmp/snap-recv.log 2>&1 &); ' +
-      'sleep 0.5; ' +
-      // Match the websocat child by the unique URL fragment (code+port
-      // are already unique to this push). Falls back to the marker.
-      'pgrep -nf "websocat.*code=' + code + '.*port=' + port + '" 2>/dev/null | ' +
-        'head -1 | awk \'{print "PID="$1}\'; ' +
-      'pgrep -nf "' + marker + '" 2>/dev/null | head -1 | awk \'{print "TAG="$1}\'';
-    const startR = await serialVfs.exec(startCmd, { timeout: 15000 });
-    const out = stripAnsi(startR.stdout || '');
-    const pidM = out.match(/PID=(\d+)/) || out.match(/TAG=(\d+)/);
-    if (!pidM) {
-      // Dump diagnostics — log + ps + which-websocat — so we can tell why.
-      let diag = '';
-      try {
-        const rd = await serialVfs.exec(
-          'echo "---- which ----"; command -v websocat || echo NO-websocat; ' +
-          'echo "---- log ----"; cat /tmp/snap-recv.log 2>/dev/null; ' +
-          'echo "---- ps ----"; ps -ef 2>/dev/null | grep -E "websocat|' + marker + '" | grep -v grep',
-          { timeout: 5000 }
-        );
-        diag = '\n' + stripAnsi(rd.stdout || '').slice(0, 800);
-      } catch (_) {}
-      throw new Error('failed to find guest receiver PID (got: ' + out.slice(0, 200) + ')' + diag);
-    }
-    const guestPid = parseInt(pidM[1], 10);
-    onPhase('receiver PID ' + guestPid + ' (websocat | cat > file)');
-
-    // Brief wait for guest WS to register itself in the relay's port pool
-    // before the client connection arrives (reduces "no guest paired" races).
-    await new Promise(r => setTimeout(r, 700));
-
-    let ws;
-    try {
-      onPhase('opening client WS');
-      ws = new WebSocket(wsBase + '/port/client?code=' + code + '&port=' + port);
-      ws.binaryType = 'arraybuffer';
-      await new Promise((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error('client WS open timeout (12s)')), 12000);
-        ws.onopen  = () => { clearTimeout(t); resolve(); };
-        ws.onerror = (e) => { clearTimeout(t); reject(new Error('client WS error')); };
-        ws.onclose = (e) => { clearTimeout(t); reject(new Error('client WS closed before open (code=' + (e && e.code) + ')')); };
-      });
-      onPhase('WS open, streaming');
-      // Track close/error so we don't silently feed bytes into a dead socket.
-      // Capture close code/reason verbatim so the surfaced error tells us
-      // WHY the relay/guest hung up (1006=abnormal, 1011=server overload,
-      // 4000-series=app-defined, etc.) instead of the useless
-      // "WS not open mid-transfer" we used to throw.
-      let wsDead = null;
-      let wsCloseInfo = null;
-      // Async diagnostic helper: when the WS dies, we want to know whether
-      // the guest websocat is alive, what it logged, and how many bytes
-      // landed in the dst file. We launch this once on first death signal
-      // and surface its result via wsCloseDiag — appended to the thrown
-      // error message after settleClose() awaits it.
-      let wsCloseDiag = '';
-      let diagPromise = null;
-      const captureDeathDiag = () => {
-        if (diagPromise) return diagPromise;
-        diagPromise = (async () => {
-          try {
-            const rd = await serialVfs.exec(
-              'echo "---- wc ----"; wc -c < ' + tmpDstQ + ' 2>/dev/null; ' +
-              'echo "---- proc ----"; [ -d /proc/' + guestPid + ' ] && echo "websocat alive" || echo "websocat exited"; ' +
-              'echo "---- snap-recv.log ----"; cat /tmp/snap-recv.log 2>/dev/null; ' +
-              'echo "---- ps ----"; ps -ef 2>/dev/null | grep -E "websocat|cat " | grep -v grep',
-              { timeout: 6000 }
-            );
-            wsCloseDiag = '\n' + stripAnsi(rd.stdout || '').slice(0, 1500);
-          } catch (e) { wsCloseDiag = '\n[diag failed: ' + (e && e.message) + ']'; }
-        })();
-        return diagPromise;
-      };
-      ws.onerror = () => {
-        wsDead = wsDead || new Error('client WS error mid-transfer');
-        captureDeathDiag();
-      };
-      ws.onclose = (e) => {
-        wsCloseInfo = { code: (e && e.code), reason: (e && e.reason) || '' };
-        wsDead = wsDead || new Error(
-          'client WS closed mid-transfer (code=' + wsCloseInfo.code +
-          (wsCloseInfo.reason ? ' reason=' + wsCloseInfo.reason : '') + ')'
-        );
-        captureDeathDiag();
-      };
-
-      // Brief settle for onclose to populate wsDead, then await diag.
-      // If readyState went to CLOSING/CLOSED but onclose hasn't fired,
-      // wait up to 500ms so the surfaced error includes the real close
-      // code/reason and the receiver log.
-      const settleClose = async () => {
-        for (let i = 0; i < 20 && !wsDead && ws.readyState !== WebSocket.OPEN; i++) {
-          await new Promise(r => setTimeout(r, 25));
-        }
-        if (!diagPromise) captureDeathDiag();
-        try { await diagPromise; } catch (_) {}
-      };
-
-      // Ground-truth progress: poll the guest file size every 1.2s. If it
-      // stops growing for >7s while we still have bytes left to send, abort
-      // — this catches receivers that silently drop frames after the WS
-      // accepts them (websocat writefile: bug, sh-c subprocess EOF bug, etc.)
-      // without waiting for the worthless final wc -c at the end.
-      let stopPolling = false;
-      let lastGuestBytes = 0;
-      let lastGuestProgressAt = Date.now();
-      let pollErr = null;
-      let sentBytes = 0;
-      const tmpDstQ = SerialVfs._q(tmpDst);
-      const pollPromise = (async () => {
-        while (!stopPolling) {
-          await new Promise(r => setTimeout(r, 1200));
-          if (stopPolling) break;
-          try {
-            const r = await serialVfs.exec('wc -c < ' + tmpDstQ + ' 2>/dev/null', { timeout: 4000 });
-            const got = parseInt(stripAnsi(r.stdout).trim(), 10) || 0;
-            if (got > lastGuestBytes) {
-              lastGuestBytes = got;
-              lastGuestProgressAt = Date.now();
-              try { console.log('[push] guest has', got, '/', total, 'B'); } catch (_) {}
-            } else if (Date.now() - lastGuestProgressAt > 7000) {
-              // Surface the receiver stderr log + receiver process state
-              // so we can tell why bytes stopped flowing.
-              let diag = '';
-              try {
-                const rd = await serialVfs.exec(
-                  'echo "---- df ----"; df -h ' + tmpDstQ + ' 2>/dev/null | tail -1; ' +
-                  'echo "---- mount ----"; mount | grep -E "/$|/root|/tmp" 2>/dev/null; ' +
-                  'echo "---- meminfo ----"; grep -E "MemFree|MemAvailable" /proc/meminfo; ' +
-                  'echo "---- snap-recv.log ----"; cat /tmp/snap-recv.log 2>/dev/null; ' +
-                  'echo "---- ps ----"; ps -ef 2>/dev/null | grep -E "websocat.*' + port + '|cat >" | grep -v grep; ' +
-                  'echo "---- proc ----"; [ -d /proc/' + guestPid + ' ] && echo "websocat alive" || echo "websocat exited"; ' +
-                  'echo "---- file ----"; ls -la ' + tmpDstQ + ' 2>/dev/null',
-                  { timeout: 5000 }
-                );
-                diag = '\n' + stripAnsi(rd.stdout || '').slice(0, 1500);
-              } catch (_) {}
-              pollErr = new Error(
-                'guest stopped receiving at ' + lastGuestBytes + ' B ' +
-                '(sent ~' + (sentBytes / 1048576).toFixed(1) + ' MB so far, ' +
-                'WS still ' + (ws.readyState === 1 ? 'OPEN' : 'closed') + ', ' +
-                'browser bufferedAmount=' + ws.bufferedAmount + ')' + diag
-              );
-              return;
-            }
-          } catch (_) { /* swallow transient serial timeouts */ }
-        }
-      })();
-
-      const buf = blob instanceof ArrayBuffer
-        ? blob
-        : (blob.arrayBuffer ? await blob.arrayBuffer() : blob);
-      const u8 = new Uint8Array(buf);
-      const CHUNK = 64 * 1024;
-      const HIGH  = 1 * 1024 * 1024;       // pause sending when WS buffer > 1 MB
-      // Guest-paced backpressure: cap bytes in flight (sent - received by
-      // guest) so we don't stuff the relay's per-pair buffer faster than
-      // the v86 guest's NIC + websocat can drain. CF Durable Objects can
-      // close a paired WS when their internal buffer overflows, which is
-      // exactly the "WS not open mid-transfer" failure mode users hit.
-      // 2 MB matches the relay's per-WS pause threshold (4 MB) with
-      // headroom for the 1.2s polling lag.
-      const MAX_INFLIGHT = 2 * 1024 * 1024;
-      onProgress(0, total);
-      for (let off = 0; off < u8.length; off += CHUNK) {
-        if (wsDead)  throw wsDead;
-        if (pollErr) throw pollErr;
-        // Wait for browser-side buffer to drain.
-        while (ws.bufferedAmount > HIGH) {
-          if (wsDead)  throw wsDead;
-          if (pollErr) throw pollErr;
-          if (ws.readyState !== WebSocket.OPEN) {
-            await settleClose();
-            throw wsDead || new Error(
-              'WS not open mid-transfer ' +
-              '(readyState=' + ws.readyState +
-              ', bufferedAmount=' + ws.bufferedAmount +
-              ', sent=' + sentBytes + '/' + total + ' B)' + wsCloseDiag
-            );
-          }
-          await new Promise(r => setTimeout(r, 25));
-        }
-        // Wait for guest-side drain (sent - received <= MAX_INFLIGHT).
-        // lastGuestBytes is updated by the polling loop every ~1.2s.
-        while (sentBytes - lastGuestBytes > MAX_INFLIGHT) {
-          if (wsDead)  throw wsDead;
-          if (pollErr) throw pollErr;
-          if (ws.readyState !== WebSocket.OPEN) {
-            await settleClose();
-            throw wsDead || new Error(
-              'WS not open mid-transfer ' +
-              '(readyState=' + ws.readyState +
-              ', bufferedAmount=' + ws.bufferedAmount +
-              ', sent=' + sentBytes + '/' + total + ' B, ' +
-              'guest=' + lastGuestBytes + ')' + wsCloseDiag
-            );
-          }
-          await new Promise(r => setTimeout(r, 50));
-        }
-        const end = Math.min(off + CHUNK, u8.length);
-        ws.send(u8.subarray(off, end));
-        sentBytes = end;
-        onProgress(end, total);
-      }
-      // Drain so all bytes reach the relay before close.
-      const drainStart = Date.now();
-      while (ws.bufferedAmount > 0 && ws.readyState === WebSocket.OPEN) {
-        if (Date.now() - drainStart > 60000) break;
-        await new Promise(r => setTimeout(r, 25));
-      }
-      try { ws.close(1000, 'done'); } catch (_) {}
-      stopPolling = true;
-      try { await pollPromise; } catch (_) {}
-      if (pollErr) throw pollErr;
-
-      // 4. Wait for guest websocat to exit (= file fully written + closed).
-      let exited = false;
-      for (let i = 0; i < 120; i++) {
-        const r = await serialVfs.exec(
-          '[ -d /proc/' + guestPid + ' ] && echo a || echo d',
-          { timeout: 5000 }
-        );
-        if (stripAnsi(r.stdout).trim() === 'd') { exited = true; break; }
-        await new Promise(r2 => setTimeout(r2, 500));
-      }
-      if (!exited) {
-        // Best effort: kill it so writefile flushes via SIGTERM cleanup path.
-        await serialVfs.exec('kill ' + guestPid + ' 2>/dev/null; sleep 0.3', { timeout: 5000 });
-      }
-
-      // 5. Verify size matches what we sent, then atomically rename.
-      const verifyR = await serialVfs.exec(
-        'wc -c < ' + SerialVfs._q(tmpDst) + ' 2>/dev/null',
+      const r = await serialVfs.exec(
+        '[ -f ' + dstQ + ' ] && wc -c < ' + dstQ + ' || echo NONE',
         { timeout: 5000 }
       );
-      const got = parseInt(stripAnsi(verifyR.stdout).trim(), 10);
+      const s = stripAnsi(r.stdout || '').trim();
+      const got = parseInt(s, 10);
+      if (Number.isFinite(got) && got === total) {
+        onProgress(total, total);
+        return { bytes: got, path: dstPath, resumed: true };
+      }
+    } catch (_) { /* missing/inaccessible dst is normal */ }
+
+    // ---- Materialize blob as Uint8Array (no copy: ArrayBuffer view).
+    const buf = blob instanceof ArrayBuffer
+      ? blob
+      : (blob.arrayBuffer ? await blob.arrayBuffer() : blob);
+    const u8 = new Uint8Array(buf);
+
+    // ---- Fast path: dst is under /mnt/host → write directly to fs9p.
+    // No guest cp needed, no tmpfs ceiling. Single fs9p inode holds the
+    // whole file; CreateBinaryFile copies it once internally so peak JS
+    // heap is ~2× total during the call. For ≤ ~1 GB on a 64-bit browser
+    // this is comfortably fine.
+    if (dstPath.indexOf(HOST_MOUNT + '/') === 0) {
+      const fsPath = dstPath.slice(HOST_MOUNT.length); // keep leading '/'
+      const parentGuest = dstPath.replace(/\/[^/]*$/, '') || HOST_MOUNT;
+      // Ensure parent dir exists in fs9p (mkdir on guest side → 9P Tmkdir).
+      await serialVfs.exec(
+        'mkdir -p -- ' + SerialVfs._q(parentGuest) + ' 2>/dev/null',
+        { timeout: 5000 }
+      );
+      // If a partial file lingers, drop it (resume already handled the
+      // exact-size match above; anything else is stale).
+      await serialVfs.exec('rm -f -- ' + dstQ, { timeout: 5000 });
+      onPhase('writing ' + (total / 1048576).toFixed(1) + ' MB to 9P');
+      onProgress(0, total);
+      await emulator.create_file(fsPath, u8);
+      onProgress(total, total);
+      // Verify guest sees the file at the expected size.
+      const vr = await serialVfs.exec('wc -c < ' + dstQ + ' 2>/dev/null', { timeout: 10000 });
+      const got = parseInt(stripAnsi(vr.stdout).trim(), 10);
+      if (got !== total) {
+        throw new Error('size mismatch after 9P write: guest sees ' +
+          got + ' / expected ' + total);
+      }
+      return { bytes: got, path: dstPath };
+    }
+
+    // ---- Slow path: dst is in tmpfs (e.g. /root/...). Stage chunks under
+    // /mnt/host (so we never hold > CHUNK bytes of fs9p-owned copy at
+    // once) then concatenate via guest cat into the tmpfs target. The
+    // tmpfs ceiling still applies — a 1.79 GB blob will not fit in a
+    // ~1 GB Alpine tmpfs and the cat will fail with ENOSPC. In that case
+    // re-run with a /mnt/host/... path.
+    const CHUNK = 64 * 1024 * 1024; // 64 MB per fs9p inode
+    const numChunks = Math.ceil(total / CHUNK);
+    const marker = 'snap9p-' + Math.random().toString(36).slice(2, 8);
+    const guestStage = HOST_MOUNT + '/' + marker;     // dir in fs9p
+    const fsStage = '/' + marker;                     // same dir, fs9p path
+    const tmpDst = dstPath + '.recv';
+    const tmpDstQ = SerialVfs._q(tmpDst);
+
+    // Prep guest dirs and clear any stale staging.
+    await serialVfs.exec(
+      'mkdir -p -- ' + SerialVfs._q(guestStage) + ' ' +
+      SerialVfs._q(dstPath.replace(/\/[^/]*$/, '') || '/') + '; ' +
+      'rm -f -- ' + tmpDstQ + ' 2>/dev/null; ' +
+      'rm -f -- ' + SerialVfs._q(guestStage) + '/*.bin 2>/dev/null',
+      { timeout: 8000 }
+    );
+
+    try {
+      onPhase('writing ' + numChunks + ' × ' + (CHUNK / 1048576) + ' MB chunk(s) → 9P');
+      onProgress(0, total);
+      for (let i = 0; i < numChunks; i++) {
+        const off = i * CHUNK;
+        const end = Math.min(off + CHUNK, u8.length);
+        const part = u8.subarray(off, end);
+        // 0-padded so a sorted glob preserves order on cat.
+        const name = String(i).padStart(6, '0') + '.bin';
+        await emulator.create_file(fsStage + '/' + name, part);
+        onProgress(end, total);
+        // Yield to the event loop so the UI can repaint.
+        await new Promise(r => setTimeout(r, 0));
+      }
+
+      onPhase('concatenating ' + numChunks + ' chunk(s) in guest');
+      const cr = await serialVfs.exec(
+        'set -e; ' +
+        'cat ' + SerialVfs._q(guestStage) + '/*.bin > ' + tmpDstQ + ' && ' +
+        'sync && ' +
+        'wc -c < ' + tmpDstQ,
+        { timeout: 600000 }
+      );
+      const got = parseInt(stripAnsi(cr.stdout).trim(), 10);
       if (!Number.isFinite(got) || got === 0) {
-        throw new Error('guest received 0 bytes (relay/tunnel issue?)');
+        throw new Error('cat produced empty file (guest stderr: ' +
+          stripAnsi(cr.stderr || '').slice(0, 300) + ')');
       }
       if (got !== total) {
-        throw new Error('size mismatch: sent ' + total + ' B, guest has ' + got + ' B');
+        throw new Error('size mismatch after concat: ' + got + ' / ' + total +
+          ' — likely tmpfs ENOSPC; retry with a ' + HOST_MOUNT + '/... path');
       }
+
+      onPhase('renaming → ' + dstPath);
       await serialVfs.exec(
-        'mv -- ' + SerialVfs._q(tmpDst) + ' ' + SerialVfs._q(dstPath),
+        'mv -- ' + tmpDstQ + ' ' + dstQ,
         { timeout: 5000 }
       );
       return { bytes: got, path: dstPath };
-    } catch (e) {
-      try { ws && ws.close(); } catch (_) {}
+    } finally {
+      // Always free the staged chunks — they live in browser RAM via fs9p
+      // and a 1.79 GB leak would persist for the rest of the session.
       try {
         await serialVfs.exec(
-          'kill ' + guestPid + ' 2>/dev/null; ' +
-          'rm -f -- ' + SerialVfs._q(tmpDst),
-          { timeout: 5000 }
+          'rm -rf -- ' + SerialVfs._q(guestStage) + ' ' + tmpDstQ + ' 2>/dev/null',
+          { timeout: 15000 }
         );
       } catch (_) {}
-      throw e;
     }
   }
   // expose for console debugging
@@ -3043,19 +2805,21 @@
     const sizeMB = (total / 1048576).toFixed(1);
     const isoStem = (sel.iso || 'snap').replace(/\.iso$/i, '');
     const safeName = (sel.name || 'snap').replace(/[^\w.\-]+/g, '_');
-    const defaultPath = '/root/snapshots/' + isoStem + '__' + safeName + '.v86snap';
+    const defaultPath = '/mnt/host/snapshots/' + isoStem + '__' + safeName + '.v86snap';
     const dstPath = await uiPrompt(
       'Push snapshot to guest path:\n\n' +
-      'Size: ' + sizeMB + ' MB → streamed via tunnel WS (port ' + PUSH_DEFAULT_PORT + ').\n' +
-      'Tunnel must be running. The receiver process exits when done so\n' +
-      'this transfer does not interfere with future snapshots.',
+      'Size: ' + sizeMB + ' MB → written directly via 9P (no network).\n' +
+      'Default /mnt/host/... lives in browser RAM (no tmpfs ceiling).\n' +
+      'Use a /root/... path only for files that fit in tmpfs.\n' +
+      'If the file already exists at the chosen path with the right\n' +
+      'size, the push is a no-op (resume).',
       defaultPath
     );
     if (!dstPath) return;
     pushSnapBtn.disabled = true;
     const startedAt = Date.now();
     try {
-      setStatus('push: starting (' + sizeMB + ' MB) [build push-v6]…');
+      setStatus('push: starting (' + sizeMB + ' MB) [9p-direct]…');
       const res = await pushBlobToGuestPort(blob, dstPath, {
         onPhase(msg) {
           try { console.log('[push]', msg); } catch (_) {}
@@ -3068,8 +2832,10 @@
         },
       });
       const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
+      const verb = res.resumed ? 'already present' : 'pushed';
       setStatus(
-        'pushed ' + (res.bytes / 1048576).toFixed(1) + ' MB → ' + res.path + ' in ' + secs + 's',
+        verb + ' ' + (res.bytes / 1048576).toFixed(1) + ' MB → ' + res.path +
+        ' in ' + secs + 's',
         'ok'
       );
     } catch (e) {
