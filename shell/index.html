@@ -1094,27 +1094,39 @@
       this.maxBufWindow = 4096;         // bytes to keep waiting for marker boundary
       this.echoMaxLen = 65536;          // shell echo buffer cap
       // ----------------------------------------------------------------
-      // tmux routing. When useTmux=true, _run() prepends a tmux
-      // command-mode keystroke sequence that switches tmux to a target
-      // window before sending the wrapped command, and after the end
-      // marker arrives we switch back via `last-window`. This lets
-      // panel-fired commands run in dedicated tmux windows (`vfs` for
-      // silent / file-viewer / scan ops, `tunnel` and `social` for
+      // tmux routing. When useTmux=true, _run() prepends a tmux numeric
+      // window-select keystroke (`Ctrl-B <digit>`) to switch tmux to a
+      // target window before sending the wrapped command, and after the
+      // end marker arrives we switch back via `Ctrl-B l` (last-window).
+      // This lets panel-fired commands run in dedicated tmux windows
+      // (`vfs` for silent/file-viewer ops, `tunnel`/`social` for
       // user-visible actions) without disturbing whatever the user has
       // running in the active window (e.g. an `openclaw` REPL).
       //
-      // SAFETY: when tmux is NOT actually running, the prefix sequence
-      // `\x02:select-window -t lot:vfs\r` becomes:
-      //   \x02       — Ctrl-B → readline `backward-char` (harmless cursor move)
-      //   :select... — passes to shell as `: select-window ...`
-      //                where `:` is the POSIX no-op builtin → harmless
-      // So accidentally enabling this when tmux isn't attached degrades
-      // gracefully (just leaves a couple of no-op echoes in the user's
-      // shell history). Default OFF.
+      // We use the numeric shortcut instead of `Ctrl-B :select-window
+      // -t lot:NAME\r` because:
+      //   • shorter (2 bytes vs ~30) → less tmux parsing latency
+      //   • no command-prompt overlay rendered → cleaner serial0 stream
+      //     → fewer marker-capture hiccups
+      //   • last-window (`Ctrl-B l`) restores the user's prior window
+      //     automatically — no need to remember it host-side
+      //
+      // Window indices are fixed by the `lot` script:
+      //   0 shell  1 tunnel  2 social  3 viewer  4 vfs
+      //
+      // SAFETY: when tmux is NOT running, the prefix `\x02<digit>`
+      // becomes Ctrl-B (readline backward-char, harmless cursor move)
+      // followed by a literal digit inserted at the cursor. Slightly
+      // ugly but recoverable: the wrapped command line just has a
+      // stray digit prefix, which the shell will fail on cleanly.
+      // Default OFF; the toggle in the toolbar enables it.
       // ----------------------------------------------------------------
       this.useTmux = false;
       this.tmuxSession = 'lot';
       this.tmuxDefaultWindow = 'vfs';
+      this.tmuxWindowIndex = {
+        shell: 0, tunnel: 1, social: 2, viewer: 3, vfs: 4,
+      };
     }
 
     _attach(em) {
@@ -1202,12 +1214,13 @@
       if (this.useTmux) {
         let win = (typeof job.tmuxWindow === 'string') ? job.tmuxWindow : this.tmuxDefaultWindow;
         if (win) {
-          const tgt = this.tmuxSession + ':' + win;
-          // tmux command-mode: \x02 is the prefix key (Ctrl-B), `:` opens
-          // the command prompt, `\r` submits. Window name is restricted
-          // to [a-z0-9-] in our `lot` script so no escaping needed.
-          tmuxPrefix = '\x02:select-window -t ' + tgt + '\r';
-          tmuxSuffix = '\x02:last-window\r';
+          const idx = this.tmuxWindowIndex[win];
+          if (typeof idx === 'number') {
+            // Ctrl-B <digit>  → tmux: select-window -t :<digit>
+            // Ctrl-B l        → tmux: last-window  (restores user's prior window)
+            tmuxPrefix = '\x02' + String(idx);
+            tmuxSuffix = '\x02l';
+          }
         }
       }
       this.current = {
