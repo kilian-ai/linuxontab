@@ -2074,9 +2074,16 @@
         // ----------------------------------------------------------------
         'cat > /usr/local/bin/lot <<\\__LOT_EOF__\n' +
         '#!/bin/sh\n' +
-        '# Persistent tmux session "lot". Usage: lot [kill]\n' +
+        '# Persistent tmux session "lot". Usage: lot [start|kill]\n' +
+        '#   start  create the session detached and exit (used by host)\n' +
+        '#   kill   tear down the session\n' +
+        '#   <none> create-if-missing and attach (interactive use)\n' +
         'S=lot\n' +
-        'case "$1" in kill) tmux kill-session -t "$S" 2>/dev/null; rm -f /tmp/.lot.active; exit ;; esac\n' +
+        'MODE=attach\n' +
+        'case "$1" in\n' +
+        '  kill)  tmux kill-session -t "$S" 2>/dev/null; rm -f /tmp/.lot.active; exit ;;\n' +
+        '  start) MODE=start ;;\n' +
+        'esac\n' +
         'if ! tmux has-session -t "$S" 2>/dev/null; then\n' +
         '  tmux new-session  -d -s "$S" -n shell\n' +
         '  tmux new-window   -t "$S:" -n tunnel\n' +
@@ -2090,6 +2097,7 @@
         '  tmux select-window -t "$S:shell"\n' +
         '  : > /tmp/.lot.active\n' +
         'fi\n' +
+        '[ "$MODE" = start ] && exit 0\n' +
         'exec tmux attach -t "$S"\n' +
         '__LOT_EOF__\n' +
         'chmod +x /usr/local/bin/lot\n' +
@@ -2103,7 +2111,14 @@
         '[ "$LOT_NO_TMUX" = 1 ] && return\n' +
         'exec /usr/local/bin/lot\n' +
         '__TMUX_AUTO_EOF__\n' +
-        'chmod +x /etc/profile.d/99tmux-lot.sh\n';
+        'chmod +x /etc/profile.d/99tmux-lot.sh\n' +
+        // Pre-create the detached `lot` session NOW so toolbar buttons
+        // (which probe for it via /tmp/.lot.active) can route panel
+        // commands into the right windows immediately, without waiting
+        // for the user to manually run `lot`. Use `lot start` (creates
+        // detached session, exits 0) so we don't replace the boot
+        // shell. Defensive against tmux install failures.
+        'if command -v tmux >/dev/null 2>&1; then /usr/local/bin/lot start 2>/dev/null || true; fi\n';
 
       // SOCIAL_HOME defaults to /root (real ext4/tmpfs in the guest) so
       // `social publish` ships ~/public and `social sync` mirrors into
@@ -2202,6 +2217,10 @@
         'printf "nameserver 1.1.1.1\\nnameserver 1.0.0.1\\n" > /etc/resolv.conf\n' +
         dohSeedCmd +
         dnsProxyCmd +
+        // Re-create the `lot` tmux session if the snapshot was saved
+        // before it was started (or it died). Defensive: snapshots from
+        // before tmux integration won't have /usr/local/bin/lot.
+        '[ -x /usr/local/bin/lot ] && command -v tmux >/dev/null 2>&1 && /usr/local/bin/lot start 2>/dev/null || true\n' +
         'echo "[restore-net] eth0 operstate=$st flags=$fl (retries=$i)"\n';
 
       const freshBootCmd =
