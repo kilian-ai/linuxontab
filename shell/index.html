@@ -2669,24 +2669,48 @@
     const dstQ = SerialVfs._q(dstPath);
 
     // ---- Resume: skip if dst already has the right size.
+    // For /mnt/host/... paths we check fs9p directly (no serial round-trip)
+    // so a busy/blocked shell can't mask the resume hit. For other paths
+    // we fall back to wc -c via the serial bridge.
     onPhase('checking existing dst');
+    try { console.log('[push] dst=', dstPath, 'total=', total); } catch (_) {}
     try {
-      const r = await serialVfs.exec(
-        '[ -f ' + dstQ + ' ] && wc -c < ' + dstQ + ' || echo NONE',
-        { timeout: 5000 }
-      );
-      const s = stripAnsi(r.stdout || '').trim();
-      const got = parseInt(s, 10);
-      if (Number.isFinite(got) && got === total) {
-        onProgress(total, total);
-        return { bytes: got, path: dstPath, resumed: true };
+      if (dstPath.indexOf('/mnt/host/') === 0) {
+        const fsPath = dstPath.slice('/mnt/host'.length); // keep leading '/'
+        const sp = emulator.fs9p.SearchPath(fsPath);
+        if (sp && sp.id !== -1) {
+          const inode = emulator.fs9p.GetInode(sp.id);
+          const got = inode && inode.size;
+          try { console.log('[push] dst exists in fs9p, size=', got); } catch (_) {}
+          if (got === total) {
+            onProgress(total, total);
+            return { bytes: got, path: dstPath, resumed: true };
+          }
+        } else {
+          try { console.log('[push] dst absent in fs9p'); } catch (_) {}
+        }
+      } else {
+        const r = await serialVfs.exec(
+          '[ -f ' + dstQ + ' ] && wc -c < ' + dstQ + ' || echo NONE',
+          { timeout: 5000 }
+        );
+        const s = stripAnsi(r.stdout || '').trim();
+        const got = parseInt(s, 10);
+        if (Number.isFinite(got) && got === total) {
+          onProgress(total, total);
+          return { bytes: got, path: dstPath, resumed: true };
+        }
       }
-    } catch (_) { /* missing/inaccessible dst is normal */ }
+    } catch (e) {
+      try { console.log('[push] resume probe error (non-fatal):', e); } catch (_) {}
+    }
 
     // ---- Materialize blob as Uint8Array (no copy when possible).
     onPhase('reading blob into memory');
+    try { console.log('[push] blob type=', Object.prototype.toString.call(blob), 'size=', total); } catch (_) {}
     await new Promise(r => setTimeout(r, 0)); // yield so banner repaints
     let u8;
+    const tBlob0 = Date.now();
     if (blob instanceof Uint8Array) {
       u8 = blob;
     } else if (blob instanceof ArrayBuffer) {
@@ -2699,6 +2723,7 @@
     } else {
       throw new Error('blob is not Blob / ArrayBuffer / Uint8Array');
     }
+    try { console.log('[push] blob ready in', Date.now() - tBlob0, 'ms, u8.length=', u8.length); } catch (_) {}
 
     // ---- Fast path: dst is under /mnt/host → write directly to fs9p.
     // No guest cp needed, no tmpfs ceiling. Single fs9p inode holds the
@@ -2709,17 +2734,20 @@
       const parentGuest = dstPath.replace(/\/[^/]*$/, '') || HOST_MOUNT;
       // Ensure parent dir exists in fs9p (mkdir on guest side → 9P Tmkdir).
       onPhase('ensuring parent dir');
+      try { console.log('[push] mkdir', parentGuest, '+ rm', dstPath); } catch (_) {}
       await serialVfs.exec(
         'mkdir -p -- ' + SerialVfs._q(parentGuest) + ' 2>/dev/null; ' +
         'rm -f -- ' + dstQ + ' 2>/dev/null',
         { timeout: 8000 }
       );
       onPhase('writing ' + (total / 1048576).toFixed(1) + ' MB to 9P (may take 10–30s, browser will appear frozen)');
+      try { console.log('[push] calling emulator.create_file', fsPath); } catch (_) {}
       onProgress(0, total);
       await new Promise(r => setTimeout(r, 0)); // yield so banner repaints
       const t0 = Date.now();
       await emulator.create_file(fsPath, u8);
       const wMs = Date.now() - t0;
+      try { console.log('[push] create_file done in', wMs, 'ms'); } catch (_) {}
       onPhase('9P write done in ' + wMs + ' ms — verifying');
       onProgress(total, total);
       // Verify guest sees the file at the expected size.
