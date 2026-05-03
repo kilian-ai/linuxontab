@@ -3221,6 +3221,25 @@
         return { name, path: joinPath(path, name), dir };
       })
       .filter(e => e.name && e.name !== '.' && e.name !== '..')
+      // Reject lines that are clearly shell-error noise rather than
+      // real ls entries. Background processes (e.g. tunnel-up.sh's
+      // websocat respawn loop) and stray prefix bytes from tmux
+      // routing can interleave error text like
+      //   "sh: websocat: not found"
+      //   "\x024__b=...: command not found"
+      // into the captured stdout between our begin/end markers. Real
+      // filenames produced by `ls -1Ap` do NOT contain control bytes,
+      // ": not found" / ": command not found" suffixes, or unprintable
+      // characters. Drop them defensively so the tree never shows
+      // synthetic "ghost" entries.
+      .filter(e => {
+        const n = e.name;
+        if (!n) return false;
+        if (/[\x00-\x1f\x7f]/.test(n)) return false;     // control bytes
+        if (/: (not found|command not found|No such)/i.test(n)) return false;
+        if (/^sh: /.test(n) || /^ash: /.test(n) || /^bash: /.test(n)) return false;
+        return true;
+      })
       .sort((a, b) => (b.dir - a.dir) || a.name.localeCompare(b.name));
   }
   async function svfsIsDir(path) {
