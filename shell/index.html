@@ -2846,12 +2846,16 @@
               let diag = '';
               try {
                 const rd = await serialVfs.exec(
+                  'echo "---- df ----"; df -h ' + tmpDstQ + ' 2>/dev/null | tail -1; ' +
+                  'echo "---- mount ----"; mount | grep -E "/$|/root|/tmp" 2>/dev/null; ' +
+                  'echo "---- meminfo ----"; grep -E "MemFree|MemAvailable" /proc/meminfo; ' +
                   'echo "---- snap-recv.log ----"; cat /tmp/snap-recv.log 2>/dev/null; ' +
-                  'echo "---- ps ----"; ps -ef 2>/dev/null | grep -E "websocat|cat >" | grep -v grep; ' +
-                  'echo "---- proc ----"; [ -d /proc/' + guestPid + ' ] && echo "websocat alive" || echo "websocat exited"',
+                  'echo "---- ps ----"; ps -ef 2>/dev/null | grep -E "websocat.*' + port + '|cat >" | grep -v grep; ' +
+                  'echo "---- proc ----"; [ -d /proc/' + guestPid + ' ] && echo "websocat alive" || echo "websocat exited"; ' +
+                  'echo "---- file ----"; ls -la ' + tmpDstQ + ' 2>/dev/null',
                   { timeout: 5000 }
                 );
-                diag = '\n' + stripAnsi(rd.stdout || '').slice(0, 800);
+                diag = '\n' + stripAnsi(rd.stdout || '').slice(0, 1500);
               } catch (_) {}
               pollErr = new Error(
                 'guest stopped receiving at ' + lastGuestBytes + ' B ' +
