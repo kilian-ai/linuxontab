@@ -4423,6 +4423,30 @@
     }
     tunnelsListEl.innerHTML = '';
     if (!tunnels.length) {
+      // Auto-start once per page session if nothing is running. Uses
+      // the user's port config (tnBuildDefaultCmd → reads from
+      // localStorage tn-ports / falls back to TUNNEL_DEFAULT_PORTS) —
+      // never the tunnel-up.sh script's hardcoded `22 8080 22000 8384`
+      // defaults, because we always pass `sh -s <ports…>` explicitly.
+      // Opt out: ?tn-autostart=0 in the URL.
+      const qs = new URLSearchParams(location.search);
+      const autoOk = qs.get('tn-autostart') !== '0';
+      if (autoOk && !window.__tnAutoStarted) {
+        window.__tnAutoStarted = true;
+        tnLog('no tunnels detected — auto-starting with configured ports', 'info');
+        tnRestartTunnel({ id: 'default', code: null });
+        // Render a placeholder; tnPollForCode (kicked off by restart)
+        // will refresh us once /tmp/tunnel.code appears.
+        const pending = document.createElement('div');
+        pending.className = 'tn-row tn-empty';
+        pending.innerHTML =
+          'auto-starting tunnel… (using configured ports)<br>' +
+          '<div class="tn-cmd" style="margin-top:6px">$ '
+          + (tnGetCmdOverride('__default__') || tnBuildDefaultCmd())
+          + '</div>';
+        tunnelsListEl.appendChild(pending);
+        return;
+      }
       const empty = document.createElement('div');
       empty.className = 'tn-row tn-empty';
       empty.innerHTML =
