@@ -1267,18 +1267,40 @@
         job,
         started: false,
         output: '',
-        beginRe: new RegExp('(?:^|\\n)' + begin + '\\r?(?:\\n|$)'),
-        endRe:   new RegExp('(?:^|\\n)' + end + ':(-?\\d+)\\r?(?:\\n|$)'),
+        // Match marker text ANYWHERE in the cleaned buffer (no \n anchors).
+        // Why: when the user is attached to tmux, tmux's grid renderer
+        // advances lines via CSI cursor-position escapes (\x1b[<row>;1H)
+        // instead of line-feeds. After _stripAnsi() those CSI bytes are
+        // removed, leaving marker text glued to neighboring row content
+        // with NO literal \n between them. The previous regex required
+        // \n on both sides, so it never matched in tmux mode.
+        //
+        // Risk: matching unanchored could hit the marker text echoed in
+        // the source line (`__b='__VFSB_xxx__'`). Mitigated below by
+        // splitting the marker literal across an empty single-quoted
+        // concat (`'__VFS''B_xxx__'`) so the SOURCE echo contains the
+        // string `__VFS''B_xxx__` (with embedded quotes) while the
+        // RUNTIME value of __b is `__VFSB_xxx__`. The echo therefore
+        // can never match the unanchored regex.
+        beginRe: new RegExp(begin),
+        endRe:   new RegExp(end + ':(-?\\d+)'),
         timer: null,
         tmuxSuffix: tmuxSuffix,
       };
       this.buf = '';
-      // Build the printf format strings at runtime via concatenation so the
-      // marker text is not present as a single literal token in the source.
+      // Build the printf format strings at runtime via shell concatenation
+      // so the marker text is not present as a single literal token in
+      // the echoed source line. Bash concatenates adjacent single-quoted
+      // strings, so `'__VFS''B_<tag>__'` evaluates to `__VFSB_<tag>__`
+      // but the literal source text contains the embedded quotes — which
+      // means an unanchored regex search for `__VFSB_<tag>__` will only
+      // match the printf OUTPUT, not the echoed input line.
       // Note: `</dev/null` prevents the user's command from reading marker
       // bytes off stdin (serial0 input is the same pipe).
+      const beginSrc = "'__VFS''B_" + tag + "__'";
+      const endSrc   = "'__VFS''E_" + tag + "__'";
       const wrapped =
-        `__b='${begin}'; __e='${end}'; ` +
+        `__b=${beginSrc}; __e=${endSrc}; ` +
         `printf '\\n%s\\n' "$__b"; { ${job.cmd}\n} </dev/null; __ec=$?; ` +
         `printf '\\n%s:%d\\n' "$__e" "$__ec"\n`;
       this._send(tmuxPrefix + wrapped);
