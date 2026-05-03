@@ -2764,13 +2764,28 @@
       });
       onPhase('WS open, streaming');
       // Track close/error so we don't silently feed bytes into a dead socket.
+      // Capture close code/reason verbatim so the surfaced error tells us
+      // WHY the relay/guest hung up (1006=abnormal, 1011=server overload,
+      // 4000-series=app-defined, etc.) instead of the useless
+      // "WS not open mid-transfer" we used to throw.
       let wsDead = null;
+      let wsCloseInfo = null;
       ws.onerror = () => { wsDead = wsDead || new Error('client WS error mid-transfer'); };
       ws.onclose = (e) => {
+        wsCloseInfo = { code: (e && e.code), reason: (e && e.reason) || '' };
         wsDead = wsDead || new Error(
-          'client WS closed mid-transfer (code=' + (e && e.code) +
-          (e && e.reason ? ' reason=' + e.reason : '') + ')'
+          'client WS closed mid-transfer (code=' + wsCloseInfo.code +
+          (wsCloseInfo.reason ? ' reason=' + wsCloseInfo.reason : '') + ')'
         );
+      };
+
+      // Brief settle for onclose to populate wsDead. If readyState went
+      // to CLOSING/CLOSED but onclose hasn't fired yet, wait up to 250ms
+      // so the surfaced error includes the real close code/reason.
+      const settleClose = async () => {
+        for (let i = 0; i < 10 && !wsDead && ws.readyState !== WebSocket.OPEN; i++) {
+          await new Promise(r => setTimeout(r, 25));
+        }
       };
 
       // Ground-truth progress: poll the guest file size every 1.2s. If it
@@ -2824,17 +2839,51 @@
         ? blob
         : (blob.arrayBuffer ? await blob.arrayBuffer() : blob);
       const u8 = new Uint8Array(buf);
-      const CHUNK = 256 * 1024;
-      const HIGH  = 4 * 1024 * 1024;  // pause sending when WS buffer > 4 MB
+      const CHUNK = 64 * 1024;
+      const HIGH  = 1 * 1024 * 1024;       // pause sending when WS buffer > 1 MB
+      // Guest-paced backpressure: cap bytes in flight (sent - received by
+      // guest) so we don't stuff the relay's per-pair buffer faster than
+      // the v86 guest's NIC + websocat can drain. CF Durable Objects can
+      // close a paired WS when their internal buffer overflows, which is
+      // exactly the "WS not open mid-transfer" failure mode users hit.
+      // 8 MB lets us absorb polling latency (1.2s) while staying below
+      // typical DO buffer ceilings.
+      const MAX_INFLIGHT = 8 * 1024 * 1024;
       onProgress(0, total);
       for (let off = 0; off < u8.length; off += CHUNK) {
         if (wsDead)  throw wsDead;
         if (pollErr) throw pollErr;
+        // Wait for browser-side buffer to drain.
         while (ws.bufferedAmount > HIGH) {
           if (wsDead)  throw wsDead;
           if (pollErr) throw pollErr;
-          if (ws.readyState !== WebSocket.OPEN) throw new Error('WS not open mid-transfer');
+          if (ws.readyState !== WebSocket.OPEN) {
+            await settleClose();
+            throw wsDead || new Error(
+              'WS not open mid-transfer ' +
+              '(readyState=' + ws.readyState +
+              ', bufferedAmount=' + ws.bufferedAmount +
+              ', sent=' + sentBytes + '/' + total + ' B)'
+            );
+          }
           await new Promise(r => setTimeout(r, 25));
+        }
+        // Wait for guest-side drain (sent - received <= MAX_INFLIGHT).
+        // lastGuestBytes is updated by the polling loop every ~1.2s.
+        while (sentBytes - lastGuestBytes > MAX_INFLIGHT) {
+          if (wsDead)  throw wsDead;
+          if (pollErr) throw pollErr;
+          if (ws.readyState !== WebSocket.OPEN) {
+            await settleClose();
+            throw wsDead || new Error(
+              'WS not open mid-transfer ' +
+              '(readyState=' + ws.readyState +
+              ', bufferedAmount=' + ws.bufferedAmount +
+              ', sent=' + sentBytes + '/' + total + ' B, ' +
+              'guest=' + lastGuestBytes + ')'
+            );
+          }
+          await new Promise(r => setTimeout(r, 50));
         }
         const end = Math.min(off + CHUNK, u8.length);
         ws.send(u8.subarray(off, end));
