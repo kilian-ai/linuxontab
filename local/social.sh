@@ -403,18 +403,32 @@ resolve_public_dir() {
     return 1
 }
 
+# Return a physical (symlink-resolved) path for PUBLIC_DIR. If resolution
+# fails, fall back to the original value.
+public_walk_dir() {
+    if [ -d "$PUBLIC_DIR" ]; then
+        phys=$(cd "$PUBLIC_DIR" 2>/dev/null && pwd -P) || true
+        if [ -n "${phys:-}" ]; then
+            printf '%s\n' "$phys"
+            return 0
+        fi
+    fi
+    printf '%s\n' "$PUBLIC_DIR"
+}
+
 # Walk PUBLIC_DIR, emit JSON manifest content.
 build_manifest_content() {
     need sha256sum
     base="${1:-}"
+    walk_dir=$(public_walk_dir)
     printf '{"v":1'
     [ -n "$base" ] && printf ',"base":"%s"' "$base"
     printf ',"files":['
     first=1
-    if [ -d "$PUBLIC_DIR" ]; then
+    if [ -d "$walk_dir" ]; then
         # POSIX find + sort for stable order
-        find "$PUBLIC_DIR" -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
-            rel=${f#"$PUBLIC_DIR"/}
+        find "$walk_dir" -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
+            rel=${f#"$walk_dir"/}
             sz=$(wc -c < "$f" | tr -d ' ')
             sh=$(sha256sum < "$f" | cut -d' ' -f1)
             [ "$first" -eq 0 ] && printf ','
@@ -429,8 +443,9 @@ build_manifest_content() {
 
 # Count files under PUBLIC_DIR (used for empty-manifest guard).
 count_public_files() {
-    [ -d "$PUBLIC_DIR" ] || { echo 0; return; }
-    find "$PUBLIC_DIR" -type f 2>/dev/null | wc -l | tr -d ' '
+    walk_dir=$(public_walk_dir)
+    [ -d "$walk_dir" ] || { echo 0; return; }
+    find "$walk_dir" -type f 2>/dev/null | wc -l | tr -d ' '
 }
 
 cmd_publish() {
