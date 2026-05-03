@@ -1434,6 +1434,41 @@
   const serialVfs = new SerialVfs();
   window.serialVfs = serialVfs;
 
+  // Periodic probe: enable tmux routing only when the user's interactive
+  // shell is actually inside the `lot` tmux session. If it isn't, the
+  // routing prefix `Ctrl-B <digit>` is harmless but the suffix `Ctrl-B l`
+  // leaves a stray literal `l` in whatever the user is typing. Probing
+  // every 5s via a non-routing exec ($TMUX is per-shell, so we check
+  // the lot session is alive AND has at least one attached client).
+  async function probeTmuxRouting() {
+    try {
+      // Force this probe to skip tmux routing itself (prevents recursion
+      // before the flag has settled).
+      const wasOn = serialVfs.useTmux;
+      serialVfs.useTmux = false;
+      const r = await new Promise((resolve) => {
+        serialVfs.queue.push({
+          cmd: 'tmux list-clients -t lot 2>/dev/null | wc -l',
+          timeout: 4000,
+          tmuxWindow: '',
+          resolve,
+        });
+        if (!serialVfs.busy) serialVfs._next();
+      });
+      const n = parseInt((r.stdout || '').trim(), 10);
+      const ok = Number.isFinite(n) && n > 0;
+      serialVfs.useTmux = ok;
+      if (ok !== wasOn) {
+        try { console.log('[serialVfs] tmux routing', ok ? 'enabled' : 'disabled', '(clients=', n, ')'); } catch (_) {}
+      }
+    } catch (_) {
+      serialVfs.useTmux = false;
+    }
+  }
+  setInterval(() => {
+    if (serialVfs.ready && emulator) probeTmuxRouting();
+  }, 5000);
+
   // ── One-shot serial markers ────────────────────────────────────────────
   // Some host operations need to wait for a guest-emitted line (e.g.
   // __UMOUNT_OK__:<nonce> before save_state). Callers register a
