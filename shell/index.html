@@ -3092,6 +3092,42 @@
   // ("/mnt/host/..." guest paths and "/..." share-relative paths).
   // ─────────────────────────────────────────────────────────────────────────
   const viewerBtn   = $('viewer');
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // panelTmuxFollow(windowName) / panelTmuxBack()
+  //
+  // When the user toggles a side panel (viewer/social/tunnels), also flip
+  // the tmux active window in the guest so what they SEE in the terminal
+  // matches the panel they just opened. Click again → tmux's last-window
+  // restores the pre-panel window automatically.
+  //
+  // Routing is gated on serialVfs.useTmux: if the user hasn't enabled
+  // tmux routing, we don't touch the guest. Mutually-exclusive panels
+  // already hide each other before opening, so the call order is:
+  //   open A      → Ctrl-B<a>           (last-window = user's orig)
+  //   switch A→B  → Ctrl-B l (close A) + Ctrl-B<b> (open B)
+  //                                    (last-window = user's orig still
+  //                                     because Ctrl-B l set it back)
+  //   close B     → Ctrl-B l            (back to user's orig)
+  // ─────────────────────────────────────────────────────────────────────────
+  function panelTmuxFollow(windowName) {
+    try {
+      if (!emulator || !serialVfs || !serialVfs.useTmux) return;
+      const idx = serialVfs.tmuxWindowIndex && serialVfs.tmuxWindowIndex[windowName];
+      if (typeof idx !== 'number') return;
+      // \x02 = Ctrl-B (tmux prefix). Sent as raw bytes via serial0.
+      emulator.serial0_send('\x02');
+      emulator.serial0_send(String(idx));
+    } catch (_) { /* best-effort — never block the panel UX */ }
+  }
+  function panelTmuxBack() {
+    try {
+      if (!emulator || !serialVfs || !serialVfs.useTmux) return;
+      emulator.serial0_send('\x02');
+      emulator.serial0_send('l');
+    } catch (_) { /* best-effort */ }
+  }
+
   const overlay     = $('viewer-overlay');
   const treeEl      = $('viewer-tree');
   const frameEl     = $('viewer-frame');
@@ -3595,7 +3631,7 @@
       if (fullscreenBtn) fullscreenBtn.textContent = '\u2922';
     }
   }
-  closeBtn.onclick = () => { setViewerOpen(false); term.focus(); };
+  closeBtn.onclick = () => { setViewerOpen(false); panelTmuxBack(); term.focus(); };
   if (fullscreenBtn) fullscreenBtn.onclick = () => {
     const hidden = document.body.classList.toggle('term-hidden');
     fullscreenBtn.textContent = hidden ? '\u2923' : '\u2922';
@@ -3642,9 +3678,11 @@
     if (!overlay.hidden) {
       // toggle off
       setViewerOpen(false);
+      panelTmuxBack();
       term.focus();
       return;
     }
+    panelTmuxFollow('viewer');
     if (!serialVfs) { setStatus('serial vfs unavailable', 'err'); return; }
     // Trust the user: if they clicked the viewer button, assume the shell is
     // up. The prompt-detector sometimes misses the prompt (snapshot restore,
@@ -3817,12 +3855,14 @@
     if (!followPanel.hidden) {
       // toggle off
       followPanel.hidden = true;
+      panelTmuxBack();
       term.focus();
       return;
     }
     // mutually exclusive with tunnels panel
-    if (tunnelsPanel && !tunnelsPanel.hidden) tunnelsPanel.hidden = true;
+    if (tunnelsPanel && !tunnelsPanel.hidden) { tunnelsPanel.hidden = true; panelTmuxBack(); }
     followPanel.hidden = false;
+    panelTmuxFollow('social');
     // Auto-run bootstrap if log is empty (fresh open) OR if the `social`
     // CLI is missing in the guest (e.g. fresh boot, no snapshot, or the
     // binary was wiped). Cheap `which` probe — bootstrap itself no-ops
@@ -3839,7 +3879,7 @@
       })();
     }
   };
-  followCloseBtn.onclick = () => { followPanel.hidden = true; term.focus(); };
+  followCloseBtn.onclick = () => { followPanel.hidden = true; panelTmuxBack(); term.focus(); };
   followRefreshBtn.onclick = () => { followBootstrap(); };
 
   // ── publish ───────────────────────────────────────────────────────────
@@ -4674,16 +4714,18 @@
     if (!tunnelsPanel.hidden) {
       // toggle off
       tunnelsPanel.hidden = true;
+      panelTmuxBack();
       term.focus();
       return;
     }
     // mutually exclusive with social/follow panel
-    if (followPanel && !followPanel.hidden) followPanel.hidden = true;
+    if (followPanel && !followPanel.hidden) { followPanel.hidden = true; panelTmuxBack(); }
     tunnelsPanel.hidden = false;
+    panelTmuxFollow('tunnel');
     tnRenderPortsConfig();
     tnRefresh();
   };
-  tunnelsCloseBtn.onclick = () => { tunnelsPanel.hidden = true; term.focus(); };
+  tunnelsCloseBtn.onclick = () => { tunnelsPanel.hidden = true; panelTmuxBack(); term.focus(); };
   tunnelsRefreshBtn.onclick = () => { tnRenderPortsConfig(); tnRefresh(); };
 
   // ── Port config UI ────────────────────────────────────────────────────
