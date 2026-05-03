@@ -193,7 +193,7 @@
     <button id="viewer" disabled title="Browse the entire guest filesystem via serial shell (ls/cat).">viewer</button>
     <button id="follow" disabled title="social — bootstraps social CLI, shows your npub, follow/sync/publish via guest CLI">social</button>
     <button id="tunnels" disabled title="manage running tunnels (ports, codes, lifecycle, edit CLI)">tunnels</button>
-    <button id="tmux-route" disabled title="route panel-fired commands (tunnel/social/viewer/etc.) into dedicated tmux windows of the persistent `lot` session, so they don't disturb whatever you're running in the active window (e.g. an openclaw REPL). Click ON only after `lot` is attached.">tmux: off</button>
+    <button id="tmux-route" disabled title="route panel-fired commands (tunnel/social/viewer/etc.) into dedicated tmux windows of the persistent `lot` session, so they don't disturb whatever you're running in the active window (e.g. an openclaw REPL). Click ON only after `lot` is attached. Shift-click to force-enable without probe (use if probe keeps timing out but you know lot is up).">tmux: off</button>
     <span id="status" class="hint">idle</span>
     <span class="stat" id="stats"></span>
   </div>
@@ -4727,52 +4727,77 @@
   }
   setInterval(tmuxUpdateBtn, 800);
   if (tmuxRouteBtn) {
-    tmuxRouteBtn.onclick = async () => {
+    tmuxRouteBtn.onclick = async (ev) => {
       if (!serialVfs) return;
       if (serialVfs.useTmux) {
         serialVfs.useTmux = false;
         tmuxUpdateBtn();
         return;
       }
-      // Probe with routing FORCED ON into lot:vfs. Reasoning: when the
-      // toggle is OFF and we probe with an unrouted exec, the keystrokes
-      // get typed into whatever pane is active — which may be tail -F
-      // (lot:tunnel), an openclaw REPL (lot:shell), or any other
-      // foreground app eating stdin. The probe then times out and the
-      // toggle refuses to enable even though tmux is healthy.
+      // Shift-click → force-enable, skip probe. Use this when you KNOW
+      // lot is healthy but the probe keeps timing out (e.g. something
+      // about the active pane is interfering with marker capture).
+      // Recoverable: just toggle off if routing turns out to be broken.
+      if (ev && ev.shiftKey) {
+        serialVfs.useTmux = true;
+        tmuxUpdateBtn();
+        try { console.log('[tmux-route] force-enabled via shift-click (probe skipped)'); } catch (_) {}
+        return;
+      }
+      // Plain probe (UNROUTED). The previous attempt to force-route
+      // through lot:vfs introduced its own timeout failure modes (when
+      // SerialVfs marker capture across a tmux window-switch hiccups,
+      // probe stalls with no actionable info). Plain unrouted is more
+      // diagnostic: we get a clear stdout we can branch on.
       //
-      // Forcing the route through lot:vfs is safe in both states:
-      //   • tmux running + lot:vfs exists → switch in, run probe, switch
-      //     back via tmuxSuffix; output captured normally.
-      //   • tmux not running → the `\x02:select-window -t lot:vfs\r`
-      //     prefix degrades to Ctrl-B (readline backward-char, harmless)
-      //     followed by `:select-window -t lot:vfs\r` typed as input to
-      //     the active shell. POSIX `:` ignores its arguments → no-op.
-      //     Then the wrapped probe runs in the active shell, the
-      //     embedded `tmux list-windows -t lot` returns non-zero (no
-      //     server / no session), `echo MISS` fires → we report MISS.
+      // Trade-off: if the user's active pane has a foreground stdin-
+      // eater (tail -F, vim, REPL), the probe times out. The alert
+      // tells them to switch panes or shift-click.
+      //
+      // The probe itself uses `( … ) </dev/null` so any partial input
+      // on the prompt is recovered cleanly, and emits one of:
+      //   NO_TMUX | NO_SESSION | NO_VFS_WIN | OK
+      // on the LAST line of stdout.
       tmuxRouteBtn.disabled = true;
       tmuxRouteBtn.textContent = 'tmux: probing…';
-      let ok = false, why = '';
-      const wasOn = serialVfs.useTmux;
-      serialVfs.useTmux = true; // force routing for the probe
+      let why = '', stdout = '', timedOut = false, exitCode = 0;
       try {
         const r = await serialVfs.exec(
-          'tmux list-windows -t lot 2>/dev/null | grep -qE ":[[:space:]]*vfs([-*!Z ]|$)" && '
-          + 'test -f /tmp/.lot.active && echo OK || echo MISS',
-          { timeout: 8000 } // default tmuxWindow → 'vfs'
+          '( command -v tmux >/dev/null 2>&1 || { echo NO_TMUX; exit 0; }; '
+          + 'tmux has-session -t lot 2>/dev/null || { echo NO_SESSION; exit 0; }; '
+          + 'tmux list-windows -t lot -F "#W" 2>/dev/null | grep -q "^vfs$" '
+          +   '|| { echo NO_VFS_WIN; exit 0; }; '
+          + 'echo OK )',
+          { timeout: 10000, tmuxWindow: '' }
         );
-        const out = (r.stdout || '').replace(/\s+/g, '');
-        ok = out.endsWith('OK');
-        if (r.timedOut) why = 'probe timed out (guest unresponsive?)';
-        else if (!ok) why = 'lot session or vfs window not found — run `lot` in the guest first';
+        stdout = (r.stdout || '');
+        timedOut = !!r.timedOut;
+        exitCode = r.exitCode;
       } catch (e) {
         why = (e && e.message) || String(e);
+      }
+      const lines = stdout.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+      const verdict = lines[lines.length - 1] || '';
+      let ok = false;
+      if (timedOut) {
+        why = 'probe timed out — active pane may have a foreground app eating stdin '
+            + '(tail -F, vim, REPL). Switch to a shell pane, or shift-click to force-enable.';
+      } else if (verdict === 'OK') {
+        ok = true;
+      } else if (verdict === 'NO_TMUX') {
+        why = 'tmux not installed in guest — run `apk add tmux`.';
+      } else if (verdict === 'NO_SESSION') {
+        why = 'no `lot` session — run `lot` in the guest, or open a fresh login shell.';
+      } else if (verdict === 'NO_VFS_WIN') {
+        why = 'lot session has no `vfs` window — run `lot kill && lot` to recreate it.';
+      } else if (!why) {
+        why = 'unexpected probe result (exit=' + exitCode + '): '
+            + (stdout ? stdout.slice(-200) : '<no stdout>')
+            + ' — shift-click to force-enable.';
       }
       if (ok) {
         serialVfs.useTmux = true;
       } else {
-        serialVfs.useTmux = wasOn; // restore prior state
         try { window.alert('tmux route: cannot enable — ' + why); } catch (_) {}
       }
       tmuxUpdateBtn();
