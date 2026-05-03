@@ -2874,7 +2874,12 @@
     const sizeMB = (total / 1048576).toFixed(1);
     const isoStem = (sel.iso || 'snap').replace(/\.iso$/i, '');
     const safeName = (sel.name || 'snap').replace(/[^\w.\-]+/g, '_');
-    const defaultPath = '/mnt/host/snapshots/' + isoStem + '__' + safeName + '.v86snap';
+    // Default to a flat filename at the root of /mnt/host. Creating
+    // subdirs host-side via fs9p.CreateDirectory does not always
+    // propagate to the guest's view of the share (no config-change
+    // interrupt), so we sidestep the issue by writing directly under
+    // the mount root, which the guest already knows about.
+    const defaultPath = '/mnt/host/' + isoStem + '__' + safeName + '.v86snap';
     const dstPath = await uiPrompt(
       'Push snapshot to guest path:\n\n' +
       'Size: ' + sizeMB + ' MB → written directly via 9P (no network).\n' +
