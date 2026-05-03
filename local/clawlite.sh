@@ -86,7 +86,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 ANTHROPIC_BASE_URL=https://api.anthropic.com/v1
 # Shell tool calling: model can run commands via <shell>...</shell> blocks.
 TOOLS=1
-TOOL_MAX_ITERS=5
+TOOL_MAX_ITERS=50
 TOOL_OUTPUT_LIMIT=8192
 # Shell tool calls run without confirmation by default. Set CLAW_YOLO=0
 # (or pass --confirm) to be prompted before each command.
@@ -120,7 +120,7 @@ fi
 : "${OPENAI_API_KEY:=}"
 : "${ANTHROPIC_API_KEY:=}"
 : "${TOOLS:=1}"
-: "${TOOL_MAX_ITERS:=5}"
+: "${TOOL_MAX_ITERS:=50}"
 : "${TOOL_OUTPUT_LIMIT:=8192}"
 : "${CLAW_YOLO:=1}"
 : "${USER_WINDOW:=2000}"
