@@ -193,6 +193,7 @@
     <button id="viewer" disabled title="Browse the entire guest filesystem via serial shell (ls/cat).">viewer</button>
     <button id="follow" disabled title="social — bootstraps social CLI, shows your npub, follow/sync/publish via guest CLI">social</button>
     <button id="tunnels" disabled title="manage running tunnels (ports, codes, lifecycle, edit CLI)">tunnels</button>
+    <button id="tmux-route" disabled title="route panel-fired commands (tunnel/social/viewer/etc.) into dedicated tmux windows of the persistent `lot` session, so they don't disturb whatever you're running in the active window (e.g. an openclaw REPL). Click ON only after `lot` is attached.">tmux: off</button>
     <span id="status" class="hint">idle</span>
     <span class="stat" id="stats"></span>
   </div>
@@ -1092,6 +1093,28 @@
       this.current = null;              // active job
       this.maxBufWindow = 4096;         // bytes to keep waiting for marker boundary
       this.echoMaxLen = 65536;          // shell echo buffer cap
+      // ----------------------------------------------------------------
+      // tmux routing. When useTmux=true, _run() prepends a tmux
+      // command-mode keystroke sequence that switches tmux to a target
+      // window before sending the wrapped command, and after the end
+      // marker arrives we switch back via `last-window`. This lets
+      // panel-fired commands run in dedicated tmux windows (`vfs` for
+      // silent / file-viewer / scan ops, `tunnel` and `social` for
+      // user-visible actions) without disturbing whatever the user has
+      // running in the active window (e.g. an `openclaw` REPL).
+      //
+      // SAFETY: when tmux is NOT actually running, the prefix sequence
+      // `\x02:select-window -t lot:vfs\r` becomes:
+      //   \x02       — Ctrl-B → readline `backward-char` (harmless cursor move)
+      //   :select... — passes to shell as `: select-window ...`
+      //                where `:` is the POSIX no-op builtin → harmless
+      // So accidentally enabling this when tmux isn't attached degrades
+      // gracefully (just leaves a couple of no-op echoes in the user's
+      // shell history). Default OFF.
+      // ----------------------------------------------------------------
+      this.useTmux = false;
+      this.tmuxSession = 'lot';
+      this.tmuxDefaultWindow = 'vfs';
     }
 
     _attach(em) {
@@ -1133,7 +1156,14 @@
         c.output += this.buf.slice(0, m.index);
         const exitCode = parseInt(m[1], 10);
         this.buf = '';
+        // If this job switched tmux windows on entry, send the matching
+        // `last-window` keystroke now that we have the result. Doing it
+        // AFTER the end marker (instead of inlining it after the shell
+        // command) avoids any chance of the suffix bytes being captured
+        // as part of `c.output`.
+        const suffix = c.tmuxSuffix;
         this.current = null;
+        if (suffix) this._send(suffix);
         const job = c.job;
         clearTimeout(c.timer);
         job.resolve({ stdout: c.output, exitCode });
@@ -1163,6 +1193,23 @@
       // therefore never appears in the input echo).
       const begin = '__VFSB_' + tag + '__';
       const end   = '__VFSE_' + tag + '__';
+      // Resolve tmux routing for this job. Per-call `tmuxWindow` overrides
+      // the default. An explicit empty string disables routing for this
+      // call only (useful for the toggle's own probe). When useTmux is
+      // false, never route — defaults stay invisible/no-op.
+      let tmuxPrefix = '';
+      let tmuxSuffix = '';
+      if (this.useTmux) {
+        let win = (typeof job.tmuxWindow === 'string') ? job.tmuxWindow : this.tmuxDefaultWindow;
+        if (win) {
+          const tgt = this.tmuxSession + ':' + win;
+          // tmux command-mode: \x02 is the prefix key (Ctrl-B), `:` opens
+          // the command prompt, `\r` submits. Window name is restricted
+          // to [a-z0-9-] in our `lot` script so no escaping needed.
+          tmuxPrefix = '\x02:select-window -t ' + tgt + '\r';
+          tmuxSuffix = '\x02:last-window\r';
+        }
+      }
       this.current = {
         job,
         started: false,
@@ -1170,6 +1217,7 @@
         beginRe: new RegExp('\\n' + begin + '\\r?\\n'),
         endRe:   new RegExp('\\n' + end + ':(-?\\d+)\\r?\\n'),
         timer: null,
+        tmuxSuffix: tmuxSuffix,
       };
       this.buf = '';
       // Build the printf format strings at runtime via concatenation so the
@@ -1180,7 +1228,7 @@
         `__b='${begin}'; __e='${end}'; ` +
         `printf '\\n%s\\n' "$__b"; { ${job.cmd}\n} </dev/null; __ec=$?; ` +
         `printf '\\n%s:%d\\n' "$__e" "$__ec"\n`;
-      this._send(wrapped);
+      this._send(tmuxPrefix + wrapped);
       this.current.timer = setTimeout(() => {
         if (!this.current || this.current.job !== job) return;
         const cur = this.current;
@@ -1188,6 +1236,9 @@
         this.buf = '';
         // Best-effort: send Ctrl-C to break the runaway command.
         this._send('\x03');
+        // Still try to switch tmux back so the user isn't stranded on the
+        // vfs window after a timeout.
+        if (cur.tmuxSuffix) this._send(cur.tmuxSuffix);
         job.resolve({ stdout: cur.output, exitCode: -1, timedOut: true });
         this._next();
       }, job.timeout || 30000);
@@ -1195,7 +1246,12 @@
 
     exec(cmd, opts = {}) {
       return new Promise((resolve) => {
-        this.queue.push({ cmd: String(cmd), resolve, timeout: opts.timeout });
+        this.queue.push({
+          cmd: String(cmd),
+          resolve,
+          timeout: opts.timeout,
+          tmuxWindow: opts.tmuxWindow,
+        });
         if (this.ready && !this.busy) this._next();
       });
     }
@@ -2000,31 +2056,40 @@
         '__NODE_FIX_EOF__\n' +
         '. /etc/profile.d/03nodefix.sh 2>/dev/null || true\n' +
         // ----------------------------------------------------------------
-        // Persistent tmux session "lot" with 4 named windows so the user
+        // Persistent tmux session "lot" with 5 named windows so the user
         // can run tunnel/social/viewer commands in dedicated panes that
         // survive switching to other apps in the foreground terminal.
         //   shell  — generic prompt
         //   tunnel — auto-tails /tmp/tunnel.last.log (tunnel-up.sh output)
         //   social — pre-cd'd to /root/public for `social ...` commands
         //   viewer — pre-cd'd to /root/public for browsing published files
+        //   vfs    — hidden landing zone for SerialVfs panel commands
+        //            (host JS routes panel-fired commands here so they
+        //             don't disturb whatever is running in the active
+        //             user-facing window — e.g. an openclaw REPL)
         // /etc/profile.d/99tmux-lot.sh auto-attaches every interactive
         // login (opt out with `export LOT_NO_TMUX=1`).
+        // /tmp/.lot.active is a sentinel the host JS probes to confirm
+        // the session is up before enabling tmux routing.
         // ----------------------------------------------------------------
         'cat > /usr/local/bin/lot <<\\__LOT_EOF__\n' +
         '#!/bin/sh\n' +
         '# Persistent tmux session "lot". Usage: lot [kill]\n' +
         'S=lot\n' +
+        'case "$1" in kill) tmux kill-session -t "$S" 2>/dev/null; rm -f /tmp/.lot.active; exit ;; esac\n' +
         'if ! tmux has-session -t "$S" 2>/dev/null; then\n' +
         '  tmux new-session  -d -s "$S" -n shell\n' +
         '  tmux new-window   -t "$S:" -n tunnel\n' +
         '  tmux new-window   -t "$S:" -n social\n' +
         '  tmux new-window   -t "$S:" -n viewer\n' +
+        '  tmux new-window   -t "$S:" -n vfs\n' +
         '  tmux send-keys -t "$S:tunnel" \'echo "[tunnel] tail -F /tmp/tunnel.last.log (Ctrl-C to stop, Ctrl-b d to detach)"; tail -F /tmp/tunnel.last.log 2>/dev/null\' C-m\n' +
         '  tmux send-keys -t "$S:social" \'cd /root/public 2>/dev/null; echo "[social] try: social list  /  social publish  /  social tunnel-up"\' C-m\n' +
         '  tmux send-keys -t "$S:viewer" \'cd /root/public 2>/dev/null; ls -la\' C-m\n' +
+        '  tmux send-keys -t "$S:vfs"    \'PS1=""; clear; echo "[vfs] SerialVfs landing zone — do not run commands here manually"\' C-m\n' +
         '  tmux select-window -t "$S:shell"\n' +
+        '  : > /tmp/.lot.active\n' +
         'fi\n' +
-        'case "$1" in kill) tmux kill-session -t "$S"; exit ;; esac\n' +
         'exec tmux attach -t "$S"\n' +
         '__LOT_EOF__\n' +
         'chmod +x /usr/local/bin/lot\n' +
@@ -3846,7 +3911,11 @@
     fStatus(label + '…');
     fLog('── ' + label + ' start ──', 'info');
     try {
-      const r = await followRun(cmd, { timeout: timeout || 120000 });
+      // Route the user-facing social action into lot:social so the output
+      // is visible in the social tmux window. Internal probes (which,
+      // apk add, etc.) keep the default routing (vfs window) so they
+      // don't clutter the social window.
+      const r = await followRun(cmd, { timeout: timeout || 120000, tmuxWindow: 'social' });
       if (r.exitCode === 0) {
         fStatus(label + ' ok', 'ok');
         fLog('── ' + label + ' ok ──', 'ok');
@@ -4355,7 +4424,9 @@
       'pkill -f websocat 2>/dev/null; ' +
       'rm -f /tmp/tunnel.code /tmp/tunnel.pids /tmp/tunnel.cmd /tmp/tunnel.ports 2>/dev/null; ' +
       'echo stopped';
-    const r = await tnExec(cmd, { timeout: 10000 });
+    // Route into lot:tunnel so the user sees the stop output land in the
+    // tunnel window (which is also tail-F'ing /tmp/tunnel.last.log).
+    const r = await tnExec(cmd, { timeout: 10000, tmuxWindow: 'tunnel' });
     tnLog((r.stdout || '').trim() || '(no output)', r.exitCode === 0 ? 'ok' : 'err');
     setTimeout(tnRefresh, 400);
   }
@@ -4372,7 +4443,9 @@
     // on websocat's foreground respawn loop. We background it via `&` and
     // detach stdout/stderr to a log so subsequent guest commands still work.
     const wrapped = '( ' + cmd + ' ) >/tmp/tunnel.last.log 2>&1 &';
-    const r = await tnExec(wrapped, { timeout: 8000 });
+    // Route into lot:tunnel so the launch (which runs `apk add`, seeds DNS,
+    // registers with the relay, etc.) is visible in the tunnel window.
+    const r = await tnExec(wrapped, { timeout: 8000, tmuxWindow: 'tunnel' });
     tnLog('launched (exit=' + r.exitCode + ')', r.exitCode === 0 ? 'ok' : 'err');
     // tunnel-up.sh has to install packages, seed DNS, register, generate
     // ssh host keys, and start sshd before it writes /tmp/tunnel.code. On
@@ -4603,6 +4676,60 @@
   }
 
   setInterval(() => { tunnelsBtn.disabled = !emulator; }, 800);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // tmux routing toggle (toolbar button "tmux: off/on").
+  // When ON, SerialVfs.exec() prepends a tmux window-switch keystroke so
+  // panel-fired commands run in the dedicated `lot:vfs` window (or a
+  // per-call `tmuxWindow`, e.g. `tunnel`/`social`) instead of corrupting
+  // whatever the user is running in the active window.
+  //
+  // Probe-on-enable: before flipping ON we run a NON-tmux exec to verify
+  // the `lot` session + `vfs` window exist. The probe uses
+  // `{ tmuxWindow: '' }` to bypass routing so it works whether or not
+  // the toggle would otherwise be on. If the probe fails the toggle
+  // refuses to turn on and reports why.
+  // ─────────────────────────────────────────────────────────────────────────
+  const tmuxRouteBtn = $('tmux-route');
+  function tmuxUpdateBtn() {
+    if (!tmuxRouteBtn) return;
+    tmuxRouteBtn.disabled = !emulator;
+    tmuxRouteBtn.textContent = 'tmux: ' + (serialVfs && serialVfs.useTmux ? 'on' : 'off');
+    tmuxRouteBtn.classList.toggle('on', !!(serialVfs && serialVfs.useTmux));
+  }
+  setInterval(tmuxUpdateBtn, 800);
+  if (tmuxRouteBtn) {
+    tmuxRouteBtn.onclick = async () => {
+      if (!serialVfs) return;
+      if (serialVfs.useTmux) {
+        serialVfs.useTmux = false;
+        tmuxUpdateBtn();
+        return;
+      }
+      // Probe with routing explicitly disabled for this call.
+      tmuxRouteBtn.disabled = true;
+      tmuxRouteBtn.textContent = 'tmux: probing…';
+      let ok = false, why = '';
+      try {
+        const r = await serialVfs.exec(
+          'tmux list-windows -t lot 2>/dev/null | grep -q ":[[:space:]]*vfs[-* ]" && '
+          + 'test -f /tmp/.lot.active && echo OK || echo MISS',
+          { timeout: 5000, tmuxWindow: '' }
+        );
+        const out = (r.stdout || '').replace(/\s+/g, '');
+        ok = out.endsWith('OK');
+        if (!ok) why = 'lot session or vfs window not found — run `lot` in the guest first';
+      } catch (e) {
+        why = (e && e.message) || String(e);
+      }
+      if (ok) {
+        serialVfs.useTmux = true;
+      } else {
+        try { window.alert('tmux route: cannot enable — ' + why); } catch (_) {}
+      }
+      tmuxUpdateBtn();
+    };
+  }
 
   // Autoboot by default — the page is dedicated to running Linux, so make
   // the green "boot" button click itself on load. Opt out with `?autoboot=0`.
