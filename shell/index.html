@@ -1840,9 +1840,12 @@
         // Pre-install the staple toolset so a freshly booted ISO is
         // immediately usable: websocat (tunnels), curl/jq (scripts +
         // social.sh), openssh-server (ssh tunnels), unbound (DNS-over-TCP
-        // workaround for Fly WISP dropping UDP/53). Idempotent.
-        'echo "[setup] apk add websocat curl jq openssh-server unbound…"\n' +
-        'apk add --no-cache websocat curl jq openssh-server unbound 2>&1 | tail -5\n' +
+        // workaround for Fly WISP dropping UDP/53), tmux (persistent
+        // shell windows so long-running tunnel/social/viewer commands
+        // survive the user switching focus or running other things in
+        // the foreground terminal). Idempotent.
+        'echo "[setup] apk add websocat curl jq openssh-server unbound tmux…"\n' +
+        'apk add --no-cache websocat curl jq openssh-server unbound tmux 2>&1 | tail -5\n' +
         'echo "[setup] ready — apk add <pkg> works now. snapshot to skip on next boot."\n';
       // Snapshot restore: WISP WebSocket is freshly reconnected (JS adapter
       // is not in the x86 snapshot), and the Wisp router config is known
@@ -1995,7 +1998,47 @@
         '  esac\n' +
         'fi\n' +
         '__NODE_FIX_EOF__\n' +
-        '. /etc/profile.d/03nodefix.sh 2>/dev/null || true\n';
+        '. /etc/profile.d/03nodefix.sh 2>/dev/null || true\n' +
+        // ----------------------------------------------------------------
+        // Persistent tmux session "lot" with 4 named windows so the user
+        // can run tunnel/social/viewer commands in dedicated panes that
+        // survive switching to other apps in the foreground terminal.
+        //   shell  — generic prompt
+        //   tunnel — auto-tails /tmp/tunnel.last.log (tunnel-up.sh output)
+        //   social — pre-cd'd to /root/public for `social ...` commands
+        //   viewer — pre-cd'd to /root/public for browsing published files
+        // /etc/profile.d/99tmux-lot.sh auto-attaches every interactive
+        // login (opt out with `export LOT_NO_TMUX=1`).
+        // ----------------------------------------------------------------
+        'cat > /usr/local/bin/lot <<\\__LOT_EOF__\n' +
+        '#!/bin/sh\n' +
+        '# Persistent tmux session "lot". Usage: lot [kill]\n' +
+        'S=lot\n' +
+        'if ! tmux has-session -t "$S" 2>/dev/null; then\n' +
+        '  tmux new-session  -d -s "$S" -n shell\n' +
+        '  tmux new-window   -t "$S:" -n tunnel\n' +
+        '  tmux new-window   -t "$S:" -n social\n' +
+        '  tmux new-window   -t "$S:" -n viewer\n' +
+        '  tmux send-keys -t "$S:tunnel" \'echo "[tunnel] tail -F /tmp/tunnel.last.log (Ctrl-C to stop, Ctrl-b d to detach)"; tail -F /tmp/tunnel.last.log 2>/dev/null\' C-m\n' +
+        '  tmux send-keys -t "$S:social" \'cd /root/public 2>/dev/null; echo "[social] try: social list  /  social publish  /  social tunnel-up"\' C-m\n' +
+        '  tmux send-keys -t "$S:viewer" \'cd /root/public 2>/dev/null; ls -la\' C-m\n' +
+        '  tmux select-window -t "$S:shell"\n' +
+        'fi\n' +
+        'case "$1" in kill) tmux kill-session -t "$S"; exit ;; esac\n' +
+        'exec tmux attach -t "$S"\n' +
+        '__LOT_EOF__\n' +
+        'chmod +x /usr/local/bin/lot\n' +
+        'cat > /etc/profile.d/99tmux-lot.sh <<\\__TMUX_AUTO_EOF__\n' +
+        '# Auto-attach to persistent tmux session "lot" on interactive login.\n' +
+        '# Opt out with: export LOT_NO_TMUX=1\n' +
+        'case $- in *i*) ;; *) return ;; esac\n' +
+        '[ -n "$TMUX" ] && return\n' +
+        '[ -z "$PS1" ] && return\n' +
+        'command -v tmux >/dev/null 2>&1 || return\n' +
+        '[ "$LOT_NO_TMUX" = 1 ] && return\n' +
+        'exec /usr/local/bin/lot\n' +
+        '__TMUX_AUTO_EOF__\n' +
+        'chmod +x /etc/profile.d/99tmux-lot.sh\n';
 
       // SOCIAL_HOME defaults to /root (real ext4/tmpfs in the guest) so
       // `social publish` ships ~/public and `social sync` mirrors into
