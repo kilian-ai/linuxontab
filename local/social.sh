@@ -448,14 +448,43 @@ count_public_files() {
     find "$walk_dir" -type f 2>/dev/null | wc -l | tr -d ' '
 }
 
+# Resolve base URL for publish.
+# Priority:
+# 1) cached $TUNNEL_FILE
+# 2) live code from /tmp/tunnel.code (or $TUNNEL_CODE_FILE)
+# If we derive from live code, persist it back to $TUNNEL_FILE.
+resolve_publish_base() {
+    base=""
+    if [ -s "$TUNNEL_FILE" ]; then
+        base=$(head -1 "$TUNNEL_FILE" 2>/dev/null)
+    fi
+    if [ -n "$base" ]; then
+        printf '%s\n' "$base"
+        return 0
+    fi
+
+    code_file="${TUNNEL_CODE_FILE:-/tmp/tunnel.code}"
+    if [ -s "$code_file" ]; then
+        code=$(head -1 "$code_file" 2>/dev/null | tr -dc 'A-Z0-9')
+        if [ -n "$code" ]; then
+            base="${SOCIAL_TUNNEL_BASE:-https://linuxontab-tunnel.fly.dev}/port/http/$code/8080"
+            printf '%s\n' "$base" > "$TUNNEL_FILE"
+            log "adopted base_url from $code_file: $base"
+            printf '%s\n' "$base"
+            return 0
+        fi
+    fi
+
+    printf '\n'
+}
+
 cmd_publish() {
     need websocat
     [ -f "$NSEC_FILE" ] || die "no identity yet — run 'social.sh init'"
     nsec=$(cat "$NSEC_FILE")
-    base=""
-    [ -f "$TUNNEL_FILE" ] && base=$(cat "$TUNNEL_FILE")
+    base=$(resolve_publish_base)
 
-    # Verify the cached base_url is still active. If the tunnel code was
+    # Verify the resolved base_url is still active. If the tunnel code was
     # rotated (new tunnel-up.sh invocation, Fly redeploy + reclaim
     # failure, etc.) we'd publish a manifest pointing at a 503'ing URL.
     if [ -n "$base" ] && [ "${SOCIAL_PUBLISH_SKIP_CHECK:-0}" != "1" ]; then
