@@ -621,7 +621,7 @@ relay_fetch_manifest() {
     filter='{"kinds":[30000],"authors":["'"$hex_pk"'"],"#d":["public-folder"],"limit":1}'
     req='["REQ","'"$sub"'",'"$filter"']'
     ( printf '%s\n' "$req"; sleep 4 ) | websocat --text -E - "$relay" 2>/dev/null \
-        | grep -E '^\["EVENT",' | head -1
+        | grep -E '^\["EVENT",'
 }
 
 cmd_sync_one() {
@@ -636,7 +636,17 @@ cmd_sync_one() {
     raw=""
     for relay in $RELAYS; do
         log "  query $relay"
-        raw=$(relay_fetch_manifest "$relay" "$hex" || true)
+        evs=$(relay_fetch_manifest "$relay" "$hex" || true)
+        if [ -n "$evs" ]; then
+            # Relays may return stale + fresh parameterized-replaceable events.
+            # Always choose the newest created_at to avoid old no-base manifests.
+            if command -v jq >/dev/null 2>&1; then
+                raw=$(printf '%s\n' "$evs" | jq -sc 'map(select(.[0] == "EVENT")) | sort_by((.[2].created_at // 0)) | last // empty' 2>/dev/null || true)
+                [ "$raw" = "null" ] && raw=""
+            else
+                raw=$(printf '%s\n' "$evs" | head -1)
+            fi
+        fi
         [ -n "$raw" ] && break
     done
     [ -n "$raw" ] || { log "  no manifest event found"; return 1; }
