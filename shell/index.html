@@ -2770,22 +2770,52 @@
       // "WS not open mid-transfer" we used to throw.
       let wsDead = null;
       let wsCloseInfo = null;
-      ws.onerror = () => { wsDead = wsDead || new Error('client WS error mid-transfer'); };
+      // Async diagnostic helper: when the WS dies, we want to know whether
+      // the guest websocat is alive, what it logged, and how many bytes
+      // landed in the dst file. We launch this once on first death signal
+      // and surface its result via wsCloseDiag — appended to the thrown
+      // error message after settleClose() awaits it.
+      let wsCloseDiag = '';
+      let diagPromise = null;
+      const captureDeathDiag = () => {
+        if (diagPromise) return diagPromise;
+        diagPromise = (async () => {
+          try {
+            const rd = await serialVfs.exec(
+              'echo "---- wc ----"; wc -c < ' + tmpDstQ + ' 2>/dev/null; ' +
+              'echo "---- proc ----"; [ -d /proc/' + guestPid + ' ] && echo "websocat alive" || echo "websocat exited"; ' +
+              'echo "---- snap-recv.log ----"; cat /tmp/snap-recv.log 2>/dev/null; ' +
+              'echo "---- ps ----"; ps -ef 2>/dev/null | grep -E "websocat|cat " | grep -v grep',
+              { timeout: 6000 }
+            );
+            wsCloseDiag = '\n' + stripAnsi(rd.stdout || '').slice(0, 1500);
+          } catch (e) { wsCloseDiag = '\n[diag failed: ' + (e && e.message) + ']'; }
+        })();
+        return diagPromise;
+      };
+      ws.onerror = () => {
+        wsDead = wsDead || new Error('client WS error mid-transfer');
+        captureDeathDiag();
+      };
       ws.onclose = (e) => {
         wsCloseInfo = { code: (e && e.code), reason: (e && e.reason) || '' };
         wsDead = wsDead || new Error(
           'client WS closed mid-transfer (code=' + wsCloseInfo.code +
           (wsCloseInfo.reason ? ' reason=' + wsCloseInfo.reason : '') + ')'
         );
+        captureDeathDiag();
       };
 
-      // Brief settle for onclose to populate wsDead. If readyState went
-      // to CLOSING/CLOSED but onclose hasn't fired yet, wait up to 250ms
-      // so the surfaced error includes the real close code/reason.
+      // Brief settle for onclose to populate wsDead, then await diag.
+      // If readyState went to CLOSING/CLOSED but onclose hasn't fired,
+      // wait up to 500ms so the surfaced error includes the real close
+      // code/reason and the receiver log.
       const settleClose = async () => {
-        for (let i = 0; i < 10 && !wsDead && ws.readyState !== WebSocket.OPEN; i++) {
+        for (let i = 0; i < 20 && !wsDead && ws.readyState !== WebSocket.OPEN; i++) {
           await new Promise(r => setTimeout(r, 25));
         }
+        if (!diagPromise) captureDeathDiag();
+        try { await diagPromise; } catch (_) {}
       };
 
       // Ground-truth progress: poll the guest file size every 1.2s. If it
@@ -2863,7 +2893,7 @@
               'WS not open mid-transfer ' +
               '(readyState=' + ws.readyState +
               ', bufferedAmount=' + ws.bufferedAmount +
-              ', sent=' + sentBytes + '/' + total + ' B)'
+              ', sent=' + sentBytes + '/' + total + ' B)' + wsCloseDiag
             );
           }
           await new Promise(r => setTimeout(r, 25));
@@ -2880,7 +2910,7 @@
               '(readyState=' + ws.readyState +
               ', bufferedAmount=' + ws.bufferedAmount +
               ', sent=' + sentBytes + '/' + total + ' B, ' +
-              'guest=' + lastGuestBytes + ')'
+              'guest=' + lastGuestBytes + ')' + wsCloseDiag
             );
           }
           await new Promise(r => setTimeout(r, 50));
