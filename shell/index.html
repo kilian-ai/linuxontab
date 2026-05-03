@@ -1132,7 +1132,18 @@
       // becomes a harmless readline cursor move + literal digit, which
       // makes the wrapped command fail cleanly rather than corrupting
       // an interactive REPL.
-      this.useTmux = true;
+      // Tmux routing is OFF by default. When ON it prepends `Ctrl-B
+      // <digit>` / appends `Ctrl-B l` around each job to switch tmux
+      // windows. If tmux is NOT actually attached (e.g. user exited
+      // the lot session), `Ctrl-B` becomes a harmless readline
+      // cursor-move BUT the `l` suffix gets typed as a literal
+      // character into whatever the user is composing — symptom:
+      // commands silently corrupted with a stray `l` in the middle
+      // (`social` → `sociall`). Until we have a reliable host-side
+      // probe for "is the user actually inside tmux right now", keep
+      // routing off and let panel commands run in the user's current
+      // terminal context.
+      this.useTmux = false;
       this.tmuxSession = 'lot';
       this.tmuxDefaultWindow = 'vfs';
       this.tmuxWindowIndex = {
