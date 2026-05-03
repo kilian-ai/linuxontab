@@ -2657,8 +2657,10 @@
   // nothing to resume mid-transfer either.
   async function pushBlobToGuestPort(blob, dstPath, opts) {
     if (!emulator) throw new Error('emulator not running');
-    if (!serialVfs) throw new Error('serial bridge not ready');
     if (!emulator.fs9p) throw new Error('9P filesystem not initialized');
+    // serialVfs is only required for the slow path (tmpfs dst). The fast
+    // path (/mnt/host/...) writes via fs9p directly and has no shell
+    // dependency, so a busy/blocked guest shell can't stall it.
     opts = opts || {};
     const onProgress = opts.onProgress || (() => {});
     const onPhase = opts.onPhase || (() => {});
@@ -2734,12 +2736,36 @@
       const parentGuest = dstPath.replace(/\/[^/]*$/, '') || HOST_MOUNT;
       // Ensure parent dir exists in fs9p (mkdir on guest side → 9P Tmkdir).
       onPhase('ensuring parent dir');
-      try { console.log('[push] mkdir', parentGuest, '+ rm', dstPath); } catch (_) {}
-      await serialVfs.exec(
-        'mkdir -p -- ' + SerialVfs._q(parentGuest) + ' 2>/dev/null; ' +
-        'rm -f -- ' + dstQ + ' 2>/dev/null',
-        { timeout: 8000 }
-      );
+      // mkdir -p + rm directly via fs9p — avoids the serial bridge,
+      // which can hang silently if the guest shell is busy or tmux is
+      // mid-redraw. We do the same job CreateBinaryFile would do for
+      // the parent chain, then unlink any prior file at dstPath.
+      try {
+        const fs = emulator.fs9p;
+        // mkdir -p: walk fsParent components and CreateDirectory any
+        // missing piece. fsParent is the parent dir's fs9p path
+        // (= dstPath minus '/mnt/host' minus filename).
+        const fsParent = parentGuest.slice('/mnt/host'.length) || '/';
+        const parts = fsParent.split('/').filter(Boolean);
+        let parentId = 0; // fs9p root inode
+        for (const name of parts) {
+          let id = fs.Search(parentId, name);
+          if (id === -1) {
+            id = fs.CreateDirectory(name, parentId);
+            try { console.log('[push] fs9p mkdir', name, '->', id); } catch (_) {}
+          }
+          parentId = id;
+        }
+        // Remove any existing file at dstPath (resume already handled
+        // exact-size match; anything else here is stale).
+        const existing = fs.SearchPath(fsPath);
+        if (existing && existing.id !== -1 && existing.parentid !== -1) {
+          fs.Unlink(existing.parentid, existing.name);
+          try { console.log('[push] fs9p unlinked existing', fsPath); } catch (_) {}
+        }
+      } catch (e) {
+        try { console.log('[push] fs9p mkdir/rm failed (will rely on create_file):', e); } catch (_) {}
+      }
       onPhase('writing ' + (total / 1048576).toFixed(1) + ' MB to 9P (may take 10–30s, browser will appear frozen)');
       try { console.log('[push] calling emulator.create_file', fsPath); } catch (_) {}
       onProgress(0, total);
@@ -2748,13 +2774,14 @@
       await emulator.create_file(fsPath, u8);
       const wMs = Date.now() - t0;
       try { console.log('[push] create_file done in', wMs, 'ms'); } catch (_) {}
-      onPhase('9P write done in ' + wMs + ' ms — verifying');
+      onPhase('9P write done in ' + wMs + ' ms');
       onProgress(total, total);
-      // Verify guest sees the file at the expected size.
-      const vr = await serialVfs.exec('wc -c < ' + dstQ + ' 2>/dev/null', { timeout: 30000 });
-      const got = parseInt(stripAnsi(vr.stdout).trim(), 10);
+      // Verify via fs9p directly (no shell round-trip needed).
+      const sp2 = emulator.fs9p.SearchPath(fsPath);
+      const inode2 = sp2 && sp2.id !== -1 ? emulator.fs9p.GetInode(sp2.id) : null;
+      const got = inode2 && inode2.size;
       if (got !== total) {
-        throw new Error('size mismatch after 9P write: guest sees ' +
+        throw new Error('size mismatch after 9P write: fs9p sees ' +
           got + ' / expected ' + total + ' (write took ' + wMs + ' ms)');
       }
       return { bytes: got, path: dstPath };
@@ -2766,6 +2793,7 @@
     // tmpfs ceiling still applies — a 1.79 GB blob will not fit in a
     // ~1 GB Alpine tmpfs and the cat will fail with ENOSPC. In that case
     // re-run with a /mnt/host/... path.
+    if (!serialVfs) throw new Error('serial bridge not ready (required for non-/mnt/host dst)');
     const CHUNK = 64 * 1024 * 1024; // 64 MB per fs9p inode
     const numChunks = Math.ceil(total / CHUNK);
     const marker = 'snap9p-' + Math.random().toString(36).slice(2, 8);
