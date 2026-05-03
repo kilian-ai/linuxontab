@@ -2673,6 +2673,7 @@
     onPhase('registering port ' + port + ' with relay');
     let relayBase = null;
     let lastErr = null;
+    let registerJson = null;
     for (const r of TUNNEL_RELAY_ENDPOINTS) {
       try {
         const res = await fetch(r + '/port/register', {
@@ -2680,7 +2681,11 @@
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ code, ports: [port] }),
         });
-        if (res.ok) { relayBase = r; break; }
+        if (res.ok) {
+          relayBase = r;
+          try { registerJson = await res.json(); } catch (_) {}
+          break;
+        }
         lastErr = new Error('register ' + res.status + ' on ' + r);
       } catch (e) { lastErr = e; }
     }
@@ -2689,6 +2694,34 @@
     }
     const wsBase = relayBase.replace(/^http/, 'ws');
     onPhase('relay: ' + relayBase);
+    try { console.log('[push] register response:', registerJson); } catch (_) {}
+
+    // 2b. Sanity-check: query /port/status to confirm THIS relay's view of
+    // the session has our port in registeredPorts. If a different relay is
+    // serving guest WS than the one we registered with (DNS/CDN/proxy
+    // race), the guest WS will be socket.destroy()'d and snap-recv.log
+    // will report "websocat exit=0 cat exit=0 bytes=0" — exactly the
+    // failure mode we keep hitting. Fail fast with a clear message.
+    try {
+      const sres = await fetch(relayBase + '/port/status?code=' + code);
+      if (sres.ok) {
+        const sj = await sres.json();
+        try { console.log('[push] status post-register:', sj); } catch (_) {}
+        const regPorts = (sj && sj.registered_ports) || [];
+        if (!regPorts.includes(port)) {
+          throw new Error(
+            'register did not stick: ' + relayBase +
+            ' shows registered_ports=' + JSON.stringify(regPorts) +
+            ' (expected to contain ' + port + '). ' +
+            'Likely the relay is serving multiple machines and your ' +
+            'register call landed on a different one than the WS will.'
+          );
+        }
+      }
+    } catch (e) {
+      if (/register did not stick/.test(e.message || '')) throw e;
+      // Status fetch errors are non-fatal — we already registered ok.
+    }
 
     // 3. Spawn the guest receiver. After two failed approaches:
     //    (a) websocat-as-file-sink (sh-c:cat>file, writefile:, -u … >file)
