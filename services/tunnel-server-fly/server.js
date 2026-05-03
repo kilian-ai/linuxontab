@@ -207,7 +207,10 @@ class PortSession {
       // Forward to paired client if pair exists.
       const peer = this.pairs.get(ws);
       if (peer && peer.readyState === 1) {
-        try { peer.send(buf, { binary: true }); } catch (_) {}
+        if (ws.__pair) ws.__pair.g2c += buf.length;
+        try { peer.send(buf, { binary: true }); } catch (e) {
+          console.log(`[pair ${ws.__pair && ws.__pair.id}] g2c send failed: ${e.message}`);
+        }
         // Backpressure: if peer's outbound buffer grows, pause this
         // socket's underlying TCP read so the OS NIC backs up to the
         // far end. Without this, large transfers (snapshot push) fill
@@ -238,12 +241,20 @@ class PortSession {
       // Break only this specific pair; siblings on the same port survive.
       const peer = this.pairs.get(ws);
       if (peer) {
+        if (ws.__pair) {
+          const dur = Date.now() - ws.__pair.startedAt;
+          console.log(`[pair ${ws.__pair.id}] GUEST closed first ` +
+            `code=${code} reason=${String(reason||'').slice(0,60)} ` +
+            `c2g=${ws.__pair.c2g} g2c=${ws.__pair.g2c} dur=${dur}ms ` +
+            `peerBuffered=${peer.bufferedAmount||0}`);
+        }
         this.pairs.delete(peer);
         try { peer.close(code || 1000, String(reason || 'peer disconnected')); } catch (_) {}
       }
       this.pairs.delete(ws);
     });
-    ws.on('error', () => {
+    ws.on('error', (e) => {
+      console.log(`[guest ws] error: ${e && e.message}`);
       try { ws.close(1011, 'error'); } catch (_) {}
     });
   }
@@ -286,6 +297,16 @@ class PortSession {
     this.pairs.set(ws, guest);
     this.pairs.set(guest, ws);
 
+    // Per-pair counters so close logs can tell us how far the transfer got
+    // and which side closed first.
+    const pairId = Math.random().toString(36).slice(2, 8);
+    const pairCounters = { id: pairId, c2g: 0, g2c: 0, startedAt: Date.now() };
+    ws.__pair = pairCounters;
+    guest.__pair = pairCounters;
+    ws.__pairRole = 'client';
+    guest.__pairRole = 'guest';
+    console.log(`[pair ${pairId}] ${this.code}:${port} client+guest paired`);
+
     // Flush any pre-pair buffered bytes from the dequeued guest. Defer with
     // setImmediate so the client WS open frame is fully delivered before we
     // start sending data — synchronous ws.send() right after handleUpgrade
@@ -303,7 +324,11 @@ class PortSession {
       this.touch();
       const peer = this.pairs.get(ws);
       if (!peer || peer.readyState !== 1) return;
-      try { peer.send(isBinary ? data : Buffer.from(data), { binary: true }); } catch (_) {}
+      const buf = isBinary ? data : Buffer.from(data);
+      if (ws.__pair) ws.__pair.c2g += buf.length;
+      try { peer.send(buf, { binary: true }); } catch (e) {
+        console.log(`[pair ${ws.__pair && ws.__pair.id}] c2g send failed: ${e.message}`);
+      }
       // See addGuest() for backpressure rationale.
       applyBackpressure(ws, peer);
     });
@@ -319,12 +344,20 @@ class PortSession {
       // Break only this pair; close the peer guest (single-use anyway).
       const peer = this.pairs.get(ws);
       if (peer) {
+        if (ws.__pair) {
+          const dur = Date.now() - ws.__pair.startedAt;
+          console.log(`[pair ${ws.__pair.id}] CLIENT closed first ` +
+            `code=${code} reason=${String(reason||'').slice(0,60)} ` +
+            `c2g=${ws.__pair.c2g} g2c=${ws.__pair.g2c} dur=${dur}ms ` +
+            `peerBuffered=${peer.bufferedAmount||0}`);
+        }
         this.pairs.delete(peer);
         try { peer.close(code || 1000, String(reason || 'peer disconnected')); } catch (_) {}
       }
       this.pairs.delete(ws);
     });
-    ws.on('error', () => {
+    ws.on('error', (e) => {
+      console.log(`[client ws] error: ${e && e.message}`);
       try { ws.close(1011, 'error'); } catch (_) {}
     });
   }
