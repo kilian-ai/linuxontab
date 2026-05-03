@@ -2061,6 +2061,7 @@
         'umask 000\n' +
         'mkdir -p -m 0777 /mnt/host/public /mnt/host/public/.following 2>/dev/null\n' +
         'mkdir -p -m 0777 /mnt/host/following /mnt/host/following_new /mnt/host/social_following 2>/dev/null\n' +
+        'mkdir -p -m 0777 /mnt/host/snapshots 2>/dev/null\n' +
         'mkdir -p -m 0777 /mnt/host/vfs/public /mnt/host/vfs/public/.following 2>/dev/null\n' +
         'mkdir -p -m 0777 /mnt/host/vfs/following /mnt/host/vfs/following_new /mnt/host/vfs/social_following 2>/dev/null\n' +
         'chmod 0777 /mnt/host/public /mnt/host/following /mnt/host/following_new /mnt/host/social_following 2>/dev/null || true\n' +
@@ -2793,14 +2794,16 @@
 
       // Nudge the guest dcache so a subsequent `ls` sees the new file.
       // We bypass serialVfs (its queue may be blocked) and write the
-      // command directly into the guest tty. This is best-effort: if
-      // the guest is mid-prompt-read it will execute; if it's in a
-      // pager or REPL it will just inject a stray keystroke (mostly
-      // harmless, recoverable with backspace). The user can also just
-      // run `ls /mnt/host/snapshots/` themselves.
+      // command directly into the guest tty. Drop dentry/inode caches
+      // first so the kernel re-Twalk's the parent on the next stat.
+      // Best-effort: if the guest is mid-pager/REPL it injects a stray
+      // line which the user can backspace away.
       try {
         if (typeof sendGuestText === 'function') {
-          sendGuestText('ls -lh ' + SerialVfs._q(parentGuest) + ' >/dev/null 2>&1\n');
+          sendGuestText(
+            'echo 2 > /proc/sys/vm/drop_caches 2>/dev/null; ' +
+            'ls -lh ' + SerialVfs._q(parentGuest) + ' >/dev/null 2>&1\n'
+          );
         }
       } catch (_) {}
 
