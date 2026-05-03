@@ -1018,8 +1018,9 @@
     const prevStatus = statusEl.textContent;
     try {
       const t0 = Date.now();
-      // Take snapshot in unmounted state — see umountBeforeSave() comment.
-      await umountBeforeSave();
+      // 9P umount/remount dance removed — was causing the guest to be in
+      // an inconsistent mount state after restore, which made subsequent
+      // mkdir/touch on /mnt/host hang.
       const st = await emulator.save_state();
       // Auto-save always writes back into whatever snapshot is currently
       // active. If the session started from a fresh-boot selection, we
@@ -1028,8 +1029,6 @@
       const name = currentSnapName || DEFAULT_SNAP_NAME;
       await idbPut(snapKeyFor(currentIso, name), st);
       currentSnapName = name;
-      // Restore mount for the live session so the user keeps working.
-      await remountAfterSave();
       lastAutosaveAt = Date.now();
       dirty = false;
       // The autosave just materialized a snapshot under currentIso/currentSnapName.
@@ -1880,8 +1879,13 @@
     }
     window.kickVirtio9pAfterRestore = kickVirtio9pAfterRestore;
 
-    emulator.add_listener('emulator-ready',   () => { sanitizeInodeOwnership(); if (doRestore) kickVirtio9pAfterRestore(); setStatus('ready'); });
-    emulator.add_listener('emulator-started', () => { sanitizeInodeOwnership(); if (doRestore) kickVirtio9pAfterRestore(); setStatus(doRestore ? 'restored' : 'running', 'ok'); });
+    // 9P-specific post-restore hooks removed: kickVirtio9pAfterRestore
+    // (config-IRQ nudge) and sanitizeInodeOwnership were speculative and
+    // appear to leave the kernel 9P client in a state where guest-issued
+    // mkdir/touch on /mnt/host hangs after restore. The plain mount via
+    // restoreNetCmd works without them.
+    emulator.add_listener('emulator-ready',   () => { setStatus('ready'); });
+    emulator.add_listener('emulator-started', () => { setStatus(doRestore ? 'restored' : 'running', 'ok'); });
     emulator.add_listener('emulator-stopped', () => setStatus('stopped'));
 
     // ── Restore-path instrumentation ───────────────────────────────────────
@@ -2727,90 +2731,102 @@
     }
     try { console.log('[push] blob ready in', Date.now() - tBlob0, 'ms, u8.length=', u8.length); } catch (_) {}
 
-    // ---- Fast path: dst is under /mnt/host → guest creates the dentry,
-    // host fills the inode data.
+    // ---- Fast path: dst is under /mnt/host → write via fs9p directly.
     //
-    // Why this dance: v86's fs9p has no way to push a "config-changed"
-    // IRQ at the guest's 9pnet_virtio driver, so dentries created via
-    // host-side fs9p.CreateFile/CreateDirectory/CreateBinaryFile remain
-    // invisible to the guest's kernel until something independently
-    // forces a Twalk on the parent (which in practice never happens for
-    // a path the kernel has already negative-cached). We dodge that by
-    // letting the GUEST issue the Tcreate via a plain `: > $dst` (which
-    // also implicitly mkdir-p's the parent via a sequence of mkdirs),
-    // then we look up the resulting inode id and stuff the blob in via
-    // fs9p.set_data + inode.size = total. Subsequent reads hit Tread on
-    // an inode the kernel already knows about.
+    // We try to involve the guest in dentry creation (via serial bridge
+    // mkdir+touch) so the kernel dcache stays in sync, but we keep the
+    // bridge timeout short and fall back to a pure host-side write
+    // (fs9p.CreateBinaryFile) if the bridge doesn't respond. The pure
+    // host-side path may leave the guest's dcache stale until something
+    // independently invalidates it (re-mount, drop_caches, fresh ls of
+    // a never-cached subdir), but at least the file lands in fs9p and
+    // host-side tools (the viewer, save_state) can see it.
     if (dstPath.indexOf(HOST_MOUNT + '/') === 0) {
-      if (!serialVfs) throw new Error('serial bridge not ready (required to create dentry on guest side)');
       const fsPath = dstPath.slice(HOST_MOUNT.length); // keep leading '/'
       const parentGuest = dstPath.replace(/\/[^/]*$/, '') || HOST_MOUNT;
       const parentQ = SerialVfs._q(parentGuest);
-
-      onPhase('creating empty file on guest');
-      try { console.log('[push] guest mkdir+touch', dstPath); } catch (_) {}
-      // mkdir -p + truncate-create. Each mkdir/Tcreate goes through the
-      // guest 9P client, so its dcache stays consistent with fs9p.
-      // Keep timeout generous — first mkdir on a busy share can take a
-      // few seconds.
-      const tCreate0 = Date.now();
-      const cr = await serialVfs.exec(
-        'mkdir -p -- ' + parentQ + ' && : > ' + dstQ + ' && echo OK',
-        { timeout: 15000 }
-      );
-      const crOut = stripAnsi(cr.stdout || '').trim();
-      try { console.log('[push] guest create result in', Date.now() - tCreate0, 'ms:', JSON.stringify(crOut)); } catch (_) {}
-      if (crOut.indexOf('OK') === -1) {
-        throw new Error('guest failed to create empty dst: ' + crOut);
-      }
-
-      // Locate the freshly-created inode in fs9p.
       const fs = emulator.fs9p;
-      const sp = fs.SearchPath(fsPath);
-      if (!sp || sp.id === -1) {
-        throw new Error('fs9p does not see ' + fsPath + ' after guest touch (parentid=' +
-          (sp && sp.parentid) + ', name=' + (sp && sp.name) + ')');
+
+      // Step 1: try to get the guest to create the dentry first. Best
+      // effort — if the bridge is busy/blocked we proceed without it.
+      let guestCreated = false;
+      if (serialVfs) {
+        onPhase('asking guest to create empty dst (best effort, 4s timeout)');
+        try { console.log('[push] guest mkdir+touch (best-effort)', dstPath); } catch (_) {}
+        try {
+          const tCreate0 = Date.now();
+          const cr = await serialVfs.exec(
+            'mkdir -p -- ' + parentQ + ' && : > ' + dstQ + ' && echo OK',
+            { timeout: 4000 }
+          );
+          const crOut = stripAnsi(cr.stdout || '').trim();
+          if (crOut.indexOf('OK') !== -1) {
+            guestCreated = true;
+            try { console.log('[push] guest created dst in', Date.now() - tCreate0, 'ms'); } catch (_) {}
+          } else {
+            try { console.log('[push] guest create returned without OK:', JSON.stringify(crOut)); } catch (_) {}
+          }
+        } catch (e) {
+          try { console.log('[push] guest create timed out / failed (continuing host-only):', e && e.message || e); } catch (_) {}
+        }
       }
-      const inodeId = sp.id;
-      try { console.log('[push] fs9p inode id for', fsPath, '=', inodeId); } catch (_) {}
 
       onPhase('writing ' + (total / 1048576).toFixed(1) + ' MB to 9P (may take 10–30s, browser will appear frozen)');
       onProgress(0, total);
       await new Promise(r => setTimeout(r, 0)); // yield so banner repaints
       const t0 = Date.now();
-      // set_data installs the buffer; inode.size must be updated
-      // separately (CreateBinaryFile does the same: set_data then
-      // a.size = c.length).
-      await fs.set_data(inodeId, u8);
-      const inode = fs.GetInode(inodeId);
-      inode.size = u8.length;
+
+      let inodeId, inode;
+      if (guestCreated) {
+        // Guest already touched the file; just locate the inode and
+        // stuff data in via set_data.
+        const sp = fs.SearchPath(fsPath);
+        if (!sp || sp.id === -1) {
+          throw new Error('fs9p does not see ' + fsPath + ' after guest touch');
+        }
+        inodeId = sp.id;
+        await fs.set_data(inodeId, u8);
+        inode = fs.GetInode(inodeId);
+        inode.size = u8.length;
+      } else {
+        // Pure host-side path: walk parent components, create any
+        // missing dir, unlink any prior file, CreateBinaryFile.
+        const fsParent = parentGuest.slice('/mnt/host'.length) || '/';
+        const parts = fsParent.split('/').filter(Boolean);
+        let parentId = 0; // fs9p root inode
+        for (const name of parts) {
+          let id = fs.Search(parentId, name);
+          if (id === -1) {
+            id = fs.CreateDirectory(name, parentId);
+            try { console.log('[push] fs9p mkdir', name, '->', id); } catch (_) {}
+          }
+          parentId = id;
+        }
+        const existing = fs.SearchPath(fsPath);
+        if (existing && existing.id !== -1 && existing.parentid !== -1) {
+          fs.Unlink(existing.parentid, existing.name);
+        }
+        await emulator.create_file(fsPath, u8);
+        const sp2 = fs.SearchPath(fsPath);
+        if (!sp2 || sp2.id === -1) throw new Error('fs9p missing dst after CreateBinaryFile');
+        inodeId = sp2.id;
+        inode = fs.GetInode(inodeId);
+      }
+
       // Bump mtime/ctime so guest stat shows a recent timestamp.
       const now = Math.floor(Date.now() / 1000);
-      inode.mtime = now;
-      inode.ctime = now;
+      if (inode) { inode.mtime = now; inode.ctime = now; }
+
       const wMs = Date.now() - t0;
-      try { console.log('[push] set_data done in', wMs, 'ms, inode.size=', inode.size); } catch (_) {}
-      onPhase('9P write done in ' + wMs + ' ms');
+      try { console.log('[push] 9P write done in', wMs, 'ms (guestCreated=' + guestCreated + ', inode.size=' + (inode && inode.size) + ')'); } catch (_) {}
+      onPhase('9P write done in ' + wMs + ' ms' + (guestCreated ? '' : ' (host-only — guest may need `ls`/remount to see)'));
       onProgress(total, total);
 
-      // Verify host-side bookkeeping matches.
-      if (inode.size !== total) {
+      if (!inode || inode.size !== total) {
         throw new Error('size mismatch after 9P write: fs9p sees ' +
-          inode.size + ' / expected ' + total + ' (write took ' + wMs + ' ms)');
+          (inode && inode.size) + ' / expected ' + total);
       }
-      // And verify the guest can stat it at the new size (proves the
-      // dentry-vs-inode plumbing is end-to-end consistent).
-      try {
-        const v = await serialVfs.exec('wc -c < ' + dstQ, { timeout: 10000 });
-        const guestBytes = parseInt(stripAnsi(v.stdout || '').trim(), 10);
-        try { console.log('[push] guest sees', guestBytes, 'bytes'); } catch (_) {}
-        if (Number.isFinite(guestBytes) && guestBytes !== total) {
-          throw new Error('guest sees ' + guestBytes + ' bytes, fs9p has ' + total);
-        }
-      } catch (e) {
-        try { console.log('[push] guest verify warning (non-fatal):', e); } catch (_) {}
-      }
-      return { bytes: inode.size, path: dstPath };
+      return { bytes: inode.size, path: dstPath, guestCreated };
     }
 
     // ---- Slow path: dst is in tmpfs (e.g. /root/...). Stage chunks under
@@ -2960,8 +2976,6 @@
     saveInProgress = true;
     setStatus('saving snapshot\u2026 (tab may freeze briefly)');
     try {
-      // Take snapshot in unmounted state — see umountBeforeSave() comment.
-      await umountBeforeSave();
       const buf = await emulator.save_state();
       // Save into the dropdown's currently-selected slot. Fresh-boot
       // selections materialize as DEFAULT_SNAP_NAME for that ISO. Named
@@ -2974,7 +2988,6 @@
       currentSnapName = targetName;
       const key = snapKeyFor(targetIso, targetName);
       await idbPut(key, buf);
-      await remountAfterSave();
       setStatus(`snapshot saved as ${targetIso}/${targetName} (${(buf.byteLength/1048576).toFixed(1)} MB)`, 'ok');
       await populateSnapSelect(key);
     } catch (e) {
