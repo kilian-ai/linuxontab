@@ -2683,38 +2683,51 @@
       }
     } catch (_) { /* missing/inaccessible dst is normal */ }
 
-    // ---- Materialize blob as Uint8Array (no copy: ArrayBuffer view).
-    const buf = blob instanceof ArrayBuffer
-      ? blob
-      : (blob.arrayBuffer ? await blob.arrayBuffer() : blob);
-    const u8 = new Uint8Array(buf);
+    // ---- Materialize blob as Uint8Array (no copy when possible).
+    onPhase('reading blob into memory');
+    await new Promise(r => setTimeout(r, 0)); // yield so banner repaints
+    let u8;
+    if (blob instanceof Uint8Array) {
+      u8 = blob;
+    } else if (blob instanceof ArrayBuffer) {
+      u8 = new Uint8Array(blob);
+    } else if (blob && typeof blob.arrayBuffer === 'function') {
+      const ab = await blob.arrayBuffer();
+      u8 = new Uint8Array(ab);
+    } else if (blob && blob.buffer instanceof ArrayBuffer) {
+      u8 = new Uint8Array(blob.buffer, blob.byteOffset || 0, blob.byteLength);
+    } else {
+      throw new Error('blob is not Blob / ArrayBuffer / Uint8Array');
+    }
 
     // ---- Fast path: dst is under /mnt/host → write directly to fs9p.
     // No guest cp needed, no tmpfs ceiling. Single fs9p inode holds the
     // whole file; CreateBinaryFile copies it once internally so peak JS
-    // heap is ~2× total during the call. For ≤ ~1 GB on a 64-bit browser
-    // this is comfortably fine.
+    // heap is ~2× total during the call.
     if (dstPath.indexOf(HOST_MOUNT + '/') === 0) {
       const fsPath = dstPath.slice(HOST_MOUNT.length); // keep leading '/'
       const parentGuest = dstPath.replace(/\/[^/]*$/, '') || HOST_MOUNT;
       // Ensure parent dir exists in fs9p (mkdir on guest side → 9P Tmkdir).
+      onPhase('ensuring parent dir');
       await serialVfs.exec(
-        'mkdir -p -- ' + SerialVfs._q(parentGuest) + ' 2>/dev/null',
-        { timeout: 5000 }
+        'mkdir -p -- ' + SerialVfs._q(parentGuest) + ' 2>/dev/null; ' +
+        'rm -f -- ' + dstQ + ' 2>/dev/null',
+        { timeout: 8000 }
       );
-      // If a partial file lingers, drop it (resume already handled the
-      // exact-size match above; anything else is stale).
-      await serialVfs.exec('rm -f -- ' + dstQ, { timeout: 5000 });
-      onPhase('writing ' + (total / 1048576).toFixed(1) + ' MB to 9P');
+      onPhase('writing ' + (total / 1048576).toFixed(1) + ' MB to 9P (may take 10–30s, browser will appear frozen)');
       onProgress(0, total);
+      await new Promise(r => setTimeout(r, 0)); // yield so banner repaints
+      const t0 = Date.now();
       await emulator.create_file(fsPath, u8);
+      const wMs = Date.now() - t0;
+      onPhase('9P write done in ' + wMs + ' ms — verifying');
       onProgress(total, total);
       // Verify guest sees the file at the expected size.
-      const vr = await serialVfs.exec('wc -c < ' + dstQ + ' 2>/dev/null', { timeout: 10000 });
+      const vr = await serialVfs.exec('wc -c < ' + dstQ + ' 2>/dev/null', { timeout: 30000 });
       const got = parseInt(stripAnsi(vr.stdout).trim(), 10);
       if (got !== total) {
         throw new Error('size mismatch after 9P write: guest sees ' +
-          got + ' / expected ' + total);
+          got + ' / expected ' + total + ' (write took ' + wMs + ' ms)');
       }
       return { bytes: got, path: dstPath };
     }
