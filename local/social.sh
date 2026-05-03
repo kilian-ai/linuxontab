@@ -618,7 +618,7 @@ relay_fetch_manifest() {
     relay="$1"
     hex_pk="$2"
     sub="sub-$$"
-    filter='{"kinds":[30000],"authors":["'"$hex_pk"'"],"#d":["public-folder"],"limit":1}'
+    filter='{"kinds":[30000],"authors":["'"$hex_pk"'"],"#d":["public-folder"],"limit":20}'
     req='["REQ","'"$sub"'",'"$filter"']'
     ( printf '%s\n' "$req"; sleep 4 ) | websocat --text -E - "$relay" 2>/dev/null \
         | grep -E '^\["EVENT",'
@@ -632,28 +632,49 @@ cmd_sync_one() {
     hex=$(printf '%s' "$resp" | json_pick 'pubkey_hex')
     [ -n "$hex" ] || { log "  decode failed: $resp"; return 1; }
 
-    # Try each relay until we get an event
+    # Try each relay and prefer the newest event that has a usable base URL.
+    # Fall back to newest overall only if none include base metadata.
     raw=""
+    raw_with_base=""
     for relay in $RELAYS; do
         log "  query $relay"
         evs=$(relay_fetch_manifest "$relay" "$hex" || true)
         if [ -n "$evs" ]; then
-            # Relays may return stale + fresh parameterized-replaceable events.
-            # Always choose the newest created_at to avoid old no-base manifests.
             if command -v jq >/dev/null 2>&1; then
-                raw=$(printf '%s\n' "$evs" | jq -sc 'map(select(.[0] == "EVENT")) | sort_by((.[2].created_at // 0)) | last // empty' 2>/dev/null || true)
-                [ "$raw" = "null" ] && raw=""
+                # Newest event that exposes base via tag r or content.base.
+                cand_base=$(printf '%s\n' "$evs" | jq -sc '
+                    map(select(.[0] == "EVENT"))
+                    | map(select(
+                        ((.[2].tags // []) | map(select(.[0] == "r" and ((.[1] // "") != ""))) | length) > 0
+                        or
+                        ((.[2].content | fromjson? // {}) | has("base"))
+                    ))
+                    | sort_by((.[2].created_at // 0))
+                    | last // empty' 2>/dev/null || true)
+                [ "$cand_base" = "null" ] && cand_base=""
+
+                cand_any=$(printf '%s\n' "$evs" | jq -sc 'map(select(.[0] == "EVENT")) | sort_by((.[2].created_at // 0)) | last // empty' 2>/dev/null || true)
+                [ "$cand_any" = "null" ] && cand_any=""
+
+                [ -z "$raw" ] && raw="$cand_any"
+                [ -n "$cand_base" ] && raw_with_base="$cand_base"
             else
-                raw=$(printf '%s\n' "$evs" | head -1)
+                [ -z "$raw" ] && raw=$(printf '%s\n' "$evs" | head -1)
             fi
         fi
-        [ -n "$raw" ] && break
+        [ -n "$raw_with_base" ] && break
     done
+    [ -n "$raw_with_base" ] && raw="$raw_with_base"
     [ -n "$raw" ] || { log "  no manifest event found"; return 1; }
 
     if ! command -v jq >/dev/null 2>&1; then
         log "  jq required for sync (apk add jq)"; return 1
     fi
+    dest="$FOLLOW_DIR/$npub"
+    mkdir -p "$dest"
+    # Save the raw manifest event for inspection, even if it has no base URL.
+    printf '%s\n' "$raw" > "$dest/.manifest.json"
+
     content=$(printf '%s' "$raw" | jq -r '.[2].content')
     base=$(printf '%s' "$raw" | jq -r '.[2].tags[] | select(.[0]=="r") | .[1]' | head -1)
     if [ -z "$base" ] || [ "$base" = "null" ]; then
@@ -661,15 +682,13 @@ cmd_sync_one() {
         base=$(printf '%s' "$content" | jq -r '.base // empty')
     fi
     if [ -z "$base" ]; then
-        log "  manifest has no base URL — skipping file mirror"
+        c_at=$(printf '%s' "$raw" | jq -r '.[2].created_at // empty')
+        eid=$(printf '%s' "$raw" | jq -r '.[2].id // empty')
+        log "  manifest has no base URL (created_at=${c_at:-?} id=${eid:-?}) — skipping file mirror"
+        log "  publisher should run: social tunnel-up && social publish"
         return 0
     fi
     log "  base_url: $base"
-
-    dest="$FOLLOW_DIR/$npub"
-    mkdir -p "$dest"
-    # Save the raw manifest event for inspection
-    printf '%s\n' "$raw" > "$dest/.manifest.json"
 
     # Iterate files
     file_count=$(printf '%s' "$content" | jq '.files | length')
