@@ -4886,6 +4886,19 @@
           + 'tmux has-session -t lot 2>/dev/null || { echo NO_SESSION; exit 0; }; '
           + 'tmux list-windows -t lot -F "#W" 2>/dev/null | grep -q "^vfs$" '
           +   '|| { echo NO_VFS_WIN; exit 0; }; '
+          // CRITICAL: a lot session can exist without the user actually
+          // being attached to it (e.g. they typed `tmux detach`, or are
+          // logged in on a TTY where the auto-attach profile snippet did
+          // not run). In that case our `Ctrl-B <digit>` routing prefix is
+          // eaten by bash readline as `backward-char + literal-digit`,
+          // which corrupts the wrapped command's variable assignment
+          // (`4__b=...` is not a valid identifier so bash treats it as a
+          // command name → __b never set → begin marker prints empty →
+          // SerialVfs times out). $TMUX is non-empty iff we are inside a
+          // tmux client. Verify session id matches a lot client.
+          + '[ -n "$TMUX" ] || { echo NOT_ATTACHED; exit 0; }; '
+          + 'tmux display-message -p "#S" 2>/dev/null | grep -qx lot '
+          +   '|| { echo WRONG_SESSION; exit 0; }; '
           + 'echo OK )',
           { timeout: 10000, tmuxWindow: '' }
         );
@@ -4909,6 +4922,14 @@
         why = 'no `lot` session — run `lot` in the guest, or open a fresh login shell.';
       } else if (verdict === 'NO_VFS_WIN') {
         why = 'lot session has no `vfs` window — run `lot kill && lot` to recreate it.';
+      } else if (verdict === 'NOT_ATTACHED') {
+        why = 'lot session exists but your shell is NOT attached to it. '
+            + 'Run `lot` (or open a fresh login shell so /etc/profile.d/99tmux-lot.sh '
+            + 'auto-attaches). Without attachment, Ctrl-B routing keystrokes go to bare '
+            + 'bash readline and corrupt the wrapped command.';
+      } else if (verdict === 'WRONG_SESSION') {
+        why = 'you are inside a tmux session but it is not `lot`. Detach (Ctrl-B d) '
+            + 'then run `lot` to attach to the right session.';
       } else if (!why) {
         why = 'unexpected probe result (exit=' + exitCode + '): '
             + (stdout ? stdout.slice(-200) : '<no stdout>')
