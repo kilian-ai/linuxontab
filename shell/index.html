@@ -1145,6 +1145,31 @@
       for (let i = 0; i < s.length; i++) emulator.serial0_send(s[i]);
     }
 
+    // Strip the ANSI escape sequences tmux's grid renderer interleaves
+    // with normal text. When the user is attached to tmux, serial0 is
+    // tmux's screen update protocol — every chunk of output gets wrapped
+    // in CSI/OSC sequences (\x1b[H, \x1b[K, \x1b]0;…\x07, scroll regions,
+    // SGR colors, etc.). Without stripping, marker regexes never match
+    // because the literal marker line is fragmented by escapes.
+    //
+    // Strips:
+    //   • CSI:        ESC [ ... <final-byte 0x40-0x7E>
+    //   • OSC:        ESC ] ... (BEL | ESC \)
+    //   • SS2/SS3:    ESC N / ESC O
+    //   • Charset:    ESC ( X / ESC ) X
+    //   • Bare ESC + 1-char (cursor save/restore, line feed, etc.)
+    //   • DCS/SOS/PM/APC bodies: ESC P|X|^|_ ... ESC \
+    _stripAnsi(s) {
+      return s
+        .replace(/\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]/g, '')   // CSI
+        .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')           // OSC
+        .replace(/\x1b[PX^_][^\x1b]*\x1b\\/g, '')                    // DCS/SOS/PM/APC
+        .replace(/\x1b[()][\x20-\x7e]/g, '')                         // charset
+        .replace(/\x1b[NO]/g, '')                                    // SS2/SS3
+        .replace(/\x1b[=>78cDEHMZ]/g, '')                            // bare ESC + final
+        .replace(/[\x00-\x08\x0b-\x0c\x0e-\x1f]/g, '');              // other ctrl
+    }
+
     _onByte(b) {
       if (!this.current) return;
       const c = this.current;
@@ -1152,20 +1177,33 @@
       if (this.buf.length > this.echoMaxLen) {
         this.buf = this.buf.slice(-this.echoMaxLen);
       }
+      // Match against an ANSI-stripped view of the buffer so tmux's
+      // cursor-positioning escapes don't fragment the marker. We only
+      // need a clean view for FRAMING; output capture below also uses
+      // the stripped slice so callers get readable stdout when tmux is
+      // in the middle.
+      const cleanBuf = this._stripAnsi(this.buf);
       if (!c.started) {
         // Begin marker only ever appears in output as `\n${begin}\r?\n`
         // (printf prefixes with explicit \n). The echoed source line embeds
         // begin inside double quotes/variable substitution and never on a
         // line of its own.
-        const m = this.buf.match(c.beginRe);
+        const m = cleanBuf.match(c.beginRe);
         if (!m) return;
         c.started = true;
-        this.buf = this.buf.slice(m.index + m[0].length);
+        // Recompute against cleanBuf going forward by replacing buf
+        // with the cleaned post-marker remainder. This drops escape
+        // codes from the captured output too — acceptable trade-off
+        // because nothing downstream renders ANSI from VFS results.
+        this.buf = cleanBuf.slice(m.index + m[0].length);
         c.output = '';
       }
-      const m = this.buf.match(c.endRe);
+      // Re-clean for end-marker match (in case more bytes arrived
+      // since the begin match above and we replaced this.buf).
+      const cleanBuf2 = c.started ? this._stripAnsi(this.buf) : cleanBuf;
+      const m = cleanBuf2.match(c.endRe);
       if (m) {
-        c.output += this.buf.slice(0, m.index);
+        c.output += cleanBuf2.slice(0, m.index);
         const exitCode = parseInt(m[1], 10);
         this.buf = '';
         // If this job switched tmux windows on entry, send the matching
@@ -1181,11 +1219,13 @@
         job.resolve({ stdout: c.output, exitCode });
         this._next();
       } else {
-        // Flush bytes that can't possibly be part of a marker yet.
-        const keep = Math.min(this.buf.length, this.maxBufWindow);
-        if (this.buf.length > keep) {
-          c.output += this.buf.slice(0, this.buf.length - keep);
-          this.buf = this.buf.slice(-keep);
+        // Flush bytes that can't possibly be part of a marker yet. Use
+        // cleanBuf2 length to compare so we don't mistakenly count
+        // ANSI bytes against the marker window.
+        const keep = Math.min(cleanBuf2.length, this.maxBufWindow);
+        if (cleanBuf2.length > keep) {
+          c.output += cleanBuf2.slice(0, cleanBuf2.length - keep);
+          this.buf = cleanBuf2.slice(-keep);
         }
       }
     }
@@ -1227,8 +1267,8 @@
         job,
         started: false,
         output: '',
-        beginRe: new RegExp('\\n' + begin + '\\r?\\n'),
-        endRe:   new RegExp('\\n' + end + ':(-?\\d+)\\r?\\n'),
+        beginRe: new RegExp('(?:^|\\n)' + begin + '\\r?(?:\\n|$)'),
+        endRe:   new RegExp('(?:^|\\n)' + end + ':(-?\\d+)\\r?(?:\\n|$)'),
         timer: null,
         tmuxSuffix: tmuxSuffix,
       };
