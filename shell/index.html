@@ -141,6 +141,26 @@
   #tunnels-log .tl-ok { color:#4ade80; }
   #tunnels-log .tl-err { color:#f87171; }
   #tunnels-log .tl-info { color:#7a8392; }
+  /* ── claw panel ── */
+  #claw-panel { position:absolute; right:0; top:36px; bottom:0; width:560px; max-width:65vw; display:flex; flex-direction:column; background:#0b0d10; border-left:1px solid #2a2f36; z-index:50; box-shadow:-4px 0 12px rgba(0,0,0,0.5); }
+  #claw-panel[hidden] { display:none; }
+  #claw-hdr { display:flex; gap:8px; align-items:center; padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; }
+  #claw-hdr button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
+  #claw-hdr button:hover:not(:disabled) { background:#2d343d; }
+  #claw-hdr button:disabled { opacity:0.4; cursor:not-allowed; }
+  #claw-msgs { flex:1; min-height:0; overflow-y:auto; padding:10px 12px; display:flex; flex-direction:column; gap:8px; }
+  #claw-msgs .cm-user { align-self:flex-end; background:#1d4ed8; color:#fff; border-radius:8px 8px 2px 8px; padding:6px 10px; max-width:85%; white-space:pre-wrap; word-break:break-word; font-size:12px; }
+  #claw-msgs .cm-assistant { align-self:flex-start; background:#161a1f; border:1px solid #2a2f36; color:#d5d8dc; border-radius:2px 8px 8px 8px; padding:6px 10px; max-width:92%; white-space:pre-wrap; word-break:break-word; font-family:'Menlo','Monaco','Consolas',monospace; font-size:11px; line-height:1.55; }
+  #claw-msgs .cm-info { align-self:center; color:#7a8392; font-size:11px; font-style:italic; text-align:center; max-width:90%; }
+  #claw-msgs .cm-err  { align-self:center; color:#f87171; font-size:11px; }
+  #claw-msgs .cm-thinking { align-self:flex-start; color:#7ab8f5; font-size:11px; font-style:italic; }
+  #claw-status { padding:3px 10px; font-size:10px; color:#7a8392; border-top:1px solid #1a1f25; min-height:18px; }
+  #claw-input-row { display:flex; gap:6px; padding:8px 10px; background:#161a1f; border-top:1px solid #2a2f36; align-items:flex-end; }
+  #claw-input { flex:1; background:#0b0d10; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:6px 8px; font:inherit; font-size:12px; resize:none; min-height:34px; max-height:120px; line-height:1.4; outline:none; }
+  #claw-input:focus { border-color:#4a5a73; }
+  #claw-send { background:#1d4ed8; color:#fff; border:1px solid #3b82f6; border-radius:4px; padding:6px 12px; font:inherit; cursor:pointer; white-space:nowrap; align-self:flex-end; }
+  #claw-send:hover:not(:disabled) { background:#2563eb; }
+  #claw-send:disabled { opacity:0.4; cursor:not-allowed; }
   /* ── profile modal ── */
   #profile-modal { position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center; }
   #profile-modal[hidden] { display:none; }
@@ -193,6 +213,7 @@
     <button id="viewer" disabled title="Browse the entire guest filesystem via serial shell (ls/cat).">viewer</button>
     <button id="follow" disabled title="social — bootstraps social CLI, shows your npub, follow/sync/publish via guest CLI">social</button>
     <button id="tunnels" disabled title="manage running tunnels (ports, codes, lifecycle, edit CLI)">tunnels</button>
+    <button id="claw" disabled title="claw — AI chatbot via clawlite in the guest">claw</button>
     <button id="terminal" disabled title="switch the tmux active window back to lot:shell (Ctrl-B 0) — useful after a panel switched you to lot:tunnel/social/viewer">terminal</button>
     <span id="status" class="hint">idle</span>
     <span class="stat" id="stats"></span>
@@ -294,6 +315,21 @@
     </div>
   </div>
 </div>
+  <div id="claw-panel" hidden>
+    <div id="claw-hdr">
+      <b>claw</b>
+      <span class="hint" style="margin-left:6px;font-size:11px">AI chatbot in the guest (clawlite)</span>
+      <button id="claw-new" title="start fresh conversation (resets rolling session history)">new chat</button>
+      <button id="claw-install" title="install / update claw in guest">install</button>
+      <button id="claw-close" style="margin-left:auto">close</button>
+    </div>
+    <div id="claw-msgs"></div>
+    <div id="claw-status"></div>
+    <div id="claw-input-row">
+      <textarea id="claw-input" rows="1" placeholder="message… (Enter to send, Shift+Enter for newline)" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+      <button id="claw-send">send</button>
+    </div>
+  </div>
 
 <!-- ── profile modal (kind 0 / Nostr metadata editor) ─────────────── -->
 <div id="profile-modal" hidden>
@@ -3933,8 +3969,9 @@
       term.focus();
       return;
     }
-    // mutually exclusive with tunnels panel
+    // mutually exclusive with other side panels
     if (tunnelsPanel && !tunnelsPanel.hidden) { tunnelsPanel.hidden = true; panelTmuxBack(); }
+    if (typeof clawPanel !== 'undefined' && clawPanel && !clawPanel.hidden) { clawPanel.hidden = true; }
     followPanel.hidden = false;
     panelTmuxFollow('social');
     // Auto-run bootstrap if log is empty (fresh open) OR if the `social`
@@ -4792,8 +4829,9 @@
       term.focus();
       return;
     }
-    // mutually exclusive with social/follow panel
+    // mutually exclusive with other side panels
     if (followPanel && !followPanel.hidden) { followPanel.hidden = true; panelTmuxBack(); }
+    if (typeof clawPanel !== 'undefined' && clawPanel && !clawPanel.hidden) { clawPanel.hidden = true; }
     tunnelsPanel.hidden = false;
     panelTmuxFollow('tunnel');
     tnRenderPortsConfig();
@@ -4897,6 +4935,226 @@
   }
 
   setInterval(() => { tunnelsBtn.disabled = !emulator; }, 800);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Claw panel — browser chatbot backed by clawlite running in the guest.
+  //
+  // Each user message is sent as a one-shot prompt:
+  //   claw -s browser '<msg>' 2>&1
+  // Clawlite exits after responding; session rolling memory persists on disk
+  // so the conversation continues across sends.
+  //
+  // API calls are routed through the secret proxy so no real key is needed
+  // in the guest — OPENAI_API_KEY=LOT_SECRET_OPENAI gets the real sk-...
+  // injected by the CF Worker before forwarding to api.openai.com.
+  // ─────────────────────────────────────────────────────────────────────────
+  const clawBtn       = $('claw');
+  const clawPanel     = $('claw-panel');
+  const clawCloseBtn  = $('claw-close');
+  const clawNewBtn    = $('claw-new');
+  const clawInstallBtn= $('claw-install');
+  const clawMsgsEl    = $('claw-msgs');
+  const clawInputEl   = $('claw-input');
+  const clawSendBtn   = $('claw-send');
+  const clawStatusEl  = $('claw-status');
+
+  // Proxy-backed OpenAI base URL: no real key needed in guest.
+  const CLAW_PROXY_OPENAI = 'https://relay.linuxontab.com/secret-proxy/https%3A%2F%2Fapi.openai.com%2Fv1';
+  const CLAW_SESSION = 'browser';
+
+  function clawMsg(text, role) {
+    const el = document.createElement('div');
+    el.className = 'cm-' + (role || 'info');
+    el.textContent = text;
+    clawMsgsEl.appendChild(el);
+    clawMsgsEl.scrollTop = clawMsgsEl.scrollHeight;
+    return el;
+  }
+
+  function clawSetStatus(msg, color) {
+    if (clawStatusEl) {
+      clawStatusEl.textContent = msg;
+      clawStatusEl.style.color = color || '#7a8392';
+    }
+  }
+
+  let clawBusy = false;
+
+  async function clawExec(cmd, timeout) {
+    if (!serialVfs.ready && typeof serialVfs.setReady === 'function') serialVfs.setReady(true);
+    return serialVfs.exec(cmd, { timeout: timeout || 120000 });
+  }
+
+  async function clawCheckInstalled() {
+    if (!serialVfs) return false;
+    try {
+      const r = await clawExec('which claw 2>/dev/null || true', 10000);
+      return (r.stdout || '').trim().startsWith('/');
+    } catch (_) { return false; }
+  }
+
+  async function clawDoInstall() {
+    clawSetStatus('installing claw…');
+    clawMsg('downloading claw from linuxontab.com/local/clawlite.sh…', 'info');
+    try {
+      const r = await clawExec(
+        'wget -qO /usr/local/bin/claw https://linuxontab.com/local/clawlite.sh && chmod +x /usr/local/bin/claw',
+        90000
+      );
+      if (r.exitCode === 0) {
+        clawMsg('claw installed.', 'info');
+        clawSetStatus('ready', '#4ade80');
+        return true;
+      } else {
+        clawMsg('install failed (exit ' + r.exitCode + '). Check network — try DNS fix (apk add unbound).', 'err');
+        clawSetStatus('install failed', '#f87171');
+        return false;
+      }
+    } catch (e) {
+      clawMsg('install error: ' + (e && e.message || e), 'err');
+      clawSetStatus('error', '#f87171');
+      return false;
+    }
+  }
+
+  async function clawSend(userText) {
+    if (clawBusy) return;
+    if (!emulator) { clawMsg('boot v86 first', 'err'); return; }
+    if (!serialVfs) { clawMsg('serial VFS not available', 'err'); return; }
+
+    clawBusy = true;
+    clawSendBtn.disabled = true;
+    clawInputEl.disabled = true;
+    clawMsg(userText, 'user');
+    const thinking = clawMsg('thinking…', 'thinking');
+    clawSetStatus('thinking…');
+
+    try {
+      // Auto-install if missing
+      const installed = await clawCheckInstalled();
+      if (!installed) {
+        thinking.remove();
+        const ok = await clawDoInstall();
+        if (!ok) return;
+        const thinking2 = clawMsg('thinking…', 'thinking');
+        // fall through with same userText after install
+        clawBusy = false;
+        clawSendBtn.disabled = false;
+        clawInputEl.disabled = false;
+        thinking2.remove();
+        clawMsg('claw installed — sending your message now…', 'info');
+        // Re-enter via recursion with busy cleared
+        await clawSend(userText);
+        return;
+      }
+
+      // Escape single-quotes for POSIX sh: replace ' with '\''
+      const escaped = userText.replace(/'/g, "'\\''");
+      // Route through secret proxy so LOT_SECRET_OPENAI gets injected
+      const cmd =
+        `OPENAI_API_KEY=LOT_SECRET_OPENAI ` +
+        `OPENAI_BASE_URL='${CLAW_PROXY_OPENAI}' ` +
+        `claw -s ${CLAW_SESSION} '${escaped}' 2>&1`;
+
+      const r = await clawExec(cmd, 120000);
+      thinking.remove();
+
+      let reply = (r.stdout || '').replace(/\r/g, '').replace(/\n+$/, '');
+      if (r.timedOut) {
+        clawMsg('(timed out after 120 s — claw may still be running in the guest)', 'err');
+        clawSetStatus('timeout', '#f87171');
+      } else if (!reply) {
+        clawMsg('(no output — check OPENAI_API_KEY or ANTHROPIC_API_KEY in guest)', 'err');
+        clawSetStatus('no output', '#f87171');
+      } else {
+        clawMsg(reply, 'assistant');
+        clawSetStatus('ready', '#4ade80');
+      }
+    } catch (err) {
+      if (thinking.parentNode) thinking.remove();
+      clawMsg('error: ' + (err && err.message || err), 'err');
+      clawSetStatus('error', '#f87171');
+    } finally {
+      clawBusy = false;
+      clawSendBtn.disabled = false;
+      clawInputEl.disabled = false;
+      try { clawInputEl.focus(); } catch (_) {}
+    }
+  }
+
+  clawBtn.onclick = () => {
+    if (!emulator) { setStatus('boot v86 first', 'err'); return; }
+    if (!clawPanel.hidden) {
+      clawPanel.hidden = true;
+      term.focus();
+      return;
+    }
+    // mutually exclusive with other side panels
+    if (followPanel && !followPanel.hidden)   { followPanel.hidden = true; panelTmuxBack(); }
+    if (tunnelsPanel && !tunnelsPanel.hidden) { tunnelsPanel.hidden = true; panelTmuxBack(); }
+    clawPanel.hidden = false;
+    if (!clawMsgsEl.children.length) {
+      clawMsg(
+        'claw is a tiny LLM REPL running in the guest. ' +
+        'Calls go through the secret proxy — no API key needed in the guest. ' +
+        'Conversation memory persists across sends via clawlite session files.',
+        'info'
+      );
+    }
+    try { clawInputEl.focus(); } catch (_) {}
+  };
+
+  clawCloseBtn.onclick = () => { clawPanel.hidden = true; term.focus(); };
+
+  clawNewBtn.onclick = async () => {
+    if (clawBusy) return;
+    if (!emulator || !serialVfs) { clawMsg('guest not ready', 'err'); return; }
+    clawBusy = true;
+    clawNewBtn.disabled = true;
+    clawSetStatus('resetting session…');
+    try {
+      await clawExec('claw -s ' + CLAW_SESSION + ' --reset 2>&1 || true', 20000);
+      clawMsgsEl.innerHTML = '';
+      clawMsg('new conversation started.', 'info');
+      clawSetStatus('ready', '#4ade80');
+    } catch (e) {
+      clawMsg('reset failed: ' + (e && e.message || e), 'err');
+    } finally {
+      clawBusy = false;
+      clawNewBtn.disabled = false;
+    }
+  };
+
+  clawInstallBtn.onclick = async () => {
+    if (clawBusy) return;
+    clawBusy = true;
+    clawInstallBtn.disabled = true;
+    try { await clawDoInstall(); }
+    finally { clawBusy = false; clawInstallBtn.disabled = false; }
+  };
+
+  clawSendBtn.onclick = () => {
+    const msg = clawInputEl.value.trim();
+    if (!msg || clawBusy) return;
+    clawInputEl.value = '';
+    clawInputEl.style.height = '';
+    clawSend(msg);
+  };
+
+  clawInputEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      clawSendBtn.click();
+      return;
+    }
+    // Auto-grow textarea
+    setTimeout(() => {
+      clawInputEl.style.height = 'auto';
+      clawInputEl.style.height = Math.min(clawInputEl.scrollHeight, 120) + 'px';
+    }, 0);
+  });
+
+  setInterval(() => { clawBtn.disabled = !emulator; }, 800);
 
   // ─────────────────────────────────────────────────────────────────────────
   // "terminal" toolbar button — switch the user's tmux active window back
