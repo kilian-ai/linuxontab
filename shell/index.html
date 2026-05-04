@@ -4959,8 +4959,11 @@
   const clawStatusEl  = $('claw-status');
 
   // Proxy-backed OpenAI base URL: no real key needed in guest.
+  // We patch this into ~/.config/clawlite/config so clawlite's `. "$CFG_FILE"` step
+  // doesn't clobber it (env-var overrides are overwritten by the sourced config).
   const CLAW_PROXY_OPENAI = 'https://relay.linuxontab.com/secret-proxy/https%3A%2F%2Fapi.openai.com%2Fv1';
   const CLAW_SESSION = 'browser';
+  let clawConfigDone = false;
 
   function clawMsg(text, role) {
     const el = document.createElement('div');
@@ -4993,6 +4996,30 @@
     } catch (_) { return false; }
   }
 
+  // Patch ~/.config/clawlite/config to route through the secret proxy.
+  // clawlite sources its config file unconditionally (`. "$CFG_FILE"`), which
+  // overwrites any env-var overrides we set before calling claw. We instead
+  // write the proxy URL and placeholder key directly into the config so they
+  // survive the source step. Idempotent — checks for relay.linuxontab.com first.
+  async function clawEnsureConfig() {
+    if (clawConfigDone) return;
+    clawSetStatus('configuring proxy…');
+    const check = await clawExec(
+      "grep -q 'relay.linuxontab.com' ~/.config/clawlite/config 2>/dev/null && echo ok || echo no",
+      10000
+    );
+    if ((check.stdout || '').trim() === 'ok') { clawConfigDone = true; clawSetStatus(''); return; }
+    // Seed config (claw --where creates it without making API calls) then patch
+    await clawExec('claw --where >/dev/null 2>&1 || true', 20000);
+    const patchCmd =
+      `sed -i 's|OPENAI_BASE_URL=.*|OPENAI_BASE_URL=${CLAW_PROXY_OPENAI}|' ~/.config/clawlite/config && ` +
+      `grep -q 'OPENAI_API_KEY=LOT' ~/.config/clawlite/config 2>/dev/null || ` +
+      `echo 'OPENAI_API_KEY=LOT_SECRET_OPENAI' >> ~/.config/clawlite/config`;
+    await clawExec(patchCmd, 15000);
+    clawConfigDone = true;
+    clawSetStatus('');
+  }
+
   async function clawDoInstall() {
     clawSetStatus('installing claw…');
     clawMsg('downloading claw from linuxontab.com/local/clawlite.sh…', 'info');
@@ -5003,6 +5030,7 @@
       );
       if (r.exitCode === 0) {
         clawMsg('claw installed.', 'info');
+        await clawEnsureConfig();
         clawSetStatus('ready', '#4ade80');
         return true;
       } else {
@@ -5034,7 +5062,7 @@
       const installed = await clawCheckInstalled();
       if (!installed) {
         thinking.remove();
-        const ok = await clawDoInstall();
+        const ok = await clawDoInstall(); // clawDoInstall calls clawEnsureConfig internally
         if (!ok) return;
         const thinking2 = clawMsg('thinking…', 'thinking');
         // fall through with same userText after install
@@ -5048,13 +5076,14 @@
         return;
       }
 
+      // Ensure config is patched to use the secret proxy (idempotent)
+      await clawEnsureConfig();
+
       // Escape single-quotes for POSIX sh: replace ' with '\''
       const escaped = userText.replace(/'/g, "'\\''");
-      // Route through secret proxy so LOT_SECRET_OPENAI gets injected
-      const cmd =
-        `OPENAI_API_KEY=LOT_SECRET_OPENAI ` +
-        `OPENAI_BASE_URL='${CLAW_PROXY_OPENAI}' ` +
-        `claw -s ${CLAW_SESSION} '${escaped}' 2>&1`;
+      // clawEnsureConfig() patched ~/.config/clawlite/config to use the
+      // secret proxy, so no env-var overrides needed here.
+      const cmd = `claw -s ${CLAW_SESSION} '${escaped}' 2>&1`;
 
       const r = await clawExec(cmd, 120000);
       thinking.remove();
