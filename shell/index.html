@@ -148,6 +148,8 @@
   #claw-hdr button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
   #claw-hdr button:hover:not(:disabled) { background:#2d343d; }
   #claw-hdr button:disabled { opacity:0.4; cursor:not-allowed; }
+  #claw-hdr .claw-site-link { margin-left:auto; color:#4a5a73; font-size:11px; text-decoration:none; opacity:0.7; transition:opacity .15s; }
+  #claw-hdr .claw-site-link:hover { opacity:1; color:#7ab8f5; }
   #claw-msgs { flex:1; min-height:0; overflow-y:auto; padding:10px 12px; display:flex; flex-direction:column; gap:8px; }
   #claw-msgs .cm-user { align-self:flex-end; background:#1d4ed8; color:#fff; border-radius:8px 8px 2px 8px; padding:6px 10px; max-width:85%; white-space:pre-wrap; word-break:break-word; font-size:12px; }
   #claw-msgs .cm-assistant { align-self:flex-start; background:#161a1f; border:1px solid #2a2f36; color:#d5d8dc; border-radius:2px 8px 8px 8px; padding:6px 10px; max-width:92%; white-space:pre-wrap; word-break:break-word; font-family:'Menlo','Monaco','Consolas',monospace; font-size:11px; line-height:1.55; }
@@ -332,7 +334,8 @@
       <span class="hint" style="margin-left:6px;font-size:11px">AI chatbot in the guest (clawlite)</span>
       <button id="claw-new" title="start fresh conversation (resets rolling session history)">new chat</button>
       <button id="claw-install" title="install / update claw in guest">install</button>
-      <button id="claw-close" style="margin-left:auto">close</button>
+      <a class="claw-site-link" href="https://getclaw.site" target="_blank" rel="noopener" title="claw — get it for your own projects">getclaw.site</a>
+      <button id="claw-close">close</button>
     </div>
     <div id="claw-msgs"></div>
     <div id="claw-status"></div>
