@@ -5205,13 +5205,27 @@
       // Tools enabled; 2>&1 merges stderr tool-call markers into stdout.
       const cmd = `claw -s ${CLAW_SESSION} '${escaped}' 2>&1`;
 
-      // 300s: TOOL_MAX_ITERS=5 x ~30s API + execution
-      const r = await clawExec(cmd, 300000);
+      // 10 min: TOOL_MAX_ITERS=5 x up to ~90s API call + tool execution
+      const CLAW_TIMEOUT = 600000;
+      const clawStartTs = Date.now();
+      const clawTimerEl = clawStatusEl; // reuse status bar for elapsed time
+      const clawElapsedInterval = setInterval(() => {
+        const s = Math.floor((Date.now() - clawStartTs) / 1000);
+        const m = Math.floor(s / 60), sec = s % 60;
+        clawTimerEl.textContent = `thinking… ${m}:${String(sec).padStart(2,'0')}`;
+      }, 1000);
+
+      let r;
+      try {
+        r = await clawExec(cmd, CLAW_TIMEOUT);
+      } finally {
+        clearInterval(clawElapsedInterval);
+      }
       thinking.remove();
 
       const raw = (r.stdout || '').replace(/\r/g, '');
       if (r.timedOut) {
-        clawMsg('(timed out after 5 min \u2014 try a simpler question or check guest network)', 'err');
+        clawMsg('(timed out after 10 min \u2014 try a simpler question or check guest network)', 'err');
         clawSetStatus('timeout', '#f87171');
       } else if (!raw.trim()) {
         clawMsg('(no output \u2014 click install to refresh claw, then try again)', 'err');
