@@ -5053,6 +5053,7 @@
       );
       if (r.exitCode === 0) {
         clawMsg('claw installed.', 'info');
+        clawConfigDone = false;  // force re-fetch of instructions on every install
         await clawEnsureConfig();
         clawSetStatus('ready', '#4ade80');
         return true;
