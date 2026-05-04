@@ -1596,6 +1596,22 @@ async function handleSecretProxy(request, env) {
     'cf-ray','cf-visitor','x-forwarded-for','x-forwarded-proto','x-real-ip']);
   for (const [k, v] of request.headers.entries()) {
     if (hopByHop.has(k.toLowerCase())) continue;
+    // Git sends Basic auth with base64(user:password). If the password is a
+    // placeholder, decode → inject → re-encode so the real secret is forwarded.
+    if (k.toLowerCase() === 'authorization' && v.toLowerCase().startsWith('basic ')) {
+      const b64 = v.slice(6);
+      let decoded;
+      try {
+        decoded = atob(b64);
+      } catch (_) { decoded = null; }
+      if (decoded && SECRET_PLACEHOLDER_RE.test(decoded)) {
+        SECRET_PLACEHOLDER_RE.lastIndex = 0;
+        const injected = injectSecrets(decoded, env);
+        fwdHeaders.set(k, 'Basic ' + btoa(injected));
+        continue;
+      }
+      SECRET_PLACEHOLDER_RE.lastIndex = 0;
+    }
     fwdHeaders.set(k, injectSecrets(v, env));
   }
 
