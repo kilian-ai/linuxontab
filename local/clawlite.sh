@@ -224,6 +224,14 @@ Rules:
   <shell> blocks once you have what you need.
 - Prefer non-interactive, idempotent commands. Avoid destructive operations
   unless the user explicitly asked for them.
+- IMPORTANT: Always separate multiple commands with a newline or semicolon.
+  Never concatenate commands without a separator — `sh -c` runs the block
+  verbatim, so `printf 'a\n'ls` is a syntax error. Write:
+  ```
+  printf 'a\n'
+  ls
+  ```
+  or `printf 'a\n'; ls`.
 EOF
 }
 

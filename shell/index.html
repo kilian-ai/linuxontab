@@ -154,6 +154,17 @@
   #claw-msgs .cm-info { align-self:center; color:#7a8392; font-size:11px; font-style:italic; text-align:center; max-width:90%; }
   #claw-msgs .cm-err  { align-self:center; color:#f87171; font-size:11px; }
   #claw-msgs .cm-thinking { align-self:flex-start; color:#7ab8f5; font-size:11px; font-style:italic; }
+  /* tool call block */
+  #claw-msgs .cm-tool { align-self:flex-start; background:#0d1117; border:1px solid #2a3a28; border-radius:6px; max-width:92%; font-family:'Menlo','Monaco','Consolas',monospace; font-size:11px; overflow:hidden; }
+  #claw-msgs .cm-tool .ct-hdr { display:flex; align-items:center; gap:6px; padding:4px 8px; background:#161f14; border-bottom:1px solid #2a3a28; color:#4ade80; cursor:pointer; user-select:none; }
+  #claw-msgs .cm-tool .ct-hdr:hover { background:#1a2a18; }
+  #claw-msgs .cm-tool .ct-toggle { color:#7a8392; font-size:10px; }
+  #claw-msgs .cm-tool .ct-tag { color:#7a9a72; font-size:10px; text-transform:uppercase; letter-spacing:.04em; }
+  #claw-msgs .cm-tool .ct-cmd { padding:6px 8px; color:#a3d99a; white-space:pre-wrap; word-break:break-all; border-bottom:1px solid #1a2a18; }
+  #claw-msgs .cm-tool .ct-out { padding:6px 8px; color:#7a8392; white-space:pre-wrap; word-break:break-all; max-height:200px; overflow:auto; }
+  #claw-msgs .cm-tool .ct-exit-ok  { color:#4ade80; font-size:10px; margin-left:auto; }
+  #claw-msgs .cm-tool .ct-exit-err { color:#f87171; font-size:10px; margin-left:auto; }
+  #claw-msgs .cm-tool .ct-body[hidden] { display:none; }
   #claw-status { padding:3px 10px; font-size:10px; color:#7a8392; border-top:1px solid #1a1f25; min-height:18px; }
   #claw-input-row { display:flex; gap:6px; padding:8px 10px; background:#161a1f; border-top:1px solid #2a2f36; align-items:flex-end; }
   #claw-input { flex:1; background:#0b0d10; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:6px 8px; font:inherit; font-size:12px; resize:none; min-height:34px; max-height:120px; line-height:1.4; outline:none; }
@@ -5011,6 +5022,7 @@
     if ((check.stdout || '').trim() === 'ok') { clawConfigDone = true; clawSetStatus(''); return; }
     // Seed config (claw --where creates it without making API calls) then patch
     await clawExec('claw --where >/dev/null 2>&1 || true', 20000);
+    // Patch proxy URL and inject placeholder key. Keep TOOLS=1 (tools are shown in the UI).
     const patchCmd =
       `sed -i 's|OPENAI_BASE_URL=.*|OPENAI_BASE_URL=${CLAW_PROXY_OPENAI}|' ~/.config/clawlite/config && ` +
       `grep -q 'OPENAI_API_KEY=LOT' ~/.config/clawlite/config 2>/dev/null || ` +
@@ -5042,6 +5054,103 @@
       clawMsg('install error: ' + (e && e.message || e), 'err');
       clawSetStatus('error', '#f87171');
       return false;
+    }
+  }
+
+  // Parse claw's merged stdout+stderr (2>&1) and render as chat bubbles.
+  // Output interleaves model text with tool markers from stderr:
+  //   [claw] tool call N/M:\n<cmd>\n<raw sh output>\n[exit N]
+  // ANSI escape codes are stripped before parsing.
+  function clawRenderOutput(raw) {
+    // Strip ANSI escape codes
+    const text = raw.replace(/\x1b\[[0-9;]*[mGKHF]/g, '').replace(/\r/g, '');
+
+    // Split on tool call markers: "[claw] tool call N/M:\n"
+    // Each section is either plain text or a tool call block.
+    const toolRe = /\[claw\] tool call (\d+)\/(\d+):\n([\s\S]*?)(?=\n\[claw\] tool call |\n?\[exit (-?\d+)\]|$)/g;
+
+    // Build segment list: alternate between text and tool regions
+    const segments = [];
+    let lastIdx = 0;
+
+    // Find all tool call header positions first (simpler approach)
+    const headerRe = /\[claw\] tool call (\d+)\/(\d+):\n/g;
+    const exitRe   = /\[exit (-?\d+)\]/g;
+    const headers  = [];
+    let hm;
+    while ((hm = headerRe.exec(text)) !== null) {
+      headers.push({ idx: hm.index, end: hm.index + hm[0].length, num: hm[1], total: hm[2] });
+    }
+
+    if (!headers.length) {
+      // No tool calls — plain assistant text
+      const t = text.replace(/\n+$/, '').trim();
+      if (t) clawMsg(t, 'assistant');
+      return;
+    }
+
+    // Text before first tool call
+    const before = text.slice(0, headers[0].idx).replace(/\n+$/, '').trim();
+    if (before) clawMsg(before, 'assistant');
+
+    for (let i = 0; i < headers.length; i++) {
+      const h = headers[i];
+      const blockEnd = (i + 1 < headers.length) ? headers[i + 1].idx : text.length;
+      const block = text.slice(h.end, blockEnd);
+
+      // Find [exit N] in block
+      exitRe.lastIndex = 0;
+      const em = exitRe.exec(block);
+      const ec = em ? parseInt(em[1], 10) : null;
+      const cmdAndOut = em ? block.slice(0, em.index) : block;
+
+      // Split cmd (first non-empty line) from output (rest)
+      const lines = cmdAndOut.split('\n');
+      const cmd = lines[0] || '';
+      const out = lines.slice(1).join('\n').replace(/\n+$/, '');
+
+      // Text after [exit N] in this block (before next tool call header)
+      const afterExit = em ? block.slice(em.index + em[0].length).replace(/^\n/, '').replace(/\n+$/, '').trim() : '';
+
+      // Render tool block
+      const wrap = document.createElement('div');
+      wrap.className = 'cm-tool';
+
+      const hdr = document.createElement('div');
+      hdr.className = 'ct-hdr';
+      const exitOk = ec === 0 || ec === null;
+      hdr.innerHTML =
+        `<span class="ct-tag">tool call ${h.num}/${h.total}</span>` +
+        `<span class="ct-exit-${exitOk ? 'ok' : 'err'}">exit ${ec !== null ? ec : '?'}</span>` +
+        `<span class="ct-toggle">\u25be</span>`;
+      wrap.appendChild(hdr);
+
+      const body = document.createElement('div');
+      body.className = 'ct-body';
+      const cmdEl = document.createElement('div');
+      cmdEl.className = 'ct-cmd';
+      cmdEl.textContent = cmd.trim();
+      body.appendChild(cmdEl);
+      if (out.trim()) {
+        const outEl = document.createElement('div');
+        outEl.className = 'ct-out';
+        outEl.textContent = out.trim();
+        body.appendChild(outEl);
+      }
+      wrap.appendChild(body);
+
+      // Toggle collapse on header click
+      hdr.addEventListener('click', () => {
+        const tog = hdr.querySelector('.ct-toggle');
+        if (body.hidden) { body.hidden = false; if (tog) tog.textContent = '\u25be'; }
+        else             { body.hidden = true;  if (tog) tog.textContent = '\u25b8'; }
+      });
+
+      clawMsgsEl.appendChild(wrap);
+      clawMsgsEl.scrollTop = clawMsgsEl.scrollHeight;
+
+      // Text between this tool result and next tool call (the model's follow-up text)
+      if (afterExit) clawMsg(afterExit, 'assistant');
     }
   }
 
@@ -5081,22 +5190,22 @@
 
       // Escape single-quotes for POSIX sh: replace ' with '\''
       const escaped = userText.replace(/'/g, "'\\''");
-      // clawEnsureConfig() patched ~/.config/clawlite/config to use the
-      // secret proxy, so no env-var overrides needed here.
+      // Tools enabled; 2>&1 merges stderr tool-call markers into stdout.
       const cmd = `claw -s ${CLAW_SESSION} '${escaped}' 2>&1`;
 
-      const r = await clawExec(cmd, 120000);
+      // 300s: TOOL_MAX_ITERS=5 x ~30s API + execution
+      const r = await clawExec(cmd, 300000);
       thinking.remove();
 
-      let reply = (r.stdout || '').replace(/\r/g, '').replace(/\n+$/, '');
+      const raw = (r.stdout || '').replace(/\r/g, '');
       if (r.timedOut) {
-        clawMsg('(timed out after 120 s — claw may still be running in the guest)', 'err');
+        clawMsg('(timed out after 5 min \u2014 try a simpler question or check guest network)', 'err');
         clawSetStatus('timeout', '#f87171');
-      } else if (!reply) {
-        clawMsg('(no output — check OPENAI_API_KEY or ANTHROPIC_API_KEY in guest)', 'err');
+      } else if (!raw.trim()) {
+        clawMsg('(no output \u2014 click install to refresh claw, then try again)', 'err');
         clawSetStatus('no output', '#f87171');
       } else {
-        clawMsg(reply, 'assistant');
+        clawRenderOutput(raw);
         clawSetStatus('ready', '#4ade80');
       }
     } catch (err) {
