@@ -5015,8 +5015,11 @@
   async function clawEnsureConfig() {
     if (clawConfigDone) return;
     clawSetStatus('configuring proxy…');
+    // Check both: proxy URL in config AND instructions file present.
     const check = await clawExec(
-      "grep -q 'relay.linuxontab.com' ~/.config/clawlite/config 2>/dev/null && echo ok || echo no",
+      "grep -q 'relay.linuxontab.com' ~/.config/clawlite/config 2>/dev/null" +
+      " && [ -f ~/.config/clawlite/instructions/10-linuxontab.md ]" +
+      " && echo ok || echo no",
       10000
     );
     if ((check.stdout || '').trim() === 'ok') { clawConfigDone = true; clawSetStatus(''); return; }
@@ -5028,6 +5031,14 @@
       `grep -q 'OPENAI_API_KEY=LOT' ~/.config/clawlite/config 2>/dev/null || ` +
       `echo 'OPENAI_API_KEY=LOT_SECRET_OPENAI' >> ~/.config/clawlite/config`;
     await clawExec(patchCmd, 15000);
+    // Fetch the guest context instructions (10-linuxontab.md) into the instructions dir.
+    // This tells claw about the environment, tunnels, self-adjustment loop, and skills.
+    clawSetStatus('fetching instructions…');
+    await clawExec(
+      'wget -qO ~/.config/clawlite/instructions/10-linuxontab.md' +
+      ' https://linuxontab.com/local/claw-instructions.md || true',
+      30000
+    );
     clawConfigDone = true;
     clawSetStatus('');
   }
