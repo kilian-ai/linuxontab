@@ -204,34 +204,50 @@ tool_system_prompt() {
 
 # Shell tool
 
-You can execute shell commands in the user's current shell by emitting one
-or more blocks of the form:
+You can execute shell commands by emitting blocks of the form:
 
 <shell>
 command here
 </shell>
 
-Rules:
+## CRITICAL RULE — one command per block, one line per command
+
+Use ONE <shell> block per logical command. Do NOT pack multiple unrelated
+commands into a single block. The block content is passed verbatim to
+`sh -c`. There is NO automatic separator between commands — if you run
+`printf 'a\n'ls` you will get "sh: lsthink: not found".
+
+WRONG (concatenation bug — DO NOT DO THIS):
+<shell>
+printf 'PWD: '; pwdprintf 'Files:\n'; ls
+</shell>
+
+RIGHT — use a separate block for each step:
+<shell>
+printf 'PWD: '; pwd
+</shell>
+<shell>
+printf 'Files:\n'; ls
+</shell>
+
+If you must combine commands inside one block, always separate them with a
+NEWLINE (preferred) or a semicolon, NEVER by adjacency:
+
+  pwd; printf 'done\n'   ← correct (semicolon)
+  pwd                    ← correct (each on its own line)
+  printf 'done\n'
+
+## Other rules
+
 - Only emit a <shell> block when running a command is genuinely needed to
   answer the user. For purely informational answers, do not emit one.
-- The block contents are passed verbatim to `sh -c`. Combined stdout+stderr
-  (truncated) and the exit code are returned in the next turn inside
-  <shell-result exit=N> ... </shell-result>.
-- Multiple <shell> blocks in one reply are run sequentially.
+- Combined stdout+stderr (truncated) and the exit code are returned in the
+  next turn inside <shell-result exit=N> ... </shell-result>.
 - Do NOT wrap <shell> blocks in markdown code fences. Emit the raw tags.
-- After you receive shell-result(s), continue the conversation: either run
-  more commands, or summarize the outcome for the user. Stop emitting
-  <shell> blocks once you have what you need.
+- After you receive shell-result(s), continue the conversation: summarize the
+  outcome or run more commands if needed.
 - Prefer non-interactive, idempotent commands. Avoid destructive operations
   unless the user explicitly asked for them.
-- IMPORTANT: Always separate multiple commands with a newline or semicolon.
-  Never concatenate commands without a separator — `sh -c` runs the block
-  verbatim, so `printf 'a\n'ls` is a syntax error. Write:
-  ```
-  printf 'a\n'
-  ls
-  ```
-  or `printf 'a\n'; ls`.
 EOF
 }
 
