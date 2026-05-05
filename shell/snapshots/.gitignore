@@ -1,0 +1,5 @@
+# Snapshots are hosted via GitHub Releases (see README.md).
+# Don't commit binaries — GitHub blocks pushes >100 MB.
+*.bin
+*.bin.gz
+!.gitignore

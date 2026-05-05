@@ -5656,17 +5656,22 @@
       const pipParam     = qs.get('pip');
       const snapshotParam = qs.get('snapshot');
       // ?snapshot=<URL> — load a hosted snapshot (e.g. one we ship from
-      // GitHub Pages) for a much faster cold start. Same-origin only:
-      // the snapshot blob is fed straight into v86's initial_state, so
-      // we treat it like other static assets on this page. Relative
-      // paths and absolute same-origin URLs are accepted; cross-origin
-      // is rejected. ?reset=1 still wins (forces fresh boot).
+      // GitHub Pages or a GitHub Release asset) for a much faster cold
+      // start. We accept any https:// URL the user explicitly passes —
+      // same trust model as ?postboot=, since the user typed it. The
+      // blob is fed straight into v86's initial_state, so it can only
+      // affect the sandboxed VM, not the page itself.
+      // Relative paths and same-origin URLs are also accepted.
+      // ?reset=1 still wins (forces fresh boot).
       let snapshotUrl = '';
       if (snapshotParam && resetParam !== '1') {
         try {
           const u = new URL(snapshotParam, location.href);
-          if (u.origin === location.origin) snapshotUrl = u.href;
-          else console.warn('[boot] ?snapshot= must be same-origin; ignoring:', snapshotParam);
+          if (u.protocol === 'https:' || u.origin === location.origin) {
+            snapshotUrl = u.href;
+          } else {
+            console.warn('[boot] ?snapshot= must be https:// or same-origin; ignoring:', snapshotParam);
+          }
         } catch (e) {
           console.warn('[boot] ?snapshot= parse failed:', e);
         }
