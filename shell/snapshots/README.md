@@ -22,6 +22,42 @@ Files ending in `.gz` are transparently decompressed via
 `?reset=1` always wins and forces a fresh ISO boot, even if `?snapshot=`
 is set.
 
+## Tuning the post-restore init script
+
+The shell runs a sequence of init "modules" after boot/restore. The
+hosted-snapshot path uses a much leaner default than fresh boot, but
+you can override either way:
+
+- `?init=net,time` — exact module list (overrides defaults).
+- `?init=none` — skip the init script entirely.
+- `?skip=dns-seed,dns-proxy` — remove modules from the default set.
+
+Available modules:
+| name        | what it does                                  | typical cost |
+|-------------|-----------------------------------------------|--------------|
+| `rootfs`    | remount tmpfs `/` (with `?rootfs=<size>`)     | <1 s         |
+| `9p`        | mount `/mnt/host` + install Node TUI fix + `lot` script | 1–2 s |
+| `hostdirs`  | mkdir `/root/{public,following}`              | <1 s         |
+| `net`       | eth0 bounce + static IP + ARP (post-restore)  | 5–8 s        |
+| `dhcp`      | `udhcpc` (clean ISO boot path)                | 2–4 s        |
+| `dns-seed`  | DoH-seed `/etc/hosts` for 8 hostnames         | 3–5 s        |
+| `dns-proxy` | install + start `unbound` for TCP DNS         | 1–15 s       |
+| `time`      | `rdate`/`ntpd` clock sync (needed for TLS)    | 1 s          |
+| `tmux`      | start `lot` tmux session                      | <1 s         |
+| `setup`     | apk repo + apk upgrade + base packages        | 10–30 s      |
+| `clear`     | `clear` the screen                            | -            |
+
+Defaults:
+- `?snapshot=<url>`: `net,time,tmux` (rest is baked in).
+- IDB restore (no `?snapshot=`): `rootfs,9p,hostdirs,net,dns-seed,dns-proxy,time,tmux`.
+- Fresh ISO boot: `rootfs,9p,hostdirs,dhcp,dns-seed,dns-proxy,time,clear,setup`.
+
+Example: skip the slow DNS path entirely on a hosted-snapshot boot
+(if you know the snapshot already has unbound running):
+```
+?snapshot=…&skip=dns-seed,dns-proxy
+```
+
 ## Hosting on GitHub Releases (recommended)
 
 GitHub Pages won't serve files >100 MB and Git LFS pointers don't
