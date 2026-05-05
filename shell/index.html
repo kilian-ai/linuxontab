@@ -1903,13 +1903,24 @@
     // by the autoboot path before we get here. We fetch the binary blob,
     // then feed it to v86 via cfg.initial_state below. On fetch failure we
     // fall back to a fresh boot so the page still works.
+    // Transparent gzip support: if the URL ends in `.gz` or the response is
+    // Content-Encoding-marked gzip but the server didn't transparently
+    // decode it, run it through DecompressionStream. This keeps the
+    // committed file small (v86 snapshots compress 3–5×).
     let remoteSnapBuffer = null;
     if (opts.snapshotUrl) {
       setStatus(`fetching snapshot ${opts.snapshotUrl}…`);
       try {
         const r = await fetch(opts.snapshotUrl, { credentials: 'omit' });
         if (!r.ok) throw new Error('HTTP ' + r.status);
-        remoteSnapBuffer = await r.arrayBuffer();
+        const isGz = /\.gz(\?|#|$)/i.test(opts.snapshotUrl);
+        if (isGz && typeof DecompressionStream === 'function') {
+          const ds = new DecompressionStream('gzip');
+          const decompressed = r.body.pipeThrough(ds);
+          remoteSnapBuffer = await new Response(decompressed).arrayBuffer();
+        } else {
+          remoteSnapBuffer = await r.arrayBuffer();
+        }
         doRestore = true;
         console.log('[boot] fetched hosted snapshot:',
           opts.snapshotUrl, '(' + remoteSnapBuffer.byteLength + ' bytes)');
@@ -2924,6 +2935,46 @@
   //     Manually invoke the heal path against whatever the current
   //     WS state is. Skips the "isWispWsDead" gate is NOT done — call
   //     __simulateNetDeath() first if you want it to actually do work.
+  //
+  //   exportSnapshot({ name = 'alpine-base.bin', gzip = true })
+  //     Take a fresh save_state(), optionally gzip it, and trigger a
+  //     browser download. Drop the resulting file into shell/snapshots/
+  //     and load with ?snapshot=snapshots/<name>(.gz).
+  window.exportSnapshot = async function (opts = {}) {
+    if (!emulator) { console.error('[export] no running emulator'); return; }
+    const name = opts.name || 'alpine-base.bin';
+    const gzip = opts.gzip !== false;  // default true
+    console.log('[export] saving state… (tab will freeze briefly)');
+    let buf;
+    try {
+      try { await umountBeforeSave(); } catch (_) {}
+      buf = await emulator.save_state();
+      try { await remountAfterSave(); } catch (_) {}
+    } catch (e) { console.error('[export] save_state failed:', e); return; }
+    let blob, fname;
+    if (gzip && typeof CompressionStream === 'function') {
+      console.log('[export] gzipping… (raw=' + buf.byteLength + ' bytes)');
+      const cs = new CompressionStream('gzip');
+      const compressed = new Response(new Blob([buf]).stream().pipeThrough(cs));
+      const gzBuf = await compressed.arrayBuffer();
+      blob = new Blob([gzBuf], { type: 'application/gzip' });
+      fname = name + '.gz';
+      console.log('[export] gzipped: ' + gzBuf.byteLength + ' bytes (' +
+        ((gzBuf.byteLength / buf.byteLength) * 100).toFixed(1) + '% of raw)');
+    } else {
+      blob = new Blob([buf], { type: 'application/octet-stream' });
+      fname = name;
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fname;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    console.log('[export] download triggered:', fname,
+      '— drop into shell/snapshots/ and load with ?snapshot=snapshots/' + fname);
+    return { name: fname, size: blob.size };
+  };
   window.__simulateNetDeath = (opts = {}) => {
     const s = window.__wispWsState;
     if (!s || !s.ws) { console.warn('[sim] no WISP WS tracked'); return; }
