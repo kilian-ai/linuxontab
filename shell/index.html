@@ -1909,9 +1909,26 @@
     // committed file small (v86 snapshots compress 3–5×).
     let remoteSnapBuffer = null;
     if (opts.snapshotUrl) {
+      // GitHub release assets don't include CORS headers on the redirect
+      // chain (github.com → release-assets.githubusercontent.com →
+      // Azure blob), so a direct browser fetch fails. Auto-route those
+      // through our existing CORS proxy on relay.linuxontab.com.
+      let fetchUrl = opts.snapshotUrl;
+      try {
+        const u = new URL(opts.snapshotUrl);
+        const needsCorsProxy = (
+          u.hostname === 'github.com' ||
+          u.hostname.endsWith('.githubusercontent.com')
+        );
+        if (needsCorsProxy) {
+          fetchUrl = 'https://relay.linuxontab.com/cors?url=' +
+            encodeURIComponent(opts.snapshotUrl);
+          console.log('[boot] routing snapshot through CORS proxy');
+        }
+      } catch (_) {}
       setStatus(`fetching snapshot ${opts.snapshotUrl}…`);
       try {
-        const r = await fetch(opts.snapshotUrl, { credentials: 'omit' });
+        const r = await fetch(fetchUrl, { credentials: 'omit' });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const isGz = /\.gz(\?|#|$)/i.test(opts.snapshotUrl);
         if (isGz && typeof DecompressionStream === 'function') {
