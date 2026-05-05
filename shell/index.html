@@ -5728,8 +5728,12 @@
     });
   }
   if (qs.get('pip') === '1') {
-    // Defer one tick so the v86 IIFE has finished setting up xterm.
-    setTimeout(show, 0);
+    // Defer one tick so the v86 IIFE has finished setting up xterm,
+    // and so window.fsBrowser is registered.
+    setTimeout(() => {
+      try { window.fsBrowser && window.fsBrowser.show(); } catch (_) {}
+      show();
+    }, 0);
   }
 
   window.termPip = { show, hide, toggle, set: setRect, getRect };
