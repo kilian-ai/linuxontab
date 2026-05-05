@@ -323,7 +323,15 @@
     </div>
     <div class="card">
       <h3><code>?postboot=&lt;cmd-or-url&gt;</code></h3>
-      <p>Run a command (or wget+exec an http(s) script) inside the guest after init has finished. Example: <code>?postboot=https://getclaw.site/install.sh</code> auto-installs <a href="https://getclaw.site/" rel="noopener">claw</a> and drops you into the REPL.</p>
+      <p>Run a command (or wget+exec an http(s) script) inside the guest after init has finished. Repeat the param to chain multiple steps in order. Example: <code>?postboot=https://getclaw.site/install.sh</code> auto-installs <a href="https://getclaw.site/" rel="noopener">claw</a> and drops you into the REPL.</p>
+    </div>
+    <div class="card">
+      <h3><code>#postboot=&lt;cmd&gt;</code> <span style="color:var(--accent); font-size:11px;">secrets</span></h3>
+      <p>URL <strong>fragment</strong> form. Fragments are never sent to the server, never appear in access logs, and don't leak via <code>Referer</code> — so they're the right channel for env-var exports like <code>#postboot=export%20OPENAI_API_KEY%3Dsk-...&amp;postboot=https://getclaw.site/install.sh</code>. The key gets <code>export</code>'d before claw launches.</p>
+    </div>
+    <div class="card">
+      <h3><code>?reset=1</code></h3>
+      <p>Skip snapshot restore and boot fresh. Useful when a saved state is corrupted or you want a clean slate without clearing IndexedDB by hand. Alias for <code>?restore=0</code>.</p>
     </div>
     <div class="card">
       <h3>Hotkeys</h3>
@@ -336,6 +344,7 @@
     <div class="card">
       <h3>Demo URL</h3>
       <p>One link, full layout:<br><code style="font-size:11px; word-break:break-all;">/shell/?pip=1&amp;pipx=20&amp;pipy=50&amp;pipw=600&amp;piph=400&amp;browser=https://linuxontab.com&amp;postboot=https://getclaw.site/install.sh</code></p>
+      <p style="margin-top:8px; font-size:13px; color:var(--mut);">With a secret API key (fragment, never logged):<br><code style="font-size:11px; word-break:break-all;">/shell/#postboot=export%20OPENAI_API_KEY%3Dsk-...&amp;postboot=https://getclaw.site/install.sh</code></p>
     </div>
   </div>
   <p style="margin-top:14px;">Full release notes: <a href="./changelog/">Changelog →</a></p>
