@@ -2911,20 +2911,39 @@
 
     // On restore the guest is idle at the shell prompt (HLT) and will not
     // emit any serial output until input wakes it up — so PROMPT_RE above
-    // never fires. We also can't rely on `emulator-started`: when v86 boots
-    // from a preloaded `initial_state` buffer, that event can fire before
-    // all our listeners are attached, so a listener registered later simply
-    // misses it (observed on 2nd+ back-to-back restores). Just schedule the
-    // kicker on a plain timer — `runNetInit` is idempotent via `netInited`.
+    // never fires. Anchor the kicker timers to wall-clock time *after*
+    // restore actually completes, not at construction time:
+    //   * If `emulator-started` fires (small/fast snapshots), use that as
+    //     the t=0 anchor — fires once the CPU is actually running.
+    //   * Otherwise (event missed because listeners attached after a
+    //     preloaded initial_state finished restoring on 2nd+ back-to-back
+    //     boots, or large hosted snapshots that decompress slowly), fall
+    //     back to a long absolute timeout from construction.
+    // Without this, on a slow restore (e.g. 190 MB hosted snapshot on a
+    // throttled tab) the 400ms `\n` and 1800ms runNetInit() fired BEFORE
+    // the CPU was draining the UART RX FIFO. runNetInit then streamed the
+    // entire init script into a non-running CPU; bytes overflowed the
+    // FIFO; and since `netInited=true` it never retried. User saw a bare
+    // shell prompt with no init output and no working network.
     if (doRestore && !netInited) {
-      setTimeout(() => { if (emulator) sendGuestText('\n'); }, 400);
-      // Fallback kicker: if no prompt-shaped output arrives within the
-      // settle window (HLT'd guest with truly silent serial), force-start.
-      // Cancelled automatically when prompt detection schedules its own
-      // debounced timer above.
-      if (!netInitTimer) {
-        netInitTimer = setTimeout(() => { netInitTimer = null; runNetInit(); }, 1800);
-      }
+      let kicked = false;
+      const kick = (label) => {
+        if (kicked || netInited) return;
+        kicked = true;
+        console.log('[boot] restore kicker:', label);
+        setTimeout(() => { if (emulator) sendGuestText('\n'); }, 400);
+        if (!netInitTimer) {
+          netInitTimer = setTimeout(() => { netInitTimer = null; runNetInit(); }, 1800);
+        }
+      };
+      // Primary: anchor to emulator-started (CPU actually running).
+      try {
+        emulator.add_listener('emulator-started', () => kick('emulator-started'));
+      } catch (_) {}
+      // Belt-and-suspenders: 8s after construction, kick anyway. This is
+      // long enough to cover ~200 MB restore on slow hardware and short
+      // enough that a stuck guest still gets prodded.
+      setTimeout(() => kick('timeout-8s'), 8000);
     }
 
     // Fresh-boot safety net. The prompt-detection path uses a 900ms idle
