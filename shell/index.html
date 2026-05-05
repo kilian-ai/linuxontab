@@ -205,6 +205,35 @@
   .hint { color:#6b7380; }
   .ok { color:#4ade80; }
   .err { color:#f87171; }
+  /* ── Fullscreen browser overlay ────────────────────────────────────
+     Toggled with Ctrl+Alt+F2 (show) / Ctrl+Alt+F3 (hide).
+     URL bar toggled with Ctrl+Alt+F1. Press Enter in the URL field
+     to load. Sits above everything; doesn't unmount when hidden so
+     iframe state survives toggling. */
+  #fsbrowser {
+    position: fixed; inset: 0; z-index: 9999;
+    background: #0b0d10; display: none; flex-direction: column;
+  }
+  #fsbrowser.show { display: flex; }
+  #fsbrowser-bar {
+    display: none; align-items: center; gap: 8px;
+    padding: 6px 10px; background: #14181f;
+    border-bottom: 1px solid #232a33;
+    font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace;
+    color: #cbd5e1;
+  }
+  #fsbrowser.urlbar #fsbrowser-bar { display: flex; }
+  #fsbrowser-url {
+    flex: 1; min-width: 0;
+    background: #0b0d10; border: 1px solid #2a3240; color: #e2e8f0;
+    padding: 6px 10px; border-radius: 4px; outline: none;
+    font: inherit;
+  }
+  #fsbrowser-url:focus { border-color: #4aa3ff; }
+  #fsbrowser-hint { color: #6b7380; font-size: 12px; white-space: nowrap; }
+  #fsbrowser-frame {
+    flex: 1; width: 100%; border: 0; background: #fff;
+  }
 </style>
 </head>
 <body>
@@ -5392,6 +5421,98 @@
       boot({ restore: wantRestore });
     })();
   }
+})();
+</script>
+
+<!-- ── Fullscreen browser overlay ───────────────────────────────────────
+     Hotkeys (work even when the v86 terminal has focus):
+       Ctrl+Alt+F1  toggle URL bar
+       Ctrl+Alt+F2  show overlay
+       Ctrl+Alt+F3  hide overlay
+     Default page: linuxontab.com -->
+<div id="fsbrowser" aria-hidden="true">
+  <div id="fsbrowser-bar">
+    <input id="fsbrowser-url" type="text" spellcheck="false"
+           autocomplete="off" placeholder="https://linuxontab.com">
+    <span id="fsbrowser-hint">Enter to load · Ctrl+Alt+F1 hide bar · Ctrl+Alt+F3 close</span>
+  </div>
+  <iframe id="fsbrowser-frame"
+          src="about:blank"
+          credentialless
+          referrerpolicy="no-referrer"
+          sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"></iframe>
+</div>
+<script>
+(function () {
+  const DEFAULT_URL = 'https://linuxontab.com';
+  const overlay  = document.getElementById('fsbrowser');
+  const urlInput = document.getElementById('fsbrowser-url');
+  const frame    = document.getElementById('fsbrowser-frame');
+  let loaded = false;
+
+  function normalizeUrl(s) {
+    s = (s || '').trim();
+    if (!s) return DEFAULT_URL;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return s;        // already has scheme
+    if (/^[\w.-]+\.[\w.-]+/.test(s) || s.startsWith('localhost')) {
+      return 'https://' + s;
+    }
+    // Treat as search query
+    return 'https://duckduckgo.com/?q=' + encodeURIComponent(s);
+  }
+
+  function show() {
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden', 'false');
+    if (!loaded) {
+      frame.src = DEFAULT_URL;
+      urlInput.value = DEFAULT_URL;
+      loaded = true;
+    }
+  }
+  function hide() {
+    overlay.classList.remove('show');
+    overlay.setAttribute('aria-hidden', 'true');
+  }
+  function toggleUrlBar() {
+    overlay.classList.toggle('urlbar');
+    if (overlay.classList.contains('urlbar')) {
+      // Show overlay too if it isn't visible yet
+      if (!overlay.classList.contains('show')) show();
+      setTimeout(() => { try { urlInput.focus(); urlInput.select(); } catch (_) {} }, 0);
+    }
+  }
+
+  urlInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const u = normalizeUrl(urlInput.value);
+      urlInput.value = u;
+      frame.src = u;
+      loaded = true;
+      try { frame.focus(); } catch (_) {}
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      overlay.classList.remove('urlbar');
+    }
+  });
+
+  // Capture-phase listener so the hotkeys win against xterm.js / v86.
+  window.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey && e.altKey)) return;
+    // Match by both KeyboardEvent.key (browser virtual function key) and
+    // by Ctrl+Alt+digit (some keyboards / OSes intercept Fn keys).
+    let action = null;
+    if (e.key === 'F1') action = 'urlbar';
+    else if (e.key === 'F2') action = 'show';
+    else if (e.key === 'F3') action = 'hide';
+    if (!action) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (action === 'show') show();
+    else if (action === 'hide') hide();
+    else if (action === 'urlbar') toggleUrlBar();
+  }, true);
 })();
 </script>
 </body>
