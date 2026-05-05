@@ -2533,18 +2533,42 @@
       const script = buildNetInitCmd();
       const lines = script.split('\n');
 
-      // ?postboot=<shell-command> URL parameter — runs after the standard
-      // init script. Useful for one-shot provisioning (e.g. installing
-      // tools, kicking off agents) without baking it into the snapshot.
-      // The value is URL-decoded and sent verbatim as a single shell line,
-      // so callers can chain with `&&` / pipes etc. Example:
-      //   ?postboot=wget%20-qO-%20https://linuxontab.com/local/claw-install.sh%20|%20sh%20%26%26%20claw
+      // ?postboot=<shell-command-or-url> URL parameter — runs after the
+      // standard init script. Useful for one-shot provisioning (e.g.
+      // installing tools, kicking off interactive REPLs) without baking
+      // it into the snapshot.
+      //
+      // Two value forms:
+      //   * http(s) URL → expanded to a wget-to-tempfile + `sh /tmp/...`
+      //     pipeline. Avoids `wget | sh`, which would leave any process
+      //     `exec`'d at the end of the script with stdin tied to the
+      //     closed pipe instead of the controlling TTY (so an interactive
+      //     REPL would show Enter as ^M).
+      //   * anything else → URL-decoded and sent verbatim as a single
+      //     shell line; caller is responsible for shell escaping.
+      //
+      // Note: chain shell metacharacters (`&&`, `|`) inside a single param
+      // value with %26%26 / %7C — bare `&` is the URL query separator and
+      // will silently truncate the value.
       try {
         const pb = new URLSearchParams(location.search).get('postboot');
         if (pb && pb.trim()) {
           // Mark the boundary so it's visible in the terminal scrollback.
           lines.push("echo '[postboot] running ?postboot= command…'");
-          lines.push(pb);
+          if (/^https?:\/\//.test(pb.trim())) {
+            const url = pb.trim();
+            // Single-quote the URL for the guest shell. URLs shouldn't
+            // contain single quotes; if they do, swap to double quotes.
+            const q = url.indexOf("'") === -1 ? `'${url}'` : `"${url}"`;
+            lines.push(
+              `wget -qO /tmp/postboot.sh ${q} && ` +
+              `chmod +x /tmp/postboot.sh && ` +
+              `sh /tmp/postboot.sh; ` +
+              `rm -f /tmp/postboot.sh`
+            );
+          } else {
+            lines.push(pb);
+          }
         }
       } catch (_) {}
 
