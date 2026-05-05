@@ -2611,10 +2611,7 @@
         'echo "[time] $(date -u +%FT%TZ)" || ' +
         'echo "[time] sync failed — TLS may fail until clock is set" >&2\n';
 
-      const restoreNetCmd =
-        rootfsCmd +
-        mount9pCmd +
-        ensureHostDirsCmd +
+      const restoreNetSegment =
         'killall -q udhcpc 2>/dev/null\n' +
         'ip link set eth0 down 2>/dev/null\n' +
         'sleep 1\n' +
@@ -2625,28 +2622,83 @@
         'arp -d 192.168.86.1 2>/dev/null\n' +
         'arp -s 192.168.86.1 52:54:00:01:02:03\n' +
         'printf "nameserver 1.1.1.1\\nnameserver 1.0.0.1\\n" > /etc/resolv.conf\n' +
-        dohSeedCmd +
-        dnsProxyCmd +
-        timeSyncCmd +
-        // Re-create the `lot` tmux session if the snapshot was saved
-        // before it was started (or it died). Defensive: snapshots from
-        // before tmux integration won't have /usr/local/bin/lot.
-        '[ -x /usr/local/bin/lot ] && command -v tmux >/dev/null 2>&1 && /usr/local/bin/lot start 2>/dev/null || true\n' +
-        'echo "[restore-net] eth0 operstate=$st flags=$fl (retries=$i)"\n';
+        'echo "[net] eth0 operstate=$st flags=$fl (retries=$i)"\n';
 
-      const freshBootCmd =
-        rootfsCmd +
-        mount9pCmd +
-        ensureHostDirsCmd +
+      const dhcpSegment =
         'ip link set eth0 up 2>/dev/null\n' +
         'udhcpc -i eth0 -q -n -f -T 2 -t 3 >/dev/null 2>&1\n' +
-        'printf "nameserver 1.1.1.1\\nnameserver 1.0.0.1\\n" > /etc/resolv.conf\n' +
-        dohSeedCmd +
-        dnsProxyCmd +
-        timeSyncCmd +
-        'clear\n' + (setupCmd ? setupCmd + '\n' : '');
+        'printf "nameserver 1.1.1.1\\nnameserver 1.0.0.1\\n" > /etc/resolv.conf\n';
 
-      return doRestore ? restoreNetCmd : freshBootCmd;
+      // Re-create the `lot` tmux session if the snapshot was saved
+      // before it was started (or it died). Defensive: snapshots from
+      // before tmux integration won't have /usr/local/bin/lot.
+      const tmuxStartSegment =
+        '[ -x /usr/local/bin/lot ] && command -v tmux >/dev/null 2>&1 && /usr/local/bin/lot start 2>/dev/null || true\n';
+
+      // ?init=<csv> — exact module list to run (overrides defaults).
+      // ?skip=<csv> — modules to omit from the default list.
+      // Available modules:
+      //   rootfs     remount tmpfs / with --size=<rootfs>
+      //   9p         mount /mnt/host (incl. Node TUI fix + tmux/lot install)
+      //   hostdirs   mkdir /root/public, /root/following
+      //   net        eth0 bounce + static IP + ARP (post-snapshot recovery)
+      //   dhcp       udhcpc (clean ISO boot path)
+      //   dns-seed   DoH-seed /etc/hosts (slow; ~3-5s for 8 hostnames)
+      //   dns-proxy  install + start unbound (slow; ~1-15s for first apk add)
+      //   time       rdate/ntpd clock sync (~1s; required for TLS)
+      //   tmux       start `lot` tmux session
+      //   setup      apk repo config + apk update/upgrade + base packages
+      //              (ONLY runs on fresh boot path; ~10-30s)
+      //   clear      `clear` the screen
+      // The ?snapshot=<URL> path defaults to a much leaner set since the
+      // hosted snapshot was already crafted with most of this state.
+      const MODULES = {
+        rootfs:      rootfsCmd,
+        '9p':        mount9pCmd,
+        hostdirs:    ensureHostDirsCmd,
+        net:         restoreNetSegment,
+        dhcp:        dhcpSegment,
+        'dns-seed':  dohSeedCmd,
+        'dns-proxy': dnsProxyCmd,
+        time:        timeSyncCmd,
+        tmux:        tmuxStartSegment,
+        setup:       setupCmd ? setupCmd + '\n' : '',
+        clear:       'clear\n',
+      };
+
+      // Default module orderings.
+      // - hosted snapshot: snapshot is freshly made, dns/9p/setup baked in;
+      //   only need NIC re-wire + clock + tmux refresh.
+      // - local IDB restore: same hot path but include dns-seed/dns-proxy
+      //   in case the snapshot is older and unbound has died.
+      // - fresh ISO boot: full setup.
+      const DEFAULT_SNAPSHOT_URL = ['net', 'time', 'tmux'];
+      const DEFAULT_RESTORE     = ['rootfs', '9p', 'hostdirs', 'net', 'dns-seed', 'dns-proxy', 'time', 'tmux'];
+      const DEFAULT_FRESH       = ['rootfs', '9p', 'hostdirs', 'dhcp', 'dns-seed', 'dns-proxy', 'time', 'clear', 'setup'];
+
+      const qsInit = (new URLSearchParams(location.search).get('init') || '').trim();
+      const qsSkip = (new URLSearchParams(location.search).get('skip') || '').trim();
+      const usingHostedSnapshot = !!opts.snapshotUrl;
+
+      let modules;
+      if (qsInit) {
+        modules = qsInit === 'none' ? [] : qsInit.split(',').map(s => s.trim()).filter(Boolean);
+      } else if (usingHostedSnapshot) {
+        modules = [...DEFAULT_SNAPSHOT_URL];
+      } else if (doRestore) {
+        modules = [...DEFAULT_RESTORE];
+      } else {
+        modules = [...DEFAULT_FRESH];
+      }
+      if (qsSkip) {
+        const skipSet = new Set(qsSkip.split(',').map(s => s.trim()).filter(Boolean));
+        modules = modules.filter(m => !skipSet.has(m));
+      }
+      // Drop unknown / empty modules silently.
+      const resolved = modules.filter(m => MODULES[m] !== undefined && MODULES[m] !== '');
+      console.log('[init] modules:', resolved.join(', ') || '(none)');
+
+      return resolved.map(m => MODULES[m]).join('');
     }
 
     function runNetInit() {
