@@ -5646,6 +5646,43 @@
   // Normalize the query-param value so users can pass bare hosts.
   if (QS_DEFAULT_URL) DEFAULT_URL = normalizeUrl(QS_DEFAULT_URL);
 
+  // Mirror the browser overlay's current page in the tab title so the
+  // tab's favicon strip is readable when the shell is just a chrome
+  // around an embedded site (e.g. ?browser=getclaw.site).
+  // Cross-origin iframes hide contentDocument.title, so we best-effort:
+  //   1. Try `frame.contentDocument.title` (works for same-origin loads).
+  //   2. Fall back to the URL's hostname.
+  // Restore the original title when the overlay is hidden.
+  const BASE_TITLE = document.title;
+  function setTitleFromUrl(u) {
+    try {
+      let host = '';
+      try { host = new URL(u).hostname; } catch (_) {}
+      let pageTitle = '';
+      try {
+        const d = frame.contentDocument;
+        if (d && d.title) pageTitle = d.title.trim();
+      } catch (_) { /* cross-origin: expected */ }
+      const label = pageTitle || host;
+      document.title = label ? `${label} \u2014 ${BASE_TITLE}` : BASE_TITLE;
+    } catch (_) {}
+  }
+  function restoreTitle() { document.title = BASE_TITLE; }
+  // When the iframe finishes loading, retry title extraction — same-origin
+  // pages will now have their <title> populated.
+  // (The frame element is referenced below; this listener attaches once.)
+  setTimeout(() => {
+    try {
+      frame.addEventListener('load', () => {
+        // Use the iframe's current src — that's the source of truth after
+        // user-initiated navigation inside the frame (when same-origin).
+        setTitleFromUrl(frame.src || DEFAULT_URL);
+      });
+    } catch (_) {}
+  }, 0);
+  // Apply immediately if the overlay is being launched with a custom URL.
+  if (QS_DEFAULT_URL) setTitleFromUrl(DEFAULT_URL);
+
   function show() {
     overlay.classList.add('show');
     overlay.setAttribute('aria-hidden', 'false');
@@ -5654,10 +5691,12 @@
       urlInput.value = DEFAULT_URL;
       loaded = true;
     }
+    setTitleFromUrl(frame.src || DEFAULT_URL);
   }
   function hide() {
     overlay.classList.remove('show');
     overlay.setAttribute('aria-hidden', 'true');
+    restoreTitle();
   }
   // Programmatically navigate the browser frame. Also makes the new URL
   // the "default" for subsequent first-show()s. Pass {show:true} to also
@@ -5668,6 +5707,7 @@
     frame.src = target;
     urlInput.value = target;
     loaded = true;
+    setTitleFromUrl(target);
     if (opts && opts.show) show();
     return target;
   }
@@ -5687,6 +5727,7 @@
       urlInput.value = u;
       frame.src = u;
       loaded = true;
+      setTitleFromUrl(u);
       try { frame.focus(); } catch (_) {}
     } else if (e.key === 'Escape') {
       e.preventDefault();
