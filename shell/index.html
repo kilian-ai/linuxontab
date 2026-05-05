@@ -5576,14 +5576,23 @@
     (async () => {
       const restoreParam = qs.get('restore');
       const resetParam   = qs.get('reset');
+      const pipParam     = qs.get('pip');
       // Resolve restore intent against the current snapshot dropdown
       // selection (a fresh-boot entry → no restore; a real snapshot key
       // → restore unless ?restore=0 / ?reset=1).
+      //
+      // Special case: PiP/windowed mode (?pip=1) has no save/restore UI,
+      // so any auto-restore here would silently load a (potentially
+      // stale) snapshot from a previous full-mode session — and the
+      // restore path is more fragile than fresh boot (snapshot ISO
+      // mismatch, NIC re-wire timing, fs9p drift). Treat PiP as
+      // ephemeral by default; user can opt in with &restore=1.
       const sel = parseSel(snapEl.value);
       let wantRestore;
       if (resetParam === '1') wantRestore = false;
       else if (restoreParam === '1') wantRestore = !!(sel && !sel.isFresh);
       else if (restoreParam === '0') wantRestore = false;
+      else if (pipParam === '1') wantRestore = false;
       else wantRestore = !!(sel && !sel.isFresh && await idbHas(sel.key).catch(() => false));
       boot({ restore: wantRestore });
     })();
