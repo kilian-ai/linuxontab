@@ -1886,16 +1886,42 @@
     // selections become an idbGet-restore.
     let sel = opts.snapKey ? parseSel(opts.snapKey) : parseSel(snapEl.value);
     if (!sel) sel = parseSel('fresh:' + DEFAULT_ISO);
+    // ?snapshot=URL path: force a fresh-style sel (we don't touch IndexedDB,
+    // we use the iso from the current selection / ?iso=) — the actual
+    // restore buffer comes from a fetch() below.
+    if (opts.snapshotUrl) sel = parseSel('fresh:' + sel.iso);
     const iso = sel.iso;
     currentIso = iso;
     currentSnapName = sel.isFresh ? null : sel.name;
     // doRestore is honored only when the selection is a named snapshot AND
     // the caller asked for restore. Fresh-boot selections always boot clean.
+    // The hosted-snapshot path flips doRestore=true after a successful fetch.
     const snapKey = sel.isFresh ? null : sel.key;
-    const doRestore = !!(opts.restore && snapKey && await idbHas(snapKey));
+    let doRestore = !!(opts.restore && snapKey && await idbHas(snapKey));
+
+    // Hosted-snapshot fetch (?snapshot=<URL>). Same-origin only — enforced
+    // by the autoboot path before we get here. We fetch the binary blob,
+    // then feed it to v86 via cfg.initial_state below. On fetch failure we
+    // fall back to a fresh boot so the page still works.
+    let remoteSnapBuffer = null;
+    if (opts.snapshotUrl) {
+      setStatus(`fetching snapshot ${opts.snapshotUrl}…`);
+      try {
+        const r = await fetch(opts.snapshotUrl, { credentials: 'omit' });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        remoteSnapBuffer = await r.arrayBuffer();
+        doRestore = true;
+        console.log('[boot] fetched hosted snapshot:',
+          opts.snapshotUrl, '(' + remoteSnapBuffer.byteLength + ' bytes)');
+      } catch (e) {
+        console.warn('[boot] hosted snapshot fetch failed:', e);
+        setStatus('snapshot fetch failed (' + e.message + ') — booting fresh', 'warn');
+      }
+    }
 
     const labelIso = sel.isFresh ? iso : (iso + ' / ' + sel.name);
-    setStatus(doRestore ? `restoring ${labelIso}…` : `booting ${labelIso}…`);
+    const labelSnap = remoteSnapBuffer ? (iso + ' / hosted') : labelIso;
+    setStatus(doRestore ? `restoring ${labelSnap}…` : `booting ${labelIso}…`);
     bootBtn.disabled = true;
 
     byteCount = 0;
@@ -1983,7 +2009,7 @@
       cors_proxy: 'https://relay.linuxontab.com/cors?url=',
     };
     if (doRestore) {
-      const blob = await idbGet(snapKey);
+      const blob = remoteSnapBuffer || await idbGet(snapKey);
       cfg.initial_state = { buffer: blob };
     }
 
@@ -5577,6 +5603,23 @@
       const restoreParam = qs.get('restore');
       const resetParam   = qs.get('reset');
       const pipParam     = qs.get('pip');
+      const snapshotParam = qs.get('snapshot');
+      // ?snapshot=<URL> — load a hosted snapshot (e.g. one we ship from
+      // GitHub Pages) for a much faster cold start. Same-origin only:
+      // the snapshot blob is fed straight into v86's initial_state, so
+      // we treat it like other static assets on this page. Relative
+      // paths and absolute same-origin URLs are accepted; cross-origin
+      // is rejected. ?reset=1 still wins (forces fresh boot).
+      let snapshotUrl = '';
+      if (snapshotParam && resetParam !== '1') {
+        try {
+          const u = new URL(snapshotParam, location.href);
+          if (u.origin === location.origin) snapshotUrl = u.href;
+          else console.warn('[boot] ?snapshot= must be same-origin; ignoring:', snapshotParam);
+        } catch (e) {
+          console.warn('[boot] ?snapshot= parse failed:', e);
+        }
+      }
       // Resolve restore intent against the current snapshot dropdown
       // selection (a fresh-boot entry → no restore; a real snapshot key
       // → restore unless ?restore=0 / ?reset=1).
@@ -5594,7 +5637,7 @@
       else if (restoreParam === '0') wantRestore = false;
       else if (pipParam === '1') wantRestore = false;
       else wantRestore = !!(sel && !sel.isFresh && await idbHas(sel.key).catch(() => false));
-      boot({ restore: wantRestore });
+      boot({ restore: wantRestore, snapshotUrl });
     })();
   }
 })();
