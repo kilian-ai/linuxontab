@@ -2763,6 +2763,27 @@
       }
     }
 
+    // Fresh-boot safety net. The prompt-detection path uses a 900ms idle
+    // debounce, which works great when boot output arrives in a clean
+    // burst. But on a slow first load (cold ISO download, throttled
+    // background tab during the wait, autologin banner painting slowly)
+    // bytes can dribble in continuously and keep resetting the debounce
+    // — runNetInit() then never fires. After enough wall-clock time has
+    // passed since the boot started, just run it: it's idempotent via
+    // `netInited`, and waking up an already-running shell with our init
+    // script is harmless.
+    if (!doRestore) {
+      const FRESH_BOOT_NETINIT_DEADLINE_MS = 90 * 1000;
+      setTimeout(() => {
+        if (!emulator || netInited) return;
+        console.warn('[boot] fresh-boot netInit deadline reached — forcing runNetInit()');
+        // Send a wake-up newline first in case the shell IS at a prompt
+        // but we somehow missed the regex match.
+        try { sendGuestText('\n'); } catch (_) {}
+        setTimeout(() => { if (!netInited) runNetInit(); }, 400);
+      }, FRESH_BOOT_NETINIT_DEADLINE_MS);
+    }
+
     // Tab visibility self-heal. When the user backgrounds the tab,
     // browsers throttle rAF/setTimeout — the v86 CPU loop slows to a
     // crawl, the WispNetworkAdapter's WebSocket gets idle-reaped by
