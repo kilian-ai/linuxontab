@@ -2564,8 +2564,19 @@
       // Note: chain shell metacharacters (`&&`, `|`) inside a single param
       // value with %26%26 / %7C — bare `&` is the URL query separator and
       // will silently truncate the value.
+      //
+      // Secrets: prefer the fragment form `#postboot=...` over
+      // `?postboot=...`. Fragments are never sent in HTTP requests
+      // (no Pages access logs, no `Referer` leak), so an
+      // `export OPENAI_API_KEY=...` line stays purely client-side.
       try {
-        const pb = new URLSearchParams(location.search).get('postboot');
+        let pb = new URLSearchParams(location.search).get('postboot');
+        if (!pb && location.hash) {
+          // Parse `#postboot=...` (and `#foo=bar&postboot=...`) without
+          // requiring the fragment to start with `?`.
+          const hp = new URLSearchParams(location.hash.replace(/^#/, ''));
+          pb = hp.get('postboot');
+        }
         if (pb && pb.trim()) {
           // Mark the boundary so it's visible in the terminal scrollback.
           lines.push("echo '[postboot] running ?postboot= command…'");
