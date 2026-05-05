@@ -2611,7 +2611,19 @@
         'echo "[time] $(date -u +%FT%TZ)" || ' +
         'echo "[time] sync failed — TLS may fail until clock is set" >&2\n';
 
+      // Seed /etc/network/interfaces so Alpine's OpenRC `networking`
+      // service can start. We configure eth0 imperatively via `ip` (below)
+      // so the file would otherwise be missing — `ifquery` then fails to
+      // parse it and `service networking start` errors out, which in turn
+      // blocks every OpenRC service that declares `need net` (most
+      // notably `docker`). The `inet manual` stanza is a no-op for
+      // ifup but satisfies ifquery, leaving our static config intact.
+      const ifacesSeedCmd =
+        '[ -f /etc/network/interfaces ] || { mkdir -p /etc/network 2>/dev/null; ' +
+        'printf "%s\\n" "auto lo" "iface lo inet loopback" "" "auto eth0" "iface eth0 inet manual" > /etc/network/interfaces; }\n';
+
       const restoreNetSegment =
+        ifacesSeedCmd +
         'killall -q udhcpc 2>/dev/null\n' +
         'ip link set eth0 down 2>/dev/null\n' +
         'sleep 1\n' +
@@ -2625,6 +2637,7 @@
         'echo "[net] eth0 operstate=$st flags=$fl (retries=$i)"\n';
 
       const dhcpSegment =
+        ifacesSeedCmd +
         'ip link set eth0 up 2>/dev/null\n' +
         'udhcpc -i eth0 -q -n -f -T 2 -t 3 >/dev/null 2>&1\n' +
         'printf "nameserver 1.1.1.1\\nnameserver 1.0.0.1\\n" > /etc/resolv.conf\n';
