@@ -205,6 +205,101 @@
   .hint { color:#6b7380; }
   .ok { color:#4ade80; }
   .err { color:#f87171; }
+  /* ── Fullscreen browser overlay ────────────────────────────────────
+     Toggled with Ctrl+Alt+F2 (show) / Ctrl+Alt+F3 (hide).
+     URL bar toggled with Ctrl+Alt+F1. Press Enter in the URL field
+     to load. Sits above everything; doesn't unmount when hidden so
+     iframe state survives toggling. */
+  #fsbrowser {
+    position: fixed; inset: 0; z-index: 9999;
+    background: #0b0d10; display: none; flex-direction: column;
+  }
+  #fsbrowser.show { display: flex; }
+  #fsbrowser-bar {
+    display: none; align-items: center; gap: 8px;
+    padding: 6px 10px; background: #14181f;
+    border-bottom: 1px solid #232a33;
+    font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace;
+    color: #cbd5e1;
+  }
+  #fsbrowser.urlbar #fsbrowser-bar { display: flex; }
+  #fsbrowser-url {
+    flex: 1; min-width: 0;
+    background: #0b0d10; border: 1px solid #2a3240; color: #e2e8f0;
+    padding: 6px 10px; border-radius: 4px; outline: none;
+    font: inherit;
+  }
+  #fsbrowser-url:focus { border-color: #4aa3ff; }
+  #fsbrowser-hint { color: #6b7380; font-size: 12px; white-space: nowrap; }
+  #fsbrowser-frame {
+    flex: 1; width: 100%; border: 0; background: #fff;
+  }
+  /* Floating control strip — always clickable because it sits on top
+     of the iframe in z-order. Keeps users in control even when focus
+     is inside a cross-origin iframe (where keydown hotkeys can't fire
+     in the parent). */
+  #fsbrowser-fab {
+    position: absolute; top: 8px; right: 8px;
+    display: flex; gap: 4px; z-index: 2;
+    opacity: 0.55; transition: opacity 0.15s;
+  }
+  #fsbrowser-fab:hover { opacity: 1; }
+  #fsbrowser-fab button {
+    width: 28px; height: 28px; border-radius: 6px;
+    background: rgba(20, 24, 31, 0.85);
+    border: 1px solid #2a3240; color: #e2e8f0;
+    font: 14px/1 ui-monospace, Menlo, Consolas, monospace;
+    cursor: pointer; padding: 0;
+  }
+  #fsbrowser-fab button:hover { background: #1f2937; border-color: #4aa3ff; }
+  /* When the URL bar is visible, anchor the FAB below it so it doesn't
+     overlap the input. */
+  #fsbrowser.urlbar #fsbrowser-fab { top: 44px; }
+
+  /* ── Terminal Picture-in-Picture ───────────────────────────────────
+     Toggle with Ctrl+Alt+F4. When active, #term is moved into the
+     fixed-positioned #term-pip frame so it floats above everything
+     (including the fullscreen browser overlay). The frame is
+     draggable by its title bar and resizable from the bottom-right.
+     Position/size persist via inline style on #term-pip. */
+  #term-pip {
+    position: fixed;
+    display: none;
+    flex-direction: column;
+    /* Defaults — will be overridden by URL params, JS API, or
+       captureRectFromTerm() on first toggle. */
+    left: 8px; top: 44px;
+    width: 720px; height: 420px;
+    min-width: 240px; min-height: 140px;
+    z-index: 10000;            /* above #fsbrowser (z-index 9999) */
+    background: #0b0d10;
+    border: 1px solid #2a3240;
+    border-radius: 6px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
+    overflow: hidden;
+    resize: both;
+  }
+  body.term-pip #term-pip { display: flex; }
+  #term-pip-bar {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 8px; background: #14181f;
+    border-bottom: 1px solid #232a33;
+    font: 11px/1.2 ui-monospace, Menlo, Consolas, monospace;
+    color: #94a3b8; cursor: move; user-select: none;
+    flex: 0 0 auto;
+  }
+  #term-pip-bar .pip-title { flex: 1; }
+  #term-pip-bar button {
+    background: transparent; border: 0; color: inherit;
+    cursor: pointer; padding: 2px 6px; border-radius: 4px;
+    font: inherit;
+  }
+  #term-pip-bar button:hover { background: #1f2937; color: #e2e8f0; }
+  #term-pip-content { flex: 1; min-height: 0; display: flex; }
+  /* Override the in-page #term layout when it's reparented into PiP. */
+  body.term-pip #term-pip-content > #term {
+    flex: 1; min-height: 0; height: auto; padding: 4px 6px;
+  }
 </style>
 </head>
 <body>
@@ -2437,6 +2532,46 @@
       // an unterminated quote).
       const script = buildNetInitCmd();
       const lines = script.split('\n');
+
+      // ?postboot=<shell-command-or-url> URL parameter — runs after the
+      // standard init script. Useful for one-shot provisioning (e.g.
+      // installing tools, kicking off interactive REPLs) without baking
+      // it into the snapshot.
+      //
+      // Two value forms:
+      //   * http(s) URL → expanded to a wget-to-tempfile + `sh /tmp/...`
+      //     pipeline. Avoids `wget | sh`, which would leave any process
+      //     `exec`'d at the end of the script with stdin tied to the
+      //     closed pipe instead of the controlling TTY (so an interactive
+      //     REPL would show Enter as ^M).
+      //   * anything else → URL-decoded and sent verbatim as a single
+      //     shell line; caller is responsible for shell escaping.
+      //
+      // Note: chain shell metacharacters (`&&`, `|`) inside a single param
+      // value with %26%26 / %7C — bare `&` is the URL query separator and
+      // will silently truncate the value.
+      try {
+        const pb = new URLSearchParams(location.search).get('postboot');
+        if (pb && pb.trim()) {
+          // Mark the boundary so it's visible in the terminal scrollback.
+          lines.push("echo '[postboot] running ?postboot= command…'");
+          if (/^https?:\/\//.test(pb.trim())) {
+            const url = pb.trim();
+            // Single-quote the URL for the guest shell. URLs shouldn't
+            // contain single quotes; if they do, swap to double quotes.
+            const q = url.indexOf("'") === -1 ? `'${url}'` : `"${url}"`;
+            lines.push(
+              `wget -qO /tmp/postboot.sh ${q} && ` +
+              `chmod +x /tmp/postboot.sh && ` +
+              `sh /tmp/postboot.sh; ` +
+              `rm -f /tmp/postboot.sh`
+            );
+          } else {
+            lines.push(pb);
+          }
+        }
+      } catch (_) {}
+
       let i = 0;
       const sendNext = () => {
         if (!emulator || i >= lines.length) return;
@@ -5392,6 +5527,282 @@
       boot({ restore: wantRestore });
     })();
   }
+})();
+</script>
+
+<!-- ── Fullscreen browser overlay ───────────────────────────────────────
+     Hotkeys (work even when the v86 terminal has focus):
+       Ctrl+Alt+F1  toggle URL bar
+       Ctrl+Alt+F2  show overlay
+       Ctrl+Alt+F3  hide overlay
+     Default page: linuxontab.com -->
+<div id="fsbrowser" aria-hidden="true">
+  <div id="fsbrowser-bar">
+    <input id="fsbrowser-url" type="text" spellcheck="false"
+           autocomplete="off" placeholder="https://linuxontab.com">
+    <span id="fsbrowser-hint">Enter to load · Ctrl+Alt+F1 hide bar · Ctrl+Alt+F3 close</span>
+  </div>
+  <div id="fsbrowser-fab">
+    <button id="fsbrowser-fab-url"   title="toggle URL bar (Ctrl+Alt+F1)">☰</button>
+    <button id="fsbrowser-fab-close" title="close (Ctrl+Alt+F3)">✕</button>
+  </div>
+  <iframe id="fsbrowser-frame"
+          src="about:blank"
+          credentialless
+          referrerpolicy="no-referrer"
+          sandbox="allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"></iframe>
+</div>
+<script>
+(function () {
+  // ?browser=<url> URL parameter — overrides the default landing page
+  // for the Ctrl+Alt+F2 fullscreen browser. Applied on first show()
+  // (whether triggered by hotkey, ?pip=1, or window.fsBrowser.show()).
+  // Bare hostnames / search queries are normalized the same way as
+  // typing into the URL bar. Use ?browser=about:blank for a clean slate.
+  const QS_DEFAULT_URL = (() => {
+    try {
+      const v = new URLSearchParams(location.search).get('browser');
+      return v && v.trim() ? v.trim() : null;
+    } catch (_) { return null; }
+  })();
+  let DEFAULT_URL = QS_DEFAULT_URL || 'https://linuxontab.com';
+  const overlay  = document.getElementById('fsbrowser');
+  const urlInput = document.getElementById('fsbrowser-url');
+  const frame    = document.getElementById('fsbrowser-frame');
+  let loaded = false;
+
+  function normalizeUrl(s) {
+    s = (s || '').trim();
+    if (!s) return DEFAULT_URL;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(s)) return s;        // already has scheme
+    if (/^[\w.-]+\.[\w.-]+/.test(s) || s.startsWith('localhost')) {
+      return 'https://' + s;
+    }
+    // Treat as search query
+    return 'https://duckduckgo.com/?q=' + encodeURIComponent(s);
+  }
+
+  // Normalize the query-param value so users can pass bare hosts.
+  if (QS_DEFAULT_URL) DEFAULT_URL = normalizeUrl(QS_DEFAULT_URL);
+
+  function show() {
+    overlay.classList.add('show');
+    overlay.setAttribute('aria-hidden', 'false');
+    if (!loaded) {
+      frame.src = DEFAULT_URL;
+      urlInput.value = DEFAULT_URL;
+      loaded = true;
+    }
+  }
+  function hide() {
+    overlay.classList.remove('show');
+    overlay.setAttribute('aria-hidden', 'true');
+  }
+  // Programmatically navigate the browser frame. Also makes the new URL
+  // the "default" for subsequent first-show()s. Pass {show:true} to also
+  // open the overlay if it's currently hidden.
+  function setUrl(u, opts) {
+    const target = normalizeUrl(u);
+    DEFAULT_URL = target;
+    frame.src = target;
+    urlInput.value = target;
+    loaded = true;
+    if (opts && opts.show) show();
+    return target;
+  }
+  function toggleUrlBar() {
+    overlay.classList.toggle('urlbar');
+    if (overlay.classList.contains('urlbar')) {
+      // Show overlay too if it isn't visible yet
+      if (!overlay.classList.contains('show')) show();
+      setTimeout(() => { try { urlInput.focus(); urlInput.select(); } catch (_) {} }, 0);
+    }
+  }
+
+  urlInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const u = normalizeUrl(urlInput.value);
+      urlInput.value = u;
+      frame.src = u;
+      loaded = true;
+      try { frame.focus(); } catch (_) {}
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      overlay.classList.remove('urlbar');
+    }
+  });
+
+  // Capture-phase listener so the hotkeys win against xterm.js / v86.
+  window.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey && e.altKey)) return;
+    // Match by both KeyboardEvent.key (browser virtual function key) and
+    // by Ctrl+Alt+digit (some keyboards / OSes intercept Fn keys).
+    let action = null;
+    if (e.key === 'F1') action = 'urlbar';
+    else if (e.key === 'F2') action = 'show';
+    else if (e.key === 'F3') action = 'hide';
+    if (!action) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (action === 'show') show();
+    else if (action === 'hide') hide();
+    else if (action === 'urlbar') toggleUrlBar();
+  }, true);
+
+  // Floating-button fallbacks: when the iframe has focus (clicked into
+  // a cross-origin page), keydown events fire inside that document and
+  // never reach this window — so the hotkeys silently stop working.
+  // The FAB buttons sit above the iframe in z-order and stay clickable.
+  document.getElementById('fsbrowser-fab-close').addEventListener('click', hide);
+  document.getElementById('fsbrowser-fab-url').addEventListener('click', toggleUrlBar);
+
+  // When the user clicks outside the iframe (e.g. our buttons or the
+  // URL bar), pull focus back to the parent so hotkeys work again.
+  // Also re-focus parent on window focus events (cmd-tab back, etc.).
+  function pullFocusBack() {
+    try { window.focus(); } catch (_) {}
+  }
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target === frame) return; // let iframe handle its own clicks
+    pullFocusBack();
+  });
+  // Also expose a tiny global so console / other scripts can drive it.
+  window.fsBrowser = { show, hide, toggleUrlBar, setUrl };
+})();
+</script>
+
+<!-- ── Terminal Picture-in-Picture ─────────────────────────────────────
+     A floating frame that hosts the v86 xterm above everything else.
+     Hotkey: Ctrl+Alt+F4 toggles.
+
+     URL params:
+       ?pip=1                start in PiP mode
+       ?pipx=10&pipy=44      position
+       ?pipw=720&piph=420    size
+
+     JS API:
+       window.termPip.show() / hide() / toggle()
+       window.termPip.set({ x, y, w, h })  // any subset
+       window.termPip.getRect()            // {x,y,w,h}
+-->
+<div id="term-pip" aria-hidden="true">
+  <div id="term-pip-bar" title="drag to move">
+    <span class="pip-title">terminal</span>
+    <button id="term-pip-close" title="close PiP (Ctrl+Alt+F4)">✕</button>
+  </div>
+  <div id="term-pip-content"></div>
+</div>
+<script>
+(function () {
+  const pip        = document.getElementById('term-pip');
+  const pipBar     = document.getElementById('term-pip-bar');
+  const pipContent = document.getElementById('term-pip-content');
+  const pipClose   = document.getElementById('term-pip-close');
+  const termEl     = document.getElementById('term');
+  // Remember the original DOM home so we can put #term back later.
+  const homeParent = termEl.parentNode;
+  const homeNext   = termEl.nextSibling;
+
+  function setRect({ x, y, w, h }) {
+    if (x != null) pip.style.left   = (typeof x === 'number' ? x + 'px' : x);
+    if (y != null) pip.style.top    = (typeof y === 'number' ? y + 'px' : y);
+    if (w != null) pip.style.width  = (typeof w === 'number' ? w + 'px' : w);
+    if (h != null) pip.style.height = (typeof h === 'number' ? h + 'px' : h);
+  }
+  function getRect() {
+    const r = pip.getBoundingClientRect();
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
+  }
+  function captureRectFromTerm() {
+    // Match PiP rect to the current #term position so toggling on
+    // doesn't visually jump. Only do this once (when no inline style
+    // is set yet from a URL param or prior session).
+    if (pip.style.left || pip.style.top || pip.style.width || pip.style.height) return;
+    const r = termEl.getBoundingClientRect();
+    if (r.width >= 50 && r.height >= 50) setRect({ x: r.left, y: r.top, w: r.width, h: r.height });
+  }
+
+  let active = false;
+  function show() {
+    if (active) return;
+    captureRectFromTerm();
+    pipContent.appendChild(termEl);   // move #term into PiP frame
+    document.body.classList.add('term-pip');
+    pip.setAttribute('aria-hidden', 'false');
+    active = true;
+    // ResizeObserver on #term (registered in the v86 init code) will
+    // re-fit xterm automatically when the size changes.
+  }
+  function hide() {
+    if (!active) return;
+    // Put #term back exactly where we found it.
+    if (homeNext && homeNext.parentNode === homeParent) {
+      homeParent.insertBefore(termEl, homeNext);
+    } else {
+      homeParent.appendChild(termEl);
+    }
+    document.body.classList.remove('term-pip');
+    pip.setAttribute('aria-hidden', 'true');
+    active = false;
+  }
+  function toggle() { active ? hide() : show(); }
+
+  // ── Drag the title bar ─────────────────────────────────────────────
+  let dragState = null;
+  pipBar.addEventListener('pointerdown', (e) => {
+    // Ignore clicks on buttons inside the bar.
+    if (e.target.closest('button')) return;
+    const r = pip.getBoundingClientRect();
+    dragState = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    pipBar.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  pipBar.addEventListener('pointermove', (e) => {
+    if (!dragState) return;
+    const x = Math.max(0, Math.min(window.innerWidth  - 80, e.clientX - dragState.dx));
+    const y = Math.max(0, Math.min(window.innerHeight - 40, e.clientY - dragState.dy));
+    setRect({ x, y });
+  });
+  pipBar.addEventListener('pointerup', (e) => {
+    dragState = null;
+    try { pipBar.releasePointerCapture(e.pointerId); } catch (_) {}
+  });
+
+  pipClose.addEventListener('click', hide);
+
+  // ── Hotkey: Ctrl+Alt+F4 ────────────────────────────────────────────
+  window.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey && e.altKey)) return;
+    if (e.key !== 'F4') return;
+    e.preventDefault();
+    e.stopPropagation();
+    toggle();
+  }, true);
+
+  // ── URL params on initial load ─────────────────────────────────────
+  const qs = new URLSearchParams(location.search);
+  const num = (k) => { const v = qs.get(k); return v == null ? null : parseFloat(v); };
+  const pipx = num('pipx'), pipy = num('pipy'),
+        pipw = num('pipw'), piph = num('piph');
+  if (pipx != null || pipy != null || pipw != null || piph != null) {
+    setRect({
+      x: pipx != null ? pipx : null,
+      y: pipy != null ? pipy : null,
+      w: pipw != null ? pipw : null,
+      h: piph != null ? piph : null,
+    });
+  }
+  if (qs.get('pip') === '1') {
+    // Defer one tick so the v86 IIFE has finished setting up xterm,
+    // and so window.fsBrowser is registered.
+    setTimeout(() => {
+      try { window.fsBrowser && window.fsBrowser.show(); } catch (_) {}
+      show();
+    }, 0);
+  }
+
+  window.termPip = { show, hide, toggle, set: setRect, getRect };
 })();
 </script>
 </body>

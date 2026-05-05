@@ -208,7 +208,8 @@
     sandboxes, teaching, demos, and disposable shells.
   </p>
   <div class="cta-row">
-    <a class="cta" href="./shell/">Launch Linux →</a>
+    <a class="cta" href="./shell/?pip=1&amp;pipx=20&amp;pipy=50&amp;pipw=600&amp;piph=400&amp;browser=https://linuxontab.com">Launch Linux (in window) →</a>
+    <a class="cta secondary" href="./shell/" target="_blank" rel="noopener">Launch Linux (new tab)</a>
     <a class="cta secondary" href="#what">How it works</a>
   </div>
   <div class="badges">
@@ -306,6 +307,38 @@
     <div class="card"><h3>Cloudflare Workers + Fly.io</h3><p>Optional services for DoH, port tunnels, and TCP egress. Source is in this repo — self-host the whole stack if you want.</p></div>
     <div class="card"><h3>IndexedDB</h3><p>Stores full VM snapshots client-side, so reload doesn't blow away your work.</p></div>
   </div>
+</section>
+
+<section id="urls" class="container">
+  <h2>URL parameters &amp; embedding</h2>
+  <p>The shell page is fully URL-driven. Compose any of the parameters below to launch a pre-configured environment — great for demos, embeds, and one-click reproductions.</p>
+  <div class="grid">
+    <div class="card">
+      <h3><code>?pip=1</code></h3>
+      <p>Boot into <strong>Picture-in-Picture</strong> mode: floating, resizable terminal panel + fullscreen browser overlay. Combine with <code>?pipx=&amp;pipy=&amp;pipw=&amp;piph=</code> to set the initial frame rect.</p>
+    </div>
+    <div class="card">
+      <h3><code>?browser=&lt;url&gt;</code></h3>
+      <p>Override the landing page of the <code>Ctrl+Alt+F2</code> browser overlay. Bare hosts auto-prefix <code>https://</code>; non-URL strings fall through to a DuckDuckGo search.</p>
+    </div>
+    <div class="card">
+      <h3><code>?postboot=&lt;cmd-or-url&gt;</code></h3>
+      <p>Run a command (or wget+exec an http(s) script) inside the guest after init has finished. Example: <code>?postboot=https://getclaw.site/install.sh</code> auto-installs <a href="https://getclaw.site/" rel="noopener">claw</a> and drops you into the REPL.</p>
+    </div>
+    <div class="card">
+      <h3>Hotkeys</h3>
+      <p><code>Ctrl+Alt+F1</code> URL bar · <code>Ctrl+Alt+F2</code> show browser · <code>Ctrl+Alt+F3</code> hide browser · <code>Ctrl+Alt+F4</code> toggle terminal PiP. When an iframe steals focus, use the floating ✕ / ☰ buttons.</p>
+    </div>
+    <div class="card">
+      <h3>JS API</h3>
+      <p><code>window.fsBrowser.{show,hide,setUrl,toggleUrlBar}</code> drives the browser overlay. <code>window.termPip.{show,hide,toggle,set,getRect}</code> drives the terminal PiP.</p>
+    </div>
+    <div class="card">
+      <h3>Demo URL</h3>
+      <p>One link, full layout:<br><code style="font-size:11px; word-break:break-all;">/shell/?pip=1&amp;pipx=20&amp;pipy=50&amp;pipw=600&amp;piph=400&amp;browser=https://linuxontab.com&amp;postboot=https://getclaw.site/install.sh</code></p>
+    </div>
+  </div>
+  <p style="margin-top:14px;">Full release notes: <a href="./changelog/">Changelog →</a></p>
 </section>
 
 <section id="quickstart" class="container">

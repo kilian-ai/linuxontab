@@ -65,6 +65,29 @@
   <p class="lead">Release notes for LinuxOnTab. The shell page is a static site over GitHub Pages — every commit on <code>main</code> goes live within a minute.</p>
 
   <article class="release">
+    <h2>v0.4 — Overlays, automation, &amp; URL-driven launches</h2>
+    <div class="date">2026-05-05</div>
+    <p style="margin:0 0 14px; color:#c4cad2;">A big batch of UI + automation work that turns the shell page into a launchable, embeddable Linux desktop. Everything is opt-in via URL parameters — defaults are unchanged.</p>
+    <ul>
+      <li><span class="tag">feat</span><strong>Fullscreen browser overlay</strong> on top of the shell. <code>Ctrl+Alt+F1</code> toggles a URL bar, <code>Ctrl+Alt+F2</code> shows it, <code>Ctrl+Alt+F3</code> hides it. Iframe is <code>credentialless</code> + sandboxed so it loads under the shell's COEP <code>require-corp</code>.</li>
+      <li><span class="tag">feat</span><strong>Floating button fallbacks</strong> (✕ / ☰) sit above the iframe in z-order — when a cross-origin page steals focus and swallows the hotkeys, the buttons stay clickable. Clicking outside the iframe pulls focus back to the parent so hotkeys resume.</li>
+      <li><span class="tag">feat</span><strong>Terminal Picture-in-Picture</strong> mode. <code>Ctrl+Alt+F4</code> floats the xterm into a draggable, resizable panel above any other content. Position + size are saved across reloads.</li>
+      <li><span class="tag">feat</span><strong>URL parameter: <code>?pip=1</code></strong> — opens the shell with PiP terminal + browser overlay shown immediately. Combine with <code>?pipx=&amp;pipy=&amp;pipw=&amp;piph=</code> to set the initial frame rect.</li>
+      <li><span class="tag">feat</span><strong>URL parameter: <code>?browser=&lt;url&gt;</code></strong> — overrides the F2 browser's landing page. Bare hosts auto-prefix <code>https://</code>; non-URL strings fall through to a DuckDuckGo search. Try <code>?browser=about:blank</code>, <code>?browser=getclaw.site</code>, or <code>?browser=hello+world</code>.</li>
+      <li><span class="tag">feat</span><strong>URL parameter: <code>?postboot=&lt;cmd-or-url&gt;</code></strong> — runs a shell command (or wgets+runs an http(s) script) inside the guest after init has finished and the prompt is ready. Streams line-by-line so BusyBox hush doesn't truncate. Example: <code>?postboot=https://getclaw.site/install.sh</code> auto-installs <a href="https://getclaw.site/" rel="noopener">claw</a> and drops you into the REPL.</li>
+      <li><span class="tag">feat</span><strong>JS API: <code>window.fsBrowser.setUrl(url, {show:true})</code></strong> — programmatically navigate the browser overlay from devtools or another script. Also rewrites the default so subsequent first-shows stick.</li>
+      <li><span class="tag">feat</span><strong>JS API: <code>window.termPip.{show,hide,toggle,set,getRect}</code></strong> — drive the terminal PiP frame from outside.</li>
+      <li><span class="tag">feat</span><strong>“Launch Linux (in window)”</strong> CTA on the homepage that boots the shell with PiP + browser-overlay layout in one click — same tab, no popup blocker drama. <code>“Launch Linux (new tab)”</code> is preserved next to it.</li>
+      <li><span class="tag">feat</span>Local dev server (<code>./serve.sh</code>) ships COOP/COEP headers + <code>Cache-Control: no-store</code> so SharedArrayBuffer + v86 work on <code>localhost:8000</code>.</li>
+      <li><span class="tag fix">fix</span><strong>UTF-8 round-trip in the terminal</strong>. Cyrillic / emoji / non-Latin input was silently truncated to single bytes; output was decoded as Latin-1, producing mojibake. <code>sendGuestText</code> now <code>TextEncoder</code>s and writes byte-by-byte, and the serial-VFS line buffer runs through a real <code>TextDecoder('utf-8')</code> before resolving stdout.</li>
+    </ul>
+    <p style="margin:14px 0 0; color:var(--mut); font-size:13px;">
+      Demo URL combining everything:
+      <br><code style="font-size:12px;">/shell/?pip=1&amp;pipx=20&amp;pipy=50&amp;pipw=600&amp;piph=400&amp;browser=https://linuxontab.com&amp;postboot=https://getclaw.site/install.sh</code>
+    </p>
+  </article>
+
+  <article class="release">
     <h2>v0.3 — SEO &amp; landing page</h2>
     <div class="date">2026-04-30</div>
     <ul>
