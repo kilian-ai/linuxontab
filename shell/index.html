@@ -255,6 +255,51 @@
   /* When the URL bar is visible, anchor the FAB below it so it doesn't
      overlap the input. */
   #fsbrowser.urlbar #fsbrowser-fab { top: 44px; }
+
+  /* ── Terminal Picture-in-Picture ───────────────────────────────────
+     Toggle with Ctrl+Alt+F4. When active, #term is moved into the
+     fixed-positioned #term-pip frame so it floats above everything
+     (including the fullscreen browser overlay). The frame is
+     draggable by its title bar and resizable from the bottom-right.
+     Position/size persist via inline style on #term-pip. */
+  #term-pip {
+    position: fixed;
+    display: none;
+    flex-direction: column;
+    /* Defaults — will be overridden by URL params, JS API, or
+       captureRectFromTerm() on first toggle. */
+    left: 8px; top: 44px;
+    width: 720px; height: 420px;
+    min-width: 240px; min-height: 140px;
+    z-index: 10000;            /* above #fsbrowser (z-index 9999) */
+    background: #0b0d10;
+    border: 1px solid #2a3240;
+    border-radius: 6px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
+    overflow: hidden;
+    resize: both;
+  }
+  body.term-pip #term-pip { display: flex; }
+  #term-pip-bar {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 8px; background: #14181f;
+    border-bottom: 1px solid #232a33;
+    font: 11px/1.2 ui-monospace, Menlo, Consolas, monospace;
+    color: #94a3b8; cursor: move; user-select: none;
+    flex: 0 0 auto;
+  }
+  #term-pip-bar .pip-title { flex: 1; }
+  #term-pip-bar button {
+    background: transparent; border: 0; color: inherit;
+    cursor: pointer; padding: 2px 6px; border-radius: 4px;
+    font: inherit;
+  }
+  #term-pip-bar button:hover { background: #1f2937; color: #e2e8f0; }
+  #term-pip-content { flex: 1; min-height: 0; display: flex; }
+  /* Override the in-page #term layout when it's reparented into PiP. */
+  body.term-pip #term-pip-content > #term {
+    flex: 1; min-height: 0; height: auto; padding: 4px 6px;
+  }
 </style>
 </head>
 <body>
@@ -5558,6 +5603,136 @@
   });
   // Also expose a tiny global so console / other scripts can drive it.
   window.fsBrowser = { show, hide, toggleUrlBar };
+})();
+</script>
+
+<!-- ── Terminal Picture-in-Picture ─────────────────────────────────────
+     A floating frame that hosts the v86 xterm above everything else.
+     Hotkey: Ctrl+Alt+F4 toggles.
+
+     URL params:
+       ?pip=1                start in PiP mode
+       ?pipx=10&pipy=44      position
+       ?pipw=720&piph=420    size
+
+     JS API:
+       window.termPip.show() / hide() / toggle()
+       window.termPip.set({ x, y, w, h })  // any subset
+       window.termPip.getRect()            // {x,y,w,h}
+-->
+<div id="term-pip" aria-hidden="true">
+  <div id="term-pip-bar" title="drag to move">
+    <span class="pip-title">terminal</span>
+    <button id="term-pip-close" title="close PiP (Ctrl+Alt+F4)">✕</button>
+  </div>
+  <div id="term-pip-content"></div>
+</div>
+<script>
+(function () {
+  const pip        = document.getElementById('term-pip');
+  const pipBar     = document.getElementById('term-pip-bar');
+  const pipContent = document.getElementById('term-pip-content');
+  const pipClose   = document.getElementById('term-pip-close');
+  const termEl     = document.getElementById('term');
+  // Remember the original DOM home so we can put #term back later.
+  const homeParent = termEl.parentNode;
+  const homeNext   = termEl.nextSibling;
+
+  function setRect({ x, y, w, h }) {
+    if (x != null) pip.style.left   = (typeof x === 'number' ? x + 'px' : x);
+    if (y != null) pip.style.top    = (typeof y === 'number' ? y + 'px' : y);
+    if (w != null) pip.style.width  = (typeof w === 'number' ? w + 'px' : w);
+    if (h != null) pip.style.height = (typeof h === 'number' ? h + 'px' : h);
+  }
+  function getRect() {
+    const r = pip.getBoundingClientRect();
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
+  }
+  function captureRectFromTerm() {
+    // Match PiP rect to the current #term position so toggling on
+    // doesn't visually jump. Only do this once (when no inline style
+    // is set yet from a URL param or prior session).
+    if (pip.style.left || pip.style.top || pip.style.width || pip.style.height) return;
+    const r = termEl.getBoundingClientRect();
+    if (r.width >= 50 && r.height >= 50) setRect({ x: r.left, y: r.top, w: r.width, h: r.height });
+  }
+
+  let active = false;
+  function show() {
+    if (active) return;
+    captureRectFromTerm();
+    pipContent.appendChild(termEl);   // move #term into PiP frame
+    document.body.classList.add('term-pip');
+    pip.setAttribute('aria-hidden', 'false');
+    active = true;
+    // ResizeObserver on #term (registered in the v86 init code) will
+    // re-fit xterm automatically when the size changes.
+  }
+  function hide() {
+    if (!active) return;
+    // Put #term back exactly where we found it.
+    if (homeNext && homeNext.parentNode === homeParent) {
+      homeParent.insertBefore(termEl, homeNext);
+    } else {
+      homeParent.appendChild(termEl);
+    }
+    document.body.classList.remove('term-pip');
+    pip.setAttribute('aria-hidden', 'true');
+    active = false;
+  }
+  function toggle() { active ? hide() : show(); }
+
+  // ── Drag the title bar ─────────────────────────────────────────────
+  let dragState = null;
+  pipBar.addEventListener('pointerdown', (e) => {
+    // Ignore clicks on buttons inside the bar.
+    if (e.target.closest('button')) return;
+    const r = pip.getBoundingClientRect();
+    dragState = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+    pipBar.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  });
+  pipBar.addEventListener('pointermove', (e) => {
+    if (!dragState) return;
+    const x = Math.max(0, Math.min(window.innerWidth  - 80, e.clientX - dragState.dx));
+    const y = Math.max(0, Math.min(window.innerHeight - 40, e.clientY - dragState.dy));
+    setRect({ x, y });
+  });
+  pipBar.addEventListener('pointerup', (e) => {
+    dragState = null;
+    try { pipBar.releasePointerCapture(e.pointerId); } catch (_) {}
+  });
+
+  pipClose.addEventListener('click', hide);
+
+  // ── Hotkey: Ctrl+Alt+F4 ────────────────────────────────────────────
+  window.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey && e.altKey)) return;
+    if (e.key !== 'F4') return;
+    e.preventDefault();
+    e.stopPropagation();
+    toggle();
+  }, true);
+
+  // ── URL params on initial load ─────────────────────────────────────
+  const qs = new URLSearchParams(location.search);
+  const num = (k) => { const v = qs.get(k); return v == null ? null : parseFloat(v); };
+  const pipx = num('pipx'), pipy = num('pipy'),
+        pipw = num('pipw'), piph = num('piph');
+  if (pipx != null || pipy != null || pipw != null || piph != null) {
+    setRect({
+      x: pipx != null ? pipx : null,
+      y: pipy != null ? pipy : null,
+      w: pipw != null ? pipw : null,
+      h: piph != null ? piph : null,
+    });
+  }
+  if (qs.get('pip') === '1') {
+    // Defer one tick so the v86 IIFE has finished setting up xterm.
+    setTimeout(show, 0);
+  }
+
+  window.termPip = { show, hide, toggle, set: setRect, getRect };
 })();
 </script>
 </body>
