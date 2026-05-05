@@ -2532,6 +2532,22 @@
       // an unterminated quote).
       const script = buildNetInitCmd();
       const lines = script.split('\n');
+
+      // ?postboot=<shell-command> URL parameter — runs after the standard
+      // init script. Useful for one-shot provisioning (e.g. installing
+      // tools, kicking off agents) without baking it into the snapshot.
+      // The value is URL-decoded and sent verbatim as a single shell line,
+      // so callers can chain with `&&` / pipes etc. Example:
+      //   ?postboot=wget%20-qO-%20https://linuxontab.com/local/claw-install.sh%20|%20sh%20%26%26%20claw
+      try {
+        const pb = new URLSearchParams(location.search).get('postboot');
+        if (pb && pb.trim()) {
+          // Mark the boundary so it's visible in the terminal scrollback.
+          lines.push("echo '[postboot] running ?postboot= command…'");
+          lines.push(pb);
+        }
+      } catch (_) {}
+
       let i = 0;
       const sendNext = () => {
         if (!emulator || i >= lines.length) return;
