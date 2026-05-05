@@ -2487,6 +2487,18 @@
           'echo "[dns] no unbound — relying on /etc/hosts seeds only" >&2; ' +
         'fi\n';
 
+      // Sync the wall clock. v86 inherits the snapshot's CMOS time, which
+      // can be years stale — TLS handshakes then fail with
+      // `certificate verify failed` (cert notBefore is in the future).
+      // rdate over TCP/37 to 1.1.1.1 is fast and reliable; ntpd -dnq is
+      // the fallback if rdate isn't built into busybox or TCP/37 is
+      // blocked. Both are best-effort: never block boot on time sync.
+      const timeSyncCmd =
+        '(rdate -s 1.1.1.1 2>/dev/null || ' +
+        'ntpd -dnq -p pool.ntp.org >/dev/null 2>&1) && ' +
+        'echo "[time] $(date -u +%FT%TZ)" || ' +
+        'echo "[time] sync failed — TLS may fail until clock is set" >&2\n';
+
       const restoreNetCmd =
         rootfsCmd +
         mount9pCmd +
@@ -2503,6 +2515,7 @@
         'printf "nameserver 1.1.1.1\\nnameserver 1.0.0.1\\n" > /etc/resolv.conf\n' +
         dohSeedCmd +
         dnsProxyCmd +
+        timeSyncCmd +
         // Re-create the `lot` tmux session if the snapshot was saved
         // before it was started (or it died). Defensive: snapshots from
         // before tmux integration won't have /usr/local/bin/lot.
@@ -2518,6 +2531,7 @@
         'printf "nameserver 1.1.1.1\\nnameserver 1.0.0.1\\n" > /etc/resolv.conf\n' +
         dohSeedCmd +
         dnsProxyCmd +
+        timeSyncCmd +
         'clear\n' + (setupCmd ? setupCmd + '\n' : '');
 
       return doRestore ? restoreNetCmd : freshBootCmd;
