@@ -1288,7 +1288,10 @@
         if (suffix) this._send(suffix);
         const job = c.job;
         clearTimeout(c.timer);
-        job.resolve({ stdout: c.output, exitCode });
+        // c.output is a binary string (one JS char per UTF-8 byte from
+        // _onByte). UTF-8 decode it now so callers get readable text
+        // instead of mojibake (Cyrillic/emoji/etc.).
+        job.resolve({ stdout: SerialVfs._utf8Decode(c.output), exitCode });
         this._next();
       } else {
         // Flush bytes that can't possibly be part of a marker yet. Use
@@ -1405,6 +1408,15 @@
 
     static _q(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
     static _dirname(p) { const i = String(p).lastIndexOf('/'); return i <= 0 ? '/' : p.slice(0, i); }
+    // Decode a binary string (one JS char per byte, code points 0\u2013255)
+    // into a real UTF-8 string. Used to convert serial output bytes to text.
+    static _utf8Decode(s) {
+      try {
+        const a = new Uint8Array(s.length);
+        for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i) & 0xff;
+        return SerialVfs._utf8Decoder.decode(a);
+      } catch (_) { return s; }
+    }
 
     async ls(path = '.') {
       const r = await this.exec(`ls -1A -- ${SerialVfs._q(path)} 2>/dev/null`);
@@ -1480,6 +1492,9 @@
       return r.stdout.trim();
     }
   }
+  // Shared TextDecoder for SerialVfs._utf8Decode (declared after class so the
+  // static helper can reference it via the class name without TDZ issues).
+  SerialVfs._utf8Decoder = new TextDecoder('utf-8', { fatal: false });
 
   const serialVfs = new SerialVfs();
   window.serialVfs = serialVfs;
@@ -1525,7 +1540,15 @@
   function sendGuestText(text) {
     if (!emulator) return false;
     const value = String(text || '');
-    for (let index = 0; index < value.length; index++) emulator.serial0_send(value[index]);
+    // UTF-8 encode so non-ASCII (e.g. Cyrillic, CJK, emoji) is sent as the
+    // correct multi-byte sequence. v86's serial0_send takes a single char
+    // and uses its low 8 bits as the byte to write — passing a JS string
+    // char with code point > 0xFF would truncate. Encoding to bytes first
+    // matches what a real terminal sends to the kernel tty.
+    const bytes = new TextEncoder().encode(value);
+    for (let i = 0; i < bytes.length; i++) {
+      emulator.serial0_send(String.fromCharCode(bytes[i]));
+    }
     markDirty();
     return true;
   }
