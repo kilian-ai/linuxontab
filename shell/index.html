@@ -852,6 +852,14 @@
 
   const setStatus = (msg, cls) => { statusEl.textContent = msg; statusEl.className = cls || 'hint'; };
 
+  // Render an ASCII progress bar like [████████░░░░░░░░░░░░] for the
+  // given percent (0-100). 20 cells, filled with U+2588 (full block).
+  function renderProgressBar(pct, width) {
+    const w = width || 20;
+    const filled = Math.max(0, Math.min(w, Math.round((pct / 100) * w)));
+    return '[' + '\u2588'.repeat(filled) + '\u2591'.repeat(w - filled) + ']';
+  }
+
   // Persist autosave toggle
   autosaveEl.checked = localStorage.getItem('v86.autosave') === '1';
   autosaveEl.onchange = () => {
@@ -1930,19 +1938,69 @@
       try {
         const r = await fetch(fetchUrl, { credentials: 'omit' });
         if (!r.ok) throw new Error('HTTP ' + r.status);
+        const total = parseInt(r.headers.get('content-length') || '0', 10);
+        const totalMB = total ? (total / 1048576).toFixed(1) : '?';
+        // Stream the body so we can report progress to the terminal +
+        // status bar as bytes arrive.
+        let received = 0;
+        let lastPct = -1;
+        let lastTermPct = -1;
+        const tStart = Date.now();
+        // Print a header line + an in-place progress line that we keep
+        // overwriting with \r. xterm.js renders \r as cursor-to-col-0,
+        // which gives us a single live-updating line in the terminal.
+        try {
+          term.writeln('');
+          term.writeln(`\x1b[36m[snapshot]\x1b[0m fetching ${totalMB} MB from ${new URL(opts.snapshotUrl).host}`);
+        } catch (_) {}
+        const reader = r.body.getReader();
+        const chunks = [];
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.length;
+          if (total) {
+            const pct = Math.floor((received / total) * 100);
+            if (pct !== lastPct) {
+              lastPct = pct;
+              setStatus(`fetching snapshot… ${pct}% (${(received/1048576).toFixed(1)}/${totalMB} MB)`);
+            }
+            // Throttle terminal updates to whole percent + 200 ms gaps
+            // so we don't spam the renderer.
+            if (pct !== lastTermPct) {
+              lastTermPct = pct;
+              const bar = renderProgressBar(pct);
+              const speed = (received / 1048576) / Math.max(0.1, (Date.now() - tStart) / 1000);
+              try {
+                term.write(`\r\x1b[2K\x1b[36m[snapshot]\x1b[0m ${bar} ${pct}% (${(received/1048576).toFixed(1)}/${totalMB} MB, ${speed.toFixed(1)} MB/s)`);
+              } catch (_) {}
+            }
+          } else {
+            setStatus(`fetching snapshot… ${(received/1048576).toFixed(1)} MB`);
+          }
+        }
+        try { term.writeln(''); term.writeln('\x1b[36m[snapshot]\x1b[0m decompressing…'); } catch (_) {}
+        // Concatenate chunks into a single buffer, then optionally
+        // gunzip via DecompressionStream.
+        const compressed = new Blob(chunks);
         const isGz = /\.gz(\?|#|$)/i.test(opts.snapshotUrl);
         if (isGz && typeof DecompressionStream === 'function') {
           const ds = new DecompressionStream('gzip');
-          const decompressed = r.body.pipeThrough(ds);
+          const decompressed = compressed.stream().pipeThrough(ds);
           remoteSnapBuffer = await new Response(decompressed).arrayBuffer();
         } else {
-          remoteSnapBuffer = await r.arrayBuffer();
+          remoteSnapBuffer = await compressed.arrayBuffer();
         }
+        try {
+          term.writeln(`\x1b[36m[snapshot]\x1b[0m restoring ${(remoteSnapBuffer.byteLength/1048576).toFixed(1)} MB into VM RAM…`);
+        } catch (_) {}
         doRestore = true;
         console.log('[boot] fetched hosted snapshot:',
           opts.snapshotUrl, '(' + remoteSnapBuffer.byteLength + ' bytes)');
       } catch (e) {
         console.warn('[boot] hosted snapshot fetch failed:', e);
+        try { term.writeln(`\r\n\x1b[33m[snapshot]\x1b[0m fetch failed: ${e.message} — booting fresh`); } catch (_) {}
         setStatus('snapshot fetch failed (' + e.message + ') — booting fresh', 'warn');
       }
     }
