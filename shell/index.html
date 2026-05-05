@@ -5554,7 +5554,18 @@
 </div>
 <script>
 (function () {
-  const DEFAULT_URL = 'https://linuxontab.com';
+  // ?browser=<url> URL parameter — overrides the default landing page
+  // for the Ctrl+Alt+F2 fullscreen browser. Applied on first show()
+  // (whether triggered by hotkey, ?pip=1, or window.fsBrowser.show()).
+  // Bare hostnames / search queries are normalized the same way as
+  // typing into the URL bar. Use ?browser=about:blank for a clean slate.
+  const QS_DEFAULT_URL = (() => {
+    try {
+      const v = new URLSearchParams(location.search).get('browser');
+      return v && v.trim() ? v.trim() : null;
+    } catch (_) { return null; }
+  })();
+  let DEFAULT_URL = QS_DEFAULT_URL || 'https://linuxontab.com';
   const overlay  = document.getElementById('fsbrowser');
   const urlInput = document.getElementById('fsbrowser-url');
   const frame    = document.getElementById('fsbrowser-frame');
@@ -5571,6 +5582,9 @@
     return 'https://duckduckgo.com/?q=' + encodeURIComponent(s);
   }
 
+  // Normalize the query-param value so users can pass bare hosts.
+  if (QS_DEFAULT_URL) DEFAULT_URL = normalizeUrl(QS_DEFAULT_URL);
+
   function show() {
     overlay.classList.add('show');
     overlay.setAttribute('aria-hidden', 'false');
@@ -5583,6 +5597,18 @@
   function hide() {
     overlay.classList.remove('show');
     overlay.setAttribute('aria-hidden', 'true');
+  }
+  // Programmatically navigate the browser frame. Also makes the new URL
+  // the "default" for subsequent first-show()s. Pass {show:true} to also
+  // open the overlay if it's currently hidden.
+  function setUrl(u, opts) {
+    const target = normalizeUrl(u);
+    DEFAULT_URL = target;
+    frame.src = target;
+    urlInput.value = target;
+    loaded = true;
+    if (opts && opts.show) show();
+    return target;
   }
   function toggleUrlBar() {
     overlay.classList.toggle('urlbar');
@@ -5642,7 +5668,7 @@
     pullFocusBack();
   });
   // Also expose a tiny global so console / other scripts can drive it.
-  window.fsBrowser = { show, hide, toggleUrlBar };
+  window.fsBrowser = { show, hide, toggleUrlBar, setUrl };
 })();
 </script>
 
