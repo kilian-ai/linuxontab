@@ -234,6 +234,27 @@
   #fsbrowser-frame {
     flex: 1; width: 100%; border: 0; background: #fff;
   }
+  /* Floating control strip — always clickable because it sits on top
+     of the iframe in z-order. Keeps users in control even when focus
+     is inside a cross-origin iframe (where keydown hotkeys can't fire
+     in the parent). */
+  #fsbrowser-fab {
+    position: absolute; top: 8px; right: 8px;
+    display: flex; gap: 4px; z-index: 2;
+    opacity: 0.55; transition: opacity 0.15s;
+  }
+  #fsbrowser-fab:hover { opacity: 1; }
+  #fsbrowser-fab button {
+    width: 28px; height: 28px; border-radius: 6px;
+    background: rgba(20, 24, 31, 0.85);
+    border: 1px solid #2a3240; color: #e2e8f0;
+    font: 14px/1 ui-monospace, Menlo, Consolas, monospace;
+    cursor: pointer; padding: 0;
+  }
+  #fsbrowser-fab button:hover { background: #1f2937; border-color: #4aa3ff; }
+  /* When the URL bar is visible, anchor the FAB below it so it doesn't
+     overlap the input. */
+  #fsbrowser.urlbar #fsbrowser-fab { top: 44px; }
 </style>
 </head>
 <body>
@@ -5436,6 +5457,10 @@
            autocomplete="off" placeholder="https://linuxontab.com">
     <span id="fsbrowser-hint">Enter to load · Ctrl+Alt+F1 hide bar · Ctrl+Alt+F3 close</span>
   </div>
+  <div id="fsbrowser-fab">
+    <button id="fsbrowser-fab-url"   title="toggle URL bar (Ctrl+Alt+F1)">☰</button>
+    <button id="fsbrowser-fab-close" title="close (Ctrl+Alt+F3)">✕</button>
+  </div>
   <iframe id="fsbrowser-frame"
           src="about:blank"
           credentialless
@@ -5513,6 +5538,26 @@
     else if (action === 'hide') hide();
     else if (action === 'urlbar') toggleUrlBar();
   }, true);
+
+  // Floating-button fallbacks: when the iframe has focus (clicked into
+  // a cross-origin page), keydown events fire inside that document and
+  // never reach this window — so the hotkeys silently stop working.
+  // The FAB buttons sit above the iframe in z-order and stay clickable.
+  document.getElementById('fsbrowser-fab-close').addEventListener('click', hide);
+  document.getElementById('fsbrowser-fab-url').addEventListener('click', toggleUrlBar);
+
+  // When the user clicks outside the iframe (e.g. our buttons or the
+  // URL bar), pull focus back to the parent so hotkeys work again.
+  // Also re-focus parent on window focus events (cmd-tab back, etc.).
+  function pullFocusBack() {
+    try { window.focus(); } catch (_) {}
+  }
+  overlay.addEventListener('mousedown', (e) => {
+    if (e.target === frame) return; // let iframe handle its own clicks
+    pullFocusBack();
+  });
+  // Also expose a tiny global so console / other scripts can drive it.
+  window.fsBrowser = { show, hide, toggleUrlBar };
 })();
 </script>
 </body>
