@@ -2785,15 +2785,77 @@
         }
       } catch (_) {}
 
-      let i = 0;
-      const sendNext = () => {
-        if (!emulator || i >= lines.length) return;
-        const line = lines[i++];
-        if (line.length) sendGuestText(line);
-        sendGuestText('\n');
-        setTimeout(sendNext, 60);
-      };
-      sendNext();
+      // Reassemble full script after postboot lines were appended.
+      const fullScript = lines.join('\n') + '\n';
+
+      // Guest-side execution path. Instead of typing the entire ~10 KB
+      // init script byte-by-byte through the UART (which overflows
+      // N_TTY_BUF=4096 on slow restores and silently drops bytes), write
+      // the script to the v86 9P share as `/.lot-init.sh`, then type a
+      // single short bootstrap line that mounts host9p and execs it.
+      //
+      // Benefits:
+      //   * Bootstrap line is ~150 chars — far below the TTY input
+      //     buffer, so it survives even an early-fired kicker on a
+      //     slow CPU.
+      //   * The script runs at native CPU speed (no 60ms inter-line
+      //     gaps) — full init is roughly half the wall time.
+      //   * Re-runnable: paste the bootstrap line again to reapply.
+      try {
+        const fs = emulator && emulator.fs9p;
+        if (fs && typeof emulator.create_file === 'function') {
+          // Ensure the script is at /.lot-init.sh on the 9P share root.
+          const fsPath = '/.lot-init.sh';
+          try {
+            const existing = fs.SearchPath(fsPath);
+            if (existing && existing.id !== -1 && existing.parentid !== -1) {
+              fs.Unlink(existing.parentid, existing.name);
+            }
+          } catch (_) {}
+          const u8 = new TextEncoder().encode(fullScript);
+          // create_file is async on some v86 builds; await it.
+          Promise.resolve(emulator.create_file(fsPath, u8)).then(() => {
+            try {
+              const sp = fs.SearchPath(fsPath);
+              if (sp && sp.id !== -1) {
+                const inode = fs.GetInode(sp.id);
+                inode.mode = (inode.mode & ~0o777) | 0o755;
+                const now = Math.floor(Date.now() / 1000);
+                inode.mtime = now; inode.ctime = now;
+              }
+            } catch (_) {}
+            // Bootstrap: mkdir mount point, mount host9p (idempotent),
+            // exec the script. Single line, single newline.
+            const bootstrap =
+              'mkdir -p /mnt/host 2>/dev/null; ' +
+              'grep -q " /mnt/host " /proc/mounts || ' +
+              'mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192,access=any host9p /mnt/host 2>/dev/null; ' +
+              'sh /mnt/host/.lot-init.sh\n';
+            sendGuestText(bootstrap);
+            console.log('[init] guest-side: wrote', u8.length, 'B to /.lot-init.sh, sent bootstrap');
+          }).catch(err => {
+            console.warn('[init] create_file failed, falling back to serial typing:', err);
+            serialFallback();
+          });
+          return;
+        }
+      } catch (e) {
+        console.warn('[init] 9P path failed, falling back to serial typing:', e);
+      }
+
+      serialFallback();
+
+      function serialFallback() {
+        let i = 0;
+        const sendNext = () => {
+          if (!emulator || i >= lines.length) return;
+          const line = lines[i++];
+          if (line.length) sendGuestText(line);
+          sendGuestText('\n');
+          setTimeout(sendNext, 60);
+        };
+        sendNext();
+      }
     }
 
     let promptLine = '';
