@@ -2104,6 +2104,32 @@
     currentMemMB = memMB;
     serialVfs._attach(emulator);
 
+    // ISOLINUX `boot:` autopilot. On fresh ISO boot v86 occasionally
+    // lands at the ISOLINUX prompt without auto-booting (the syslinux
+    // TIMEOUT countdown gets cancelled if any "key" event is bussed
+    // before the boot loader registers the keyboard, which can happen
+    // racily during emulator spin-up on slow tabs). The user then sees
+    // a `boot:` prompt that never advances.
+    //
+    // Fix: poll the VGA text framebuffer for "boot:" and tap Enter via
+    // the PS/2 keyboard if found. Only on fresh boot (snapshot restores
+    // skip ISOLINUX entirely). Self-cancels after 30s.
+    if (!doRestore) {
+      const isolinuxAutopilot = setInterval(() => {
+        try {
+          if (!emulator || !emulator.screen_adapter) return;
+          const lines = emulator.screen_adapter.get_text_screen() || [];
+          const txt = lines.map(l => (typeof l === 'string' ? l : '')).join('\n');
+          if (/boot:\s*$/m.test(txt) && /ISOLINUX/i.test(txt)) {
+            console.log('[boot] ISOLINUX prompt detected — sending Enter');
+            // 0x1C = scancode for Enter (make), 0x9C = release.
+            try { emulator.keyboard_send_scancodes([0x1C, 0x9C]); } catch (_) {}
+          }
+        } catch (_) {}
+      }, 1500);
+      setTimeout(() => clearInterval(isolinuxAutopilot), 30000);
+    }
+
     // ── 9P inode uid/gid sanitizer ──────────────────────────────────────────
     // v86's fs9p stores inode uid as whatever the kernel sent in Tattach's
     // n_uname field. Linux 9p with `access=any` sends ~0u (0xFFFFFFFF) as a
