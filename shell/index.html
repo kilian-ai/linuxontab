@@ -2944,18 +2944,46 @@
         if (kicked || netInited) return;
         kicked = true;
         console.log('[boot] restore kicker:', label);
-        setTimeout(() => { if (emulator) sendGuestText('\n'); }, 400);
-        if (!netInitTimer) {
-          netInitTimer = setTimeout(() => { netInitTimer = null; runNetInit(); }, 1800);
-        }
+        // Send wake-up newlines and only fire runNetInit AFTER we've
+        // observed the guest actually echoing serial output back. On a
+        // slow restore (large snapshot, throttled tab) the CPU may still
+        // be ramping up when our timers fire. If we stream the init
+        // script into a non-draining UART, bytes overflow and the script
+        // silently fails — leaving a bare prompt with no init.
+        const startBytes = byteCount;
+        let attempts = 0;
+        const tryKick = () => {
+          if (netInited) return;
+          attempts++;
+          try { sendGuestText('\n'); } catch (_) {}
+          // Wait 1.2s for the kernel to echo a prompt. If we see ANY
+          // serial activity after our \n, the CPU is alive — schedule
+          // runNetInit. Otherwise retry up to 15× (= ~18s extra grace).
+          setTimeout(() => {
+            if (netInited) return;
+            if (byteCount > startBytes) {
+              if (!netInitTimer) {
+                netInitTimer = setTimeout(() => { netInitTimer = null; runNetInit(); }, 1200);
+              }
+              return;
+            }
+            if (attempts < 15) {
+              tryKick();
+            } else {
+              console.warn('[boot] restore kicker: no serial activity after', attempts, 'attempts — forcing runNetInit anyway');
+              runNetInit();
+            }
+          }, 1200);
+        };
+        setTimeout(tryKick, 400);
       };
       // Primary: anchor to emulator-started (CPU actually running).
       try {
         emulator.add_listener('emulator-started', () => kick('emulator-started'));
       } catch (_) {}
-      // Belt-and-suspenders: 8s after construction, kick anyway. This is
-      // long enough to cover ~200 MB restore on slow hardware and short
-      // enough that a stuck guest still gets prodded.
+      // Belt-and-suspenders: 8s after construction, kick anyway. The
+      // kicker itself now waits for serial activity before running the
+      // init script, so an early fire here is safe.
       setTimeout(() => kick('timeout-8s'), 8000);
     }
 
