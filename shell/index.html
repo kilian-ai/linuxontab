@@ -2111,20 +2111,26 @@
     // racily during emulator spin-up on slow tabs). The user then sees
     // a `boot:` prompt that never advances.
     //
-    // Fix: poll the VGA text framebuffer for "boot:" and tap Enter via
-    // the PS/2 keyboard if found. Only on fresh boot (snapshot restores
-    // skip ISOLINUX entirely). Self-cancels after 30s.
+    // Strategy:
+    //   * Tap Enter periodically during the first 30s of boot. ISOLINUX
+    //     ignores extra Enter presses once it's loading the kernel, and
+    //     Linux init drops them on the floor — so an over-eager tap is
+    //     harmless. Sending Enter blindly avoids depending on the VGA
+    //     text framebuffer being in any particular state (graphics mode,
+    //     screen_adapter not yet wired, etc.).
+    //   * Self-cancels after 30s or as soon as the serial port emits its
+    //     first byte (= kernel is up, getty/agetty took over).
     if (!doRestore) {
+      let isolinuxTaps = 0;
       const isolinuxAutopilot = setInterval(() => {
         try {
-          if (!emulator || !emulator.screen_adapter) return;
-          const lines = emulator.screen_adapter.get_text_screen() || [];
-          const txt = lines.map(l => (typeof l === 'string' ? l : '')).join('\n');
-          if (/boot:\s*$/m.test(txt) && /ISOLINUX/i.test(txt)) {
-            console.log('[boot] ISOLINUX prompt detected — sending Enter');
-            // 0x1C = scancode for Enter (make), 0x9C = release.
-            try { emulator.keyboard_send_scancodes([0x1C, 0x9C]); } catch (_) {}
-          }
+          if (!emulator) { clearInterval(isolinuxAutopilot); return; }
+          // Stop if the kernel has started talking on the serial line.
+          if (byteCount > 0) { clearInterval(isolinuxAutopilot); return; }
+          isolinuxTaps++;
+          // 0x1C = Enter make, 0x9C = Enter break.
+          try { emulator.keyboard_send_scancodes([0x1C, 0x9C]); } catch (_) {}
+          if (isolinuxTaps === 1) console.log('[boot] ISOLINUX autopilot: tapping Enter until kernel speaks');
         } catch (_) {}
       }, 1500);
       setTimeout(() => clearInterval(isolinuxAutopilot), 30000);
