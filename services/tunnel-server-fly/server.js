@@ -175,18 +175,33 @@ class PortSession {
     // so each bridge has its own buffer; flushed on pair, dropped on close.
     this.guestBuffer = new WeakMap();
     this.BUFFER_MAX = 256;
-    this.proxyCalls = new Map();  // guest ws → { chunks, resetIdle, settle }
+    this.proxyCalls = new Map();  // guest ws → { feed, settle }
+    this.guestLastUsed = new WeakMap(); // guest ws → ts of last HTTP response complete
   }
 
   touch() { this.lastActivity = Date.now(); }
 
   // Pick a fresh, OPEN, unpaired, idle (no in-flight HTTP proxy) guest WS
   // for this port. Used by both addClient (TCP pairing) and httpProxy.
+  // Bridges idle in the pool >IDLE_BRIDGE_MS are preemptively closed:
+  // upstream (e.g. syncthing) may have closed the keep-alive TCP connection
+  // already, leaving websocat with a half-dead pipe. Better to force a
+  // fresh respawn than to send into a corpse.
   pickFreshGuest(port) {
     const pool = this.guestWs.get(port);
     if (!pool || !pool.size) return null;
+    const IDLE_BRIDGE_MS = 20000;
+    const now = Date.now();
     for (const ws of pool) {
-      if (ws.readyState === 1 && !this.pairs.has(ws) && !this.proxyCalls.has(ws)) return ws;
+      if (ws.readyState !== 1) continue;
+      if (this.pairs.has(ws) || this.proxyCalls.has(ws)) continue;
+      const lastUsed = this.guestLastUsed.get(ws);
+      if (lastUsed && (now - lastUsed) > IDLE_BRIDGE_MS) {
+        // Stale keep-alive — kick it. websocat respawn loop replaces it.
+        try { ws.close(1000, 'idle keep-alive eviction'); } catch (_) {}
+        continue;
+      }
+      return ws;
     }
     return null;
   }
@@ -203,7 +218,7 @@ class PortSession {
       const buf = isBinary ? data : Buffer.from(data);
       // Route to in-flight HTTP proxy call bound to this ws, if any.
       const call = this.proxyCalls.get(ws);
-      if (call) { call.chunks.push(buf); call.resetIdle(); return; }
+      if (call) { call.feed(buf); return; }
       // Forward to paired client if pair exists.
       const peer = this.pairs.get(ws);
       if (peer && peer.readyState === 1) {
@@ -461,12 +476,143 @@ setInterval(() => {
 
 // ── HTTP-over-WS proxy ─────────────────────────────────────────────────────
 
+// Streaming HTTP/1.1 response parser. Knows when a response is complete
+// based on Content-Length / Transfer-Encoding: chunked / status code, so
+// we can release the bridge back to the pool for the next request
+// (keep-alive) instead of burning it on every call.
+class HttpResponseParser {
+  constructor(method) {
+    this.method = method;
+    this.headBuf = Buffer.alloc(0);
+    this.headersDone = false;
+    this.status = 0;
+    this.rawHeaders = [];     // [name, value][] preserving original casing
+    this.headers = {};        // lowercase keys
+    this.bodyBytes = [];
+    this.expectedLen = -1;
+    this.chunked = false;
+    this.connectionClose = false;
+    this.complete = false;
+    this.error = null;
+    this.cbuf = Buffer.alloc(0);
+    this.chunkState = 'size'; // size | data | trailer
+    this.chunkRem = 0;
+  }
+  feed(data) {
+    if (this.complete || this.error) return;
+    if (!this.headersDone) {
+      this.headBuf = Buffer.concat([this.headBuf, data]);
+      let he = -1;
+      for (let i = 0; i + 3 < this.headBuf.length; i++) {
+        if (this.headBuf[i] === 13 && this.headBuf[i+1] === 10 &&
+            this.headBuf[i+2] === 13 && this.headBuf[i+3] === 10) { he = i; break; }
+      }
+      if (he < 0) return;
+      const headStr = this.headBuf.slice(0, he).toString('utf8');
+      const rest = this.headBuf.slice(he + 4);
+      this.headBuf = Buffer.alloc(0);
+      this._parseHeaders(headStr);
+      this.headersDone = true;
+      // RFC 7230: HEAD, 1xx, 204, 304 → no body.
+      if (this.method === 'HEAD' || this.status < 200 ||
+          this.status === 204 || this.status === 304) {
+        this.complete = true;
+        return;
+      }
+      if (rest.length) this._feedBody(rest);
+      return;
+    }
+    this._feedBody(data);
+  }
+  _parseHeaders(headStr) {
+    const lines = headStr.split('\r\n');
+    const sm = lines[0].match(/^HTTP\/\d\.\d\s+(\d+)/);
+    this.status = sm ? parseInt(sm[1], 10) : 502;
+    if (!sm) { this.error = 'bad status line'; return; }
+    for (let i = 1; i < lines.length; i++) {
+      const m = lines[i].match(/^([^:]+):\s*(.*)$/);
+      if (!m) continue;
+      const k = m[1].toLowerCase();
+      this.rawHeaders.push([m[1], m[2]]);
+      this.headers[k] = m[2];
+      if (k === 'content-length') {
+        const n = parseInt(m[2], 10);
+        if (!isNaN(n) && n >= 0) this.expectedLen = n;
+      } else if (k === 'transfer-encoding' && /chunked/i.test(m[2])) {
+        this.chunked = true;
+      } else if (k === 'connection' && /close/i.test(m[2])) {
+        this.connectionClose = true;
+      }
+    }
+  }
+  _feedBody(data) {
+    if (this.chunked) { this._feedChunked(data); return; }
+    if (this.expectedLen >= 0) {
+      this.bodyBytes.push(data);
+      const total = this.bodyBytes.reduce((n, c) => n + c.length, 0);
+      if (total >= this.expectedLen) {
+        // Trim any over-read (shouldn't happen on a single bridge but be safe)
+        if (total > this.expectedLen) {
+          const last = this.bodyBytes[this.bodyBytes.length - 1];
+          const extra = total - this.expectedLen;
+          this.bodyBytes[this.bodyBytes.length - 1] = last.slice(0, last.length - extra);
+        }
+        this.complete = true;
+      }
+      return;
+    }
+    // No length, not chunked → must read until close. Bridge isn't reusable.
+    this.bodyBytes.push(data);
+    this.connectionClose = true;
+  }
+  _feedChunked(data) {
+    this.cbuf = Buffer.concat([this.cbuf, data]);
+    while (this.cbuf.length > 0 && !this.complete) {
+      if (this.chunkState === 'size') {
+        let nl = -1;
+        for (let i = 0; i + 1 < this.cbuf.length; i++) {
+          if (this.cbuf[i] === 13 && this.cbuf[i+1] === 10) { nl = i; break; }
+        }
+        if (nl < 0) return;
+        const sizeLine = this.cbuf.slice(0, nl).toString('ascii').split(';')[0].trim();
+        const sz = parseInt(sizeLine, 16);
+        if (isNaN(sz)) { this.error = 'bad chunk size'; return; }
+        this.cbuf = this.cbuf.slice(nl + 2);
+        if (sz === 0) { this.chunkState = 'trailer'; }
+        else { this.chunkRem = sz; this.chunkState = 'data'; }
+      } else if (this.chunkState === 'data') {
+        const take = Math.min(this.chunkRem, this.cbuf.length);
+        if (take > 0) {
+          this.bodyBytes.push(this.cbuf.slice(0, take));
+          this.cbuf = this.cbuf.slice(take);
+          this.chunkRem -= take;
+        }
+        if (this.chunkRem === 0) {
+          if (this.cbuf.length < 2) return;
+          this.cbuf = this.cbuf.slice(2);
+          this.chunkState = 'size';
+        }
+      } else { // trailer
+        let nl = -1;
+        for (let i = 0; i + 1 < this.cbuf.length; i++) {
+          if (this.cbuf[i] === 13 && this.cbuf[i+1] === 10) { nl = i; break; }
+        }
+        if (nl < 0) return;
+        const line = this.cbuf.slice(0, nl);
+        this.cbuf = this.cbuf.slice(nl + 2);
+        if (line.length === 0) { this.complete = true; return; }
+        // ignore trailer headers
+      }
+    }
+  }
+  body() { return Buffer.concat(this.bodyBytes); }
+  canReuse() { return !this.connectionClose && !this.error; }
+}
+
 async function httpProxy(req, res, session, port, guestPath) {
-  // Wait for an idle bridge in the pool. Each HTTP call burns one bridge
-  // (HTTP Connection: close → TCP FIN → WS close → websocat exits + respawn),
-  // so a burst of N concurrent requests on a pool of N bridges leaves the
-  // (N+1)th waiting for one to come back. Guest respawn is usually <500ms
-  // but can spike on slow guests (v86, WASM Linux); 8s gives headroom.
+  // Wait for an idle bridge in the pool. With keep-alive, bridges survive
+  // multiple requests, so the pool only needs to drain on respawn (e.g.
+  // upstream keep-alive timeout, server hiccup). Wait up to 8s.
   const RECONNECT_WAIT_MS = 8000;
   const waitStart = Date.now();
   let guestWs = null;
@@ -481,9 +627,6 @@ async function httpProxy(req, res, session, port, guestPath) {
     }
     await new Promise(r => setTimeout(r, 100));
   }
-  // Note: with the multi-pair design, TCP clients on this port have their
-  // own dedicated bridges. The HTTP proxy just dequeues an unpaired bridge,
-  // so it never collides with active SSH/SFTP/etc. sessions.
 
   const method = req.method;
   let bodyBytes = null;
@@ -496,93 +639,87 @@ async function httpProxy(req, res, session, port, guestPath) {
   const hdrs = [];
   hdrs.push(`${method} ${guestPath} HTTP/1.1`);
   hdrs.push(`Host: localhost:${port}`);
-  hdrs.push('Connection: close');
+  hdrs.push('Connection: keep-alive');
   hdrs.push('User-Agent: traits-tunnel-proxy/1');
-  for (const h of ['accept', 'accept-encoding', 'range', 'content-type', 'cache-control']) {
+  for (const h of ['accept', 'accept-encoding', 'range', 'content-type', 'cache-control', 'cookie', 'authorization', 'x-csrf-token']) {
     const v = req.headers[h];
     if (v) hdrs.push(`${h}: ${v}`);
+  }
+  // Forward Syncthing's X-API-Key + similar custom headers
+  for (const h of Object.keys(req.headers)) {
+    if (h.startsWith('x-') && !h.startsWith('x-forwarded-') && h !== 'x-csrf-token') {
+      hdrs.push(`${h}: ${req.headers[h]}`);
+    }
   }
   if (bodyBytes) hdrs.push(`Content-Length: ${bodyBytes.length}`);
   const reqHead = Buffer.from(hdrs.join('\r\n') + '\r\n\r\n');
   const reqBytes = bodyBytes ? Buffer.concat([reqHead, bodyBytes]) : reqHead;
 
-  const chunks = [];
+  const parser = new HttpResponseParser(method);
   let settle;
   const done = new Promise(r => { settle = r; });
-  let idleTimer;
-  const IDLE_MS = 1500;
-  const resetIdle = () => { clearTimeout(idleTimer); idleTimer = setTimeout(() => settle('idle'), IDLE_MS); };
-  // Bind this call to the specific bridge we picked. Keying by ws (not port)
-  // lets concurrent requests on the same port use different bridges from the
-  // pool without overwriting each other's response state.
-  session.proxyCalls.set(guestWs, { chunks, resetIdle, settle });
+  let firstByte = false;
+  let firstByteTimer = setTimeout(() => settle('no-headers'), 30000);
+  let overallTimer = setTimeout(() => settle('timeout'), 90000);
+
+  session.proxyCalls.set(guestWs, {
+    feed: (buf) => {
+      if (!firstByte) { firstByte = true; clearTimeout(firstByteTimer); }
+      try { parser.feed(buf); }
+      catch (e) { settle('parse-error'); return; }
+      if (parser.error) { settle('parse-error'); return; }
+      if (parser.complete) { settle('done'); }
+    },
+    settle,
+  });
 
   try { guestWs.send(reqBytes, { binary: true }); }
   catch (_) {
     session.proxyCalls.delete(guestWs);
+    clearTimeout(firstByteTimer); clearTimeout(overallTimer);
+    try { guestWs.close(1011, 'send failed'); } catch (_) {}
     cors(res);
     res.writeHead(502);
     res.end('failed to send to guest');
     return;
   }
-  resetIdle();
 
-  const timer = setTimeout(() => settle('timeout'), 12000);
-  await done;
-  clearTimeout(timer);
-  clearTimeout(idleTimer);
+  const result = await done;
+  clearTimeout(firstByteTimer);
+  clearTimeout(overallTimer);
   session.proxyCalls.delete(guestWs);
-  // The guest's websocat already closes this bridge after HTTP
-  // Connection: close, but proactively close it here too so the
-  // server-side pool entry is gone before the next pickGuest() call —
-  // avoids picking a half-dead bridge that's mid-FIN.
-  try { guestWs.close(1000, 'http call complete'); } catch (_) {}
 
-  const total = chunks.reduce((n, c) => n + c.length, 0);
-  if (!total) {
+  // Bridge fate: reuse iff the response framed cleanly AND upstream
+  // didn't say `Connection: close`. Otherwise close so websocat respawns.
+  const reuse = result === 'done' && parser.canReuse() && guestWs.readyState === 1;
+  if (reuse) {
+    session.guestLastUsed.set(guestWs, Date.now());
+  } else {
+    try { guestWs.close(1000, 'http call complete'); } catch (_) {}
+  }
+
+  if (result !== 'done') {
     cors(res);
     res.writeHead(504);
-    res.end('no response from guest');
+    res.end(`upstream ${result}`);
     return;
   }
-  const buf = Buffer.concat(chunks, total);
-  let he = -1;
-  for (let i = 0; i + 3 < buf.length; i++) {
-    if (buf[i] === 13 && buf[i + 1] === 10 && buf[i + 2] === 13 && buf[i + 3] === 10) { he = i; break; }
-  }
-  if (he < 0) {
-    cors(res);
-    res.writeHead(502);
-    res.end('bad http response from guest');
-    return;
-  }
-  const headStr = buf.slice(0, he).toString('utf8');
-  const body = buf.slice(he + 4);
-  const lines = headStr.split('\r\n');
-  const statusMatch = lines[0].match(/^HTTP\/\d\.\d\s+(\d+)\s*(.*)$/);
-  const status = statusMatch ? parseInt(statusMatch[1], 10) : 502;
 
   const outHeaders = {};
-  for (let i = 1; i < lines.length; i++) {
-    const m = lines[i].match(/^([^:]+):\s*(.*)$/);
-    if (!m) continue;
-    const k = m[1].toLowerCase();
-    if (['connection', 'transfer-encoding', 'keep-alive', 'content-length'].includes(k)) continue;
-    // NOTE: do NOT strip 'content-encoding'. The body bytes from the
-    // guest are still gzip/deflate-encoded; the browser needs the
-    // header to know to decompress. Stripping produces garbled output
-    // (Syncthing, Grafana, anything with gzip enabled).
-    // Drop any CORS headers from the guest — we set our own below. Letting
-    // the guest emit e.g. `Access-Control-Allow-Origin: *` on top of ours
-    // produces the duplicate-value error that browsers reject.
-    if (k.startsWith('access-control-')) continue;
-    outHeaders[m[1]] = m[2];
+  for (const [k, v] of parser.rawHeaders) {
+    const lc = k.toLowerCase();
+    if (['connection', 'transfer-encoding', 'keep-alive', 'content-length'].includes(lc)) continue;
+    // NOTE: do NOT strip 'content-encoding'. Body bytes from the guest
+    // are still gzip/deflate-encoded; the browser needs the header to
+    // know to decompress.
+    if (lc.startsWith('access-control-')) continue;
+    outHeaders[k] = v;
   }
   outHeaders['access-control-allow-origin'] = '*';
   outHeaders['access-control-expose-headers'] = '*';
-  res.writeHead(status, outHeaders);
+  res.writeHead(parser.status, outHeaders);
   if (method === 'HEAD') res.end();
-  else res.end(body);
+  else res.end(parser.body());
 }
 
 // ── HTTP server ────────────────────────────────────────────────────────────
