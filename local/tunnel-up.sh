@@ -106,23 +106,47 @@ fi
 if [ "${DO_RESET:-0}" = "0" ] && [ -s "$TUNNEL_CODE_FILE" ]; then
     cached_code=$(head -1 "$TUNNEL_CODE_FILE")
     if [ -n "$cached_code" ]; then
+        # First check that local bridges are actually alive. The relay's
+        # 'active:true' lingers long after websocat exits (idle timeout
+        # ~minutes, but bridges can be killed in seconds), so trusting
+        # the relay alone causes the 'already running' false-positive
+        # after `killall websocat`.
+        local_alive=0
+        if [ -s "$TUNNEL_PID_FILE" ]; then
+            while IFS= read -r pid; do
+                [ -n "$pid" ] || continue
+                if kill -0 "$pid" 2>/dev/null; then
+                    local_alive=$((local_alive + 1))
+                fi
+            done < "$TUNNEL_PID_FILE"
+        fi
         cached_status=$(curl -sS --max-time 4 \
             "${TUNNEL_BASE:-https://linuxontab-tunnel.fly.dev}/port/status?code=$cached_code" \
             2>/dev/null)
         case "$cached_status" in
             *'"active":true'*)
-                echo "[tunnel] already running — pairing code: $cached_code"
-                echo "[tunnel] pid file: $TUNNEL_PID_FILE"
-                echo "[tunnel] to restart: $0 --new"
-                echo "[tunnel] to stop:    $0 --reset"
-                exit 0
+                if [ "$local_alive" -gt 0 ]; then
+                    echo "[tunnel] already running — pairing code: $cached_code"
+                    echo "[tunnel] pid file: $TUNNEL_PID_FILE"
+                    echo "[tunnel] to restart: tunnel-up.sh --new"
+                    echo "[tunnel] to stop:    tunnel-up.sh --reset"
+                    exit 0
+                fi
+                echo "[tunnel] cached code $cached_code registered on relay but local bridges dead — restarting"
+                kill_prior_processes
+                rm -f "$TUNNEL_CODE_FILE"
+                # Fall through to fresh start.
+                ;;
+            *)
+                echo "[tunnel] cached code $cached_code no longer active — starting fresh"
                 ;;
         esac
-        echo "[tunnel] cached code $cached_code no longer active — starting fresh"
         # Cached but inactive (relay forgot, container reboot, etc.):
         # kill any orphaned bridges from that session before continuing.
-        kill_prior_processes
-        rm -f "$TUNNEL_CODE_FILE"
+        if [ -s "$TUNNEL_CODE_FILE" ]; then
+            kill_prior_processes
+            rm -f "$TUNNEL_CODE_FILE"
+        fi
     fi
 fi
 
