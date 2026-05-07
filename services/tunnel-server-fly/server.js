@@ -567,7 +567,11 @@ async function httpProxy(req, res, session, port, guestPath) {
     const m = lines[i].match(/^([^:]+):\s*(.*)$/);
     if (!m) continue;
     const k = m[1].toLowerCase();
-    if (['connection', 'transfer-encoding', 'keep-alive', 'content-length', 'content-encoding'].includes(k)) continue;
+    if (['connection', 'transfer-encoding', 'keep-alive', 'content-length'].includes(k)) continue;
+    // NOTE: do NOT strip 'content-encoding'. The body bytes from the
+    // guest are still gzip/deflate-encoded; the browser needs the
+    // header to know to decompress. Stripping produces garbled output
+    // (Syncthing, Grafana, anything with gzip enabled).
     // Drop any CORS headers from the guest — we set our own below. Letting
     // the guest emit e.g. `Access-Control-Allow-Origin: *` on top of ours
     // produces the duplicate-value error that browsers reject.

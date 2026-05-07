@@ -492,7 +492,10 @@ export class PortSession {
       if (!m) continue;
       const k = m[1].toLowerCase();
       // Skip hop-by-hop + length fields (Response recomputes them).
-      if (['connection', 'transfer-encoding', 'keep-alive', 'content-length', 'content-encoding'].includes(k)) continue;
+      if (['connection', 'transfer-encoding', 'keep-alive', 'content-length'].includes(k)) continue;
+      // NOTE: do NOT strip 'content-encoding'. The body bytes from the
+      // guest are still gzip/deflate-encoded; the browser needs the
+      // header to know to decompress. Stripping produces garbled output.
       try { outHeaders.append(m[1], m[2]); } catch (_) {}
     }
     outHeaders.set('access-control-allow-origin', '*');
