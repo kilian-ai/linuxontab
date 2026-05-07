@@ -26,6 +26,11 @@
   :root { color-scheme: dark; }
   html,body { margin:0; padding:0; background:#0b0d10; color:#d5d8dc; font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; height:100%; }
   #wrap { display:flex; flex-direction:column; height:100vh; position:relative; }
+  #promo { padding:3px 10px; background:linear-gradient(90deg,#0f1216,#161a1f 40%,#0f1216); border-bottom:1px solid #1f242b; font-size:11px; color:#7a828c; display:flex; align-items:center; gap:8px; letter-spacing:.02em; }
+  #promo .dot { width:5px; height:5px; border-radius:50%; background:#f59e0b; box-shadow:0 0 6px #f59e0b88; flex:none; }
+  #promo a { color:#cbd1d9; text-decoration:none; border-bottom:1px dotted #3a424d; }
+  #promo a:hover { color:#fff; border-bottom-color:#7a828c; }
+  #promo .muted { color:#5b626c; }
   #bar { padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   #bar b { color:#fff; }
   #bar select, #bar button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 8px; font:inherit; cursor:pointer; }
@@ -304,6 +309,11 @@
 </head>
 <body>
 <div id="wrap">
+  <div id="promo">
+    <span class="dot" aria-hidden="true"></span>
+    <span><a href="https://getclaw.site" target="_blank" rel="noopener">claw</a> <span class="muted">— a POSIX shell agent harness. AI tools, your terminal, zero glue.</span></span>
+    <span class="muted" style="margin-left:auto">getclaw.site</span>
+  </div>
   <div id="bar">
     <b>v86</b>
     <label title="snapshot to boot/restore. Fresh-boot entries (★) start the ISO clean.">snapshot:
