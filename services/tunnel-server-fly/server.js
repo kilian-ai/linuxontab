@@ -495,7 +495,7 @@ async function httpProxy(req, res, session, port, guestPath) {
 
   const hdrs = [];
   hdrs.push(`${method} ${guestPath} HTTP/1.1`);
-  hdrs.push('Host: guest.tunnel.local');
+  hdrs.push(`Host: localhost:${port}`);
   hdrs.push('Connection: close');
   hdrs.push('User-Agent: traits-tunnel-proxy/1');
   for (const h of ['accept', 'accept-encoding', 'range', 'content-type', 'cache-control']) {
