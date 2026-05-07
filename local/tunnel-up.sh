@@ -654,13 +654,15 @@ for PORT in $PORTS; do
     # protocols — Filezilla SFTP opens 2+ concurrent SSH connections by
     # default for parallel transfers, and each one needs its own bridge.
     #
-    # Default 4 keeps a healthy standby buffer for typical interactive use
-    # (ssh + 2 sftp transfers + 1 spare). Each bridge consumed by a client
-    # is replaced by the inner respawn loop below within ~100ms.
+    # Default 8 keeps a healthy standby buffer for typical interactive use
+    # AND HTTP-over-WS bursts. The Syncthing GUI alone fires ~10 parallel
+    # /rest/* polls on every page load — pool sizes <8 cause visible queue
+    # stalls because each HTTP call burns one bridge (Connection: close →
+    # WS close → respawn ~1s).
     #
     # Override with TUNNEL_BRIDGES_PER_PORT=N if you expect many parallel
     # clients per port (HTTP burst, large parallel rsync, many SFTP slots).
-    POOL_SIZE="${TUNNEL_BRIDGES_PER_PORT:-4}"
+    POOL_SIZE="${TUNNEL_BRIDGES_PER_PORT:-8}"
     n=0
     while [ "$n" -lt "$POOL_SIZE" ]; do
         n=$((n+1))
