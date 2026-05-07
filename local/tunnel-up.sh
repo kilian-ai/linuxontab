@@ -805,10 +805,37 @@ STATUS_MAX_TIME="${TUNNEL_STATUS_MAX_TIME:-10}"
 
         # Probe active endpoint first; if it claims the code is gone (or
         # is unreachable), also probe the fallback before declaring loss.
+        #
+        # IMPORTANT: only re-register on CONFIRMED session loss. An empty
+        # response (curl timeout / Fly cold start / network blip) is NOT
+        # the same as the relay forgetting our code — re-registering on
+        # transient errors creates churn that can interfere with active
+        # HTTP-over-WS sessions and burns up active bridges.
         STATUS=$(check_status "$active_base")
         case "$STATUS" in
             *'"active":true'*) continue ;;
         esac
+        # Treat empty / non-JSON / network-error responses as transient.
+        case "$STATUS" in
+            *'"active":false'*|*'code not found'*) ;;  # confirmed loss → fall through
+            *)
+                # Try fallback before declaring loss.
+                if [ -n "$fallback_base" ]; then
+                    ALT_STATUS=$(check_status "$fallback_base")
+                    case "$ALT_STATUS" in
+                        *'"active":true'*)
+                            echo "[tunnel] reclaim: $CODE active on fallback ($fallback_base) — switching"
+                            tmp="$active_base"; active_base="$fallback_base"; fallback_base="$tmp"
+                            continue
+                            ;;
+                    esac
+                fi
+                # No confirmed loss from either endpoint — assume transient.
+                echo "[tunnel] reclaim: $CODE status check transient (resp=${STATUS:-<empty>}) — skipping re-register"
+                continue
+                ;;
+        esac
+
         if [ -n "$fallback_base" ]; then
             ALT_STATUS=$(check_status "$fallback_base")
             case "$ALT_STATUS" in
