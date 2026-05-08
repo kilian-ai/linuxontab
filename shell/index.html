@@ -5401,6 +5401,33 @@
   }
   // Reconcile: for each enabled+expose port, claim/refresh a slot.
   // For each existing assignment that's NOT in the wanted set, release it.
+  // Cached DoH lookup so the exposed-line can show host [ip]:port.
+  // Cloudflare DoH supports JSON via the application/dns-json accept header.
+  const tnHostIpCache = new Map(); // host -> { ip, expiresAt }
+  async function tnResolveHostIp(host) {
+    if (!host) return null;
+    const now = Date.now();
+    const hit = tnHostIpCache.get(host);
+    if (hit && hit.expiresAt > now) return hit.ip;
+    try {
+      const ctrl = new AbortController();
+      const tm = setTimeout(() => ctrl.abort(), 4000);
+      const r = await fetch(
+        'https://relay.linuxontab.com/dns-query?name=' + encodeURIComponent(host) + '&type=A',
+        { headers: { accept: 'application/dns-json' }, signal: ctrl.signal }
+      );
+      clearTimeout(tm);
+      if (!r.ok) return null;
+      const j = await r.json();
+      const a = (j.Answer || []).find(x => x.type === 1 && /^\d+\.\d+\.\d+\.\d+$/.test(x.data));
+      const ip = a ? a.data : null;
+      if (ip) tnHostIpCache.set(host, { ip, expiresAt: now + 5 * 60 * 1000 });
+      return ip;
+    } catch (_) {
+      return null;
+    }
+  }
+
   async function tnSyncExposures(code, registeredPorts) {
     if (!code) return null;
     const cfg = tnLoadPorts();
@@ -5550,22 +5577,34 @@
             }
             exposeEl.style.display = '';
             exposeEl.className = 'tn-meta tn-relay-ok';
-            const lines = list.map(a =>
-              '<a href=\"#\" data-host=\"' + a.host + '\" data-port=\"' + a.publicPort +
-              '\" style=\"color:#facc15;text-decoration:none\" ' +
-              'title=\"click to copy\">' +
-              a.host + ':' + a.publicPort + '</a> → guest:' + a.port
-            );
-            exposeEl.innerHTML = 'exposed: ' + lines.join(' &nbsp; ');
-            exposeEl.querySelectorAll('a').forEach(a => {
-              a.onclick = (ev) => {
-                ev.preventDefault();
-                const txt = a.dataset.host + ':' + a.dataset.port;
-                try {
-                  navigator.clipboard.writeText(txt);
-                  tnLog('copied: ' + txt, 'ok');
-                } catch (_) {}
-              };
+            // Resolve all distinct hosts in parallel; render once we have IPs
+            // (or after a short fallback if DoH is slow). Each line ends up
+            // looking like:  host [1.2.3.4]:6667 → guest:6667
+            const hosts = [...new Set(list.map(a => a.host))];
+            Promise.all(hosts.map(h => tnResolveHostIp(h))).then(() => {
+              const lines = list.map(a => {
+                const ip = tnHostIpCache.get(a.host);
+                const ipStr = (ip && ip.ip) ? ' [' + ip.ip + ']' : '';
+                const copyTxt = a.host + ':' + a.publicPort;
+                return (
+                  '<a href="#" data-copy="' + copyTxt + '"' +
+                  ' style="color:#facc15;text-decoration:none"' +
+                  ' title="click to copy ' + copyTxt + '">' +
+                  a.host + ipStr + ':' + a.publicPort + '</a>' +
+                  ' → guest:' + a.port
+                );
+              });
+              exposeEl.innerHTML = 'exposed: ' + lines.join(' &nbsp; ');
+              exposeEl.querySelectorAll('a').forEach(el => {
+                el.onclick = (ev) => {
+                  ev.preventDefault();
+                  const txt = el.dataset.copy;
+                  try {
+                    navigator.clipboard.writeText(txt);
+                    tnLog('copied: ' + txt, 'ok');
+                  } catch (_) {}
+                };
+              });
             });
           }).catch(() => {});
         }
