@@ -604,7 +604,7 @@ class HttpResponseParser {
   canReuse() { return !this.connectionClose && !this.error; }
 }
 
-async function httpProxy(req, res, session, port, guestPath) {
+async function httpProxy(req, res, session, port, guestPath, code) {
   const method = req.method;
   let bodyBytes = null;
   if (method !== 'GET' && method !== 'HEAD') {
@@ -742,6 +742,22 @@ async function httpProxy(req, res, session, port, guestPath) {
   }
 
   const outHeaders = {};
+  // Prefix all relative/localhost-pointing redirects with the proxy path so
+  // the browser stays inside the tunnel (otherwise Syncthing's Location:
+  // http://localhost:8384/ kicks the user out to a dead localhost URL).
+  const proxyPrefix = code ? `/port/http/${code}/${port}` : '';
+  const rewriteLocation = (val) => {
+    if (!val || !proxyPrefix) return val;
+    let s = String(val);
+    // Absolute URL pointing at localhost / 127.0.0.1 (any port) → strip origin
+    s = s.replace(/^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?/i, '');
+    if (s.startsWith('/')) {
+      // Avoid double-prefix if already proxied (defensive)
+      if (s.startsWith(proxyPrefix + '/') || s === proxyPrefix) return s;
+      return proxyPrefix + s;
+    }
+    return val;
+  };
   for (const [k, v] of parser.rawHeaders) {
     const lc = k.toLowerCase();
     if (['connection', 'transfer-encoding', 'keep-alive', 'content-length'].includes(lc)) continue;
@@ -749,6 +765,10 @@ async function httpProxy(req, res, session, port, guestPath) {
     // are still gzip/deflate-encoded; the browser needs the header to
     // know to decompress.
     if (lc.startsWith('access-control-')) continue;
+    if (lc === 'location' || lc === 'content-location') {
+      outHeaders[k] = rewriteLocation(v);
+      continue;
+    }
     outHeaders[k] = v;
   }
   outHeaders['access-control-allow-origin'] = '*';
@@ -834,7 +854,7 @@ const server = http.createServer(async (req, res) => {
     const guestPath = (slash2 < 0 ? '/' : '/' + afterCode.slice(slash2 + 1)) + (url.search || '');
     const s = getSession(code);
     if (!s) { cors(res); res.writeHead(404); res.end('code not found'); return; }
-    return httpProxy(req, res, s, port, guestPath);
+    return httpProxy(req, res, s, port, guestPath, code);
   }
 
   cors(res);
