@@ -693,10 +693,18 @@ async function httpProxy(req, res, session, port, guestPath) {
     return;
   }
 
+  const t0 = Date.now();
   const result = await done;
   clearTimeout(firstByteTimer);
   clearTimeout(overallTimer);
   session.proxyCalls.delete(guestWs);
+  const dur = Date.now() - t0;
+  if (result !== 'done' || dur > 5000 || parser.status >= 400) {
+    console.log(`[httpProxy] ${method} ${guestPath} port=${port} → ` +
+      `result=${result} status=${parser.status} dur=${dur}ms ` +
+      `bodyLen=${parser.bodyBytes.reduce((n,c)=>n+c.length,0)} ` +
+      `reuse=${result === 'done' && parser.canReuse() && guestWs.readyState === 1}`);
+  }
 
   // Bridge fate: reuse iff the response framed cleanly AND upstream
   // didn't say `Connection: close`. Otherwise close so websocat respawns.

@@ -776,7 +776,12 @@ RECLAIM_TRIES="${TUNNEL_RECLAIM_TRIES:-3}"
 # auto-stop. The previous 8s budget guaranteed a timeout in that window.
 RECLAIM_CONNECT_TIMEOUT="${TUNNEL_RECLAIM_CONNECT_TIMEOUT:-10}"
 RECLAIM_MAX_TIME="${TUNNEL_RECLAIM_MAX_TIME:-30}"
-STATUS_MAX_TIME="${TUNNEL_STATUS_MAX_TIME:-10}"
+# Generous status timeout: when v86 tab is backgrounded the browser
+# throttles JS timers so even a fast HTTP call can take 20-30s wall time
+# from the guest's perspective. Tight timeouts here cause spurious
+# 'transient' loops every 20s.
+STATUS_MAX_TIME="${TUNNEL_STATUS_MAX_TIME:-30}"
+STATUS_CONNECT_TIMEOUT="${TUNNEL_STATUS_CONNECT_TIMEOUT:-15}"
 (
     trap '' HUP
     # Track which endpoint last succeeded so reclaim sticks to a working
@@ -787,9 +792,13 @@ STATUS_MAX_TIME="${TUNNEL_STATUS_MAX_TIME:-10}"
 
     check_status() {
         # $1 = base url. Echos curl body, returns curl exit.
-        curl -sS --connect-timeout 5 --max-time "$STATUS_MAX_TIME" \
+        curl -sS --connect-timeout "$STATUS_CONNECT_TIMEOUT" \
+            --max-time "$STATUS_MAX_TIME" \
             "$1/port/status?code=$CODE" 2>/dev/null
     }
+    # Track consecutive transient failures so we only log once per streak
+    # (avoids spamming the guest console every 20s when v86 is throttled).
+    transient_streak=0
     do_register() {
         # $1 = base url. Echos response (or curl error). Returns curl exit.
         curl -sS \
@@ -813,7 +822,7 @@ STATUS_MAX_TIME="${TUNNEL_STATUS_MAX_TIME:-10}"
         # HTTP-over-WS sessions and burns up active bridges.
         STATUS=$(check_status "$active_base")
         case "$STATUS" in
-            *'"active":true'*) continue ;;
+            *'"active":true'*) transient_streak=0; continue ;;
         esac
         # Treat empty / non-JSON / network-error responses as transient.
         case "$STATUS" in
@@ -831,7 +840,10 @@ STATUS_MAX_TIME="${TUNNEL_STATUS_MAX_TIME:-10}"
                     esac
                 fi
                 # No confirmed loss from either endpoint — assume transient.
-                echo "[tunnel] reclaim: $CODE status check transient (resp=${STATUS:-<empty>}) — skipping re-register"
+                transient_streak=$((transient_streak + 1))
+                if [ "$transient_streak" = 1 ] || [ "$((transient_streak % 30))" = 0 ]; then
+                    echo "[tunnel] reclaim: $CODE status check transient (resp=${STATUS:-<empty>}, streak=$transient_streak) — skipping re-register"
+                fi
                 continue
                 ;;
         esac
