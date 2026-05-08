@@ -190,7 +190,12 @@ class PortSession {
   pickFreshGuest(port) {
     const pool = this.guestWs.get(port);
     if (!pool || !pool.size) return null;
-    const IDLE_BRIDGE_MS = 20000;
+    // Idle eviction threshold: must be longer than any reasonable upstream
+    // keep-alive timeout, otherwise we kick perfectly healthy bridges
+    // mid-session. Syncthing default keep-alive is 75s; nginx default
+    // is 75s; node http default is 5s but most app servers set higher.
+    // 120s is a safe ceiling — bridges idle that long are likely dead.
+    const IDLE_BRIDGE_MS = 120000;
     const now = Date.now();
     for (const ws of pool) {
       if (ws.readyState !== 1) continue;
@@ -659,8 +664,12 @@ async function httpProxy(req, res, session, port, guestPath) {
   let settle;
   const done = new Promise(r => { settle = r; });
   let firstByte = false;
-  let firstByteTimer = setTimeout(() => settle('no-headers'), 30000);
-  let overallTimer = setTimeout(() => settle('timeout'), 90000);
+  // Long-poll endpoints (Syncthing /rest/events, etc.) legitimately hold
+  // the connection for up to 60s with no bytes before responding. Anything
+  // shorter than that here surfaces as "Connection Error" flicker in the
+  // GUI on every long-poll cycle. Give upstream plenty of room.
+  let firstByteTimer = setTimeout(() => settle('no-headers'), 90000);
+  let overallTimer = setTimeout(() => settle('timeout'), 300000);
 
   session.proxyCalls.set(guestWs, {
     feed: (buf) => {
