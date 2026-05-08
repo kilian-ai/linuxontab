@@ -5683,14 +5683,32 @@
     if (t.code) {
       tnUnexposeAll(t.code).catch(() => {});
     }
+    // Aggressive multi-pass kill: respawn loops can re-spawn websocat
+    // between SIGTERM and the next probe. We TERM, then KILL, then
+    // verify zero websocats remain. Up to 3 passes.
     const cmd =
+      // 1. TERM tracked PIDs (subshell wrappers around the while-loop).
       'if [ -s /tmp/tunnel.pids ]; then ' +
         'while read p; do kill "$p" 2>/dev/null; done < /tmp/tunnel.pids; ' +
-        'sleep 0.3; ' +
+      'fi; ' +
+      // 2. TERM any tunnel-up.sh and websocat (catches respawn loops
+      //    whose PIDs we never tracked, e.g. from prior page sessions).
+      'pkill -f "tunnel-up\.sh" 2>/dev/null; ' +
+      'pkill -f "websocat.*port/guest" 2>/dev/null; ' +
+      'pkill -f websocat 2>/dev/null; ' +
+      'sleep 0.3; ' +
+      // 3. KILL whatever survived TERM.
+      'if [ -s /tmp/tunnel.pids ]; then ' +
         'while read p; do kill -9 "$p" 2>/dev/null; done < /tmp/tunnel.pids; ' +
       'fi; ' +
-      'pkill -f websocat 2>/dev/null; ' +
-      'rm -f /tmp/tunnel.code /tmp/tunnel.pids /tmp/tunnel.cmd /tmp/tunnel.ports 2>/dev/null; ' +
+      'pkill -9 -f "tunnel-up\.sh" 2>/dev/null; ' +
+      'pkill -9 -f "websocat.*port/guest" 2>/dev/null; ' +
+      'pkill -9 -f websocat 2>/dev/null; ' +
+      'sleep 0.3; ' +
+      // 4. Verify and report any survivors.
+      'survivors=$(ps -o pid,args 2>/dev/null | grep -E "websocat|tunnel-up\.sh" | grep -v grep | wc -l); ' +
+      'echo survivors=$survivors; ' +
+      'rm -f /tmp/tunnel.code /tmp/tunnel.pids /tmp/tunnel.cmd /tmp/tunnel.ports /tmp/tunnel-*.log 2>/dev/null; ' +
       'echo stopped';
     // NOTE: don't route to lot:tunnel — that window is running
     // `tail -F /tmp/tunnel.last.log` in the foreground, so any
@@ -5699,8 +5717,15 @@
     // Default routing (lot:vfs, silent) is correct: this command
     // doesn't write to /tmp/tunnel.last.log so there's nothing for
     // the user to see anyway.
-    const r = await tnExec(cmd, { timeout: 10000 });
-    tnLog((r.stdout || '').trim() || '(no output)', r.exitCode === 0 ? 'ok' : 'err');
+    const r = await tnExec(cmd, { timeout: 12000 });
+    const out = (r.stdout || '').trim();
+    if (/survivors=0/.test(out)) {
+      tnLog('stopped (all bridges killed)', 'ok');
+    } else if (/survivors=/.test(out)) {
+      tnLog(out, 'err');
+    } else {
+      tnLog(out || '(no output)', r.exitCode === 0 ? 'ok' : 'err');
+    }
     setTimeout(tnRefresh, 400);
   }
 
@@ -5712,6 +5737,24 @@
     tnLog(cmd, 'out');
     // Stop first so respawn loops are gone, then start fresh.
     await tnStopTunnel(t).catch(() => {});
+    // Verify no stale websocat survived. If any remain, do one more KILL
+    // pass before starting new bridges — otherwise the new tunnel-up.sh
+    // exits via its own "already active" idempotency check and we end up
+    // with the OLD code's bridges still in place.
+    const verify = await tnExec(
+      'n=$(ps -o pid,args 2>/dev/null | grep -E "websocat|tunnel-up\\.sh" | grep -v grep | wc -l); ' +
+      'if [ "$n" -gt 0 ]; then ' +
+        'pkill -9 -f "tunnel-up\\.sh" 2>/dev/null; ' +
+        'pkill -9 -f websocat 2>/dev/null; ' +
+        'sleep 0.5; ' +
+        'n=$(ps -o pid,args 2>/dev/null | grep -E "websocat|tunnel-up\\.sh" | grep -v grep | wc -l); ' +
+      'fi; ' +
+      'echo final_survivors=$n',
+      { timeout: 6000 }
+    ).catch(() => ({ stdout: '' }));
+    if (!/final_survivors=0/.test(verify.stdout || '')) {
+      tnLog((verify.stdout || '').trim() + ' — stale bridges may shadow new ones', 'err');
+    }
     // Run the effective command in the background so the panel does not hang
     // on websocat's foreground respawn loop. We background it via `&` and
     // detach stdout/stderr to a log so subsequent guest commands still work.
