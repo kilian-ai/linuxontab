@@ -929,7 +929,48 @@
   // parses multi-byte CSI sequences in a single write() rather than per byte.
   let pendingBytes = [], pendingFlush = false;
   let serialTextTail = '';
-  function pushByte(b) {
+
+  // Output filters: hide echoed UI-injected commands + their markers from
+  // the user-visible terminal. Each filter has:
+  //   beginRe     RegExp that, when matched in the byte stream, marks the
+  //               start of a hidden region (the matching bytes ARE hidden).
+  //   endRe       RegExp that ends the hidden region (matching bytes
+  //               also hidden).
+  //   buf         pre-begin buffer (echoed command line) — held back until
+  //               beginRe matches, then discarded entirely so the user
+  //               never sees the long wrapped command.
+  //   maxBuf      cap on how many bytes we'll buffer before flushing as
+  //               passthrough (safety: don't eat real user output if begin
+  //               marker never arrives).
+  //   timer       safety flush after timeoutMs if begin never arrives.
+  //   active      true once begin matched; we are now suppressing until end.
+  // Filters are added by serialVfs._run / sendGuestText for our own
+  // injected commands. They are checked in order and the first match wins.
+  const outputFilters = [];
+  function addOutputFilter({ beginRe, endRe, timeoutMs = 30000, maxBuf = 16384 }) {
+    const f = { beginRe, endRe, buf: '', maxBuf, active: false, timer: null };
+    f.timer = setTimeout(() => {
+      // Begin never arrived — flush whatever we held back so the user
+      // sees their normal output. Drop the filter.
+      const i = outputFilters.indexOf(f);
+      if (i >= 0) outputFilters.splice(i, 1);
+      if (f.buf) flushFilterBuf(f.buf);
+      f.buf = '';
+    }, timeoutMs);
+    outputFilters.push(f);
+    return f;
+  }
+  function removeOutputFilter(f) {
+    const i = outputFilters.indexOf(f);
+    if (i >= 0) outputFilters.splice(i, 1);
+    clearTimeout(f.timer);
+  }
+  function flushFilterBuf(s) {
+    if (!s) return;
+    for (let i = 0; i < s.length; i++) pushByteRaw(s.charCodeAt(i));
+  }
+
+  function pushByteRaw(b) {
     if (b === 10 || b === 13 || (b >= 32 && b <= 126)) {
       serialTextTail = (serialTextTail + String.fromCharCode(b)).slice(-32768);
     }
@@ -944,6 +985,78 @@
         term.write(u8);
       });
     }
+  }
+
+  function pushByte(b) {
+    // Fast path when no filters are registered.
+    if (!outputFilters.length) return pushByteRaw(b);
+    // Try each filter. The first one that's actively suppressing wins.
+    // Otherwise we accumulate the byte into every filter's pre-begin buf
+    // and look for begin markers.
+    for (let i = 0; i < outputFilters.length; i++) {
+      const f = outputFilters[i];
+      if (f.active) {
+        // Inside hidden region. Append to buf and check for end marker.
+        f.buf += String.fromCharCode(b);
+        if (f.buf.length >= 64) {
+          const m = f.buf.match(f.endRe);
+          if (m) {
+            // End matched. Drop everything up to and including the marker
+            // (including any trailing newline we may also want eaten).
+            let after = f.buf.slice(m.index + m[0].length);
+            // Eat one trailing CR/LF pair if present so we don't leave a
+            // blank line where the marker used to be.
+            after = after.replace(/^\r?\n/, '');
+            removeOutputFilter(f);
+            // Whatever bytes came after the end marker are real output —
+            // pass through.
+            for (let j = 0; j < after.length; j++) pushByteRaw(after.charCodeAt(j));
+            return;
+          }
+          // Trim buf to keep memory bounded; only keep the tail that
+          // could contain the start of an end marker.
+          if (f.buf.length > 8192) f.buf = f.buf.slice(-2048);
+        }
+        return; // suppressed
+      }
+    }
+    // No filter is actively suppressing. Buffer for any filter's begin match.
+    let consumed = false;
+    for (let i = 0; i < outputFilters.length; i++) {
+      const f = outputFilters[i];
+      f.buf += String.fromCharCode(b);
+      const m = f.buf.match(f.beginRe);
+      if (m) {
+        // Begin matched. Discard buf entirely (echoed command line +
+        // begin marker). Activate suppression on this filter; drop other
+        // filters' buffers too (they were buffering the same bytes).
+        for (let j = 0; j < outputFilters.length; j++) {
+          if (j !== i) outputFilters[j].buf = '';
+        }
+        f.buf = '';
+        f.active = true;
+        consumed = true;
+        break;
+      }
+      // Cap buffer growth — if we exceed maxBuf without a match, this
+      // filter's command must have failed to echo properly. Flush its
+      // buffer once to avoid eating user output, then reset.
+      if (f.buf.length > f.maxBuf) {
+        const flush = f.buf;
+        f.buf = '';
+        // Drop this filter — better to never suppress than to keep
+        // hiding indefinitely.
+        removeOutputFilter(f);
+        flushFilterBuf(flush);
+        consumed = true;
+        break;
+      }
+    }
+    if (consumed) return;
+    // No filter caught it yet — but they all hold the byte in their buf.
+    // We do NOT pass through to the term, otherwise the echo we want to
+    // hide would already be visible. Bytes will either be flushed by a
+    // begin match (discard) or by the maxBuf overflow path above.
   }
 
   // ---- IndexedDB snapshot persistence ----
@@ -1430,6 +1543,11 @@
         if (suffix) this._send(suffix);
         const job = c.job;
         clearTimeout(c.timer);
+        // Drop the output filter — the end marker has been consumed by
+        // SerialVfs, but the suppressing filter on the visible-terminal
+        // side may still be active. removeOutputFilter() is a no-op if
+        // the filter already self-removed via its own end-marker match.
+        if (this.outputFilter) { try { removeOutputFilter(this.outputFilter); } catch (_) {} this.outputFilter = null; }
         // c.output is a binary string (one JS char per UTF-8 byte from
         // _onByte). UTF-8 decode it now so callers get readable text
         // instead of mojibake (Cyrillic/emoji/etc.).
@@ -1520,6 +1638,17 @@
         `__b=${beginSrc}; __e=${endSrc}; ` +
         `printf '\\n%s\\n' "$__b"; { ${job.cmd}\n} </dev/null; __ec=$?; ` +
         `printf '\\n%s:%d\\n' "$__e" "$__ec"\n`;
+      // Register an output filter so the echoed wrapped command + begin
+      // marker line + end marker line are hidden from the user-visible
+      // terminal. Without this, every UI-injected command (autosave
+      // umount/remount, file-viewer ls, social CLI probes, etc.) prints
+      // a wall of `__b='__VFS''B_xxx__';...` noise into the shell.
+      this.outputFilter = addOutputFilter({
+        beginRe: new RegExp(begin),
+        endRe: new RegExp(end + ':-?\\d+'),
+        timeoutMs: (job.timeout || 30000) + 5000,
+        maxBuf: 16384,
+      });
       this._send(tmuxPrefix + wrapped);
       this.current.timer = setTimeout(() => {
         if (!this.current || this.current.job !== job) return;
@@ -1531,6 +1660,7 @@
         // Still try to switch tmux back so the user isn't stranded on the
         // vfs window after a timeout.
         if (cur.tmuxSuffix) this._send(cur.tmuxSuffix);
+        if (this.outputFilter) { try { removeOutputFilter(this.outputFilter); } catch (_) {} this.outputFilter = null; }
         job.resolve({ stdout: cur.output, exitCode: -1, timedOut: true });
         this._next();
       }, job.timeout || 30000);
@@ -1715,6 +1845,16 @@
     // (which contains the literal printf invocation as a substring).
     const re = new RegExp('^__UMOUNT_OK__:' + tag + '\\b');
     const wait = awaitGuestMarker(re, 4000);
+    // Hide the long umount/sync command line + marker from the user's
+    // terminal. Begin marker matches the FIRST byte we'll send (the
+    // leading `s` of `sync;`); end matches the printf'd marker. We use
+    // a tighter buf since the command is short.
+    const filter = addOutputFilter({
+      beginRe: /sync;/, // first byte of our injected line — matches as soon as echo arrives
+      endRe: new RegExp('__UMOUNT_OK__:' + tag),
+      timeoutMs: 5000,
+      maxBuf: 4096,
+    });
     sendGuestText(
       "sync; " +
       "umount -f /mnt/host 2>/dev/null; " +
@@ -1722,19 +1862,29 @@
       "sync; " +
       "printf '__UMOUNT_OK__:" + tag + "\\n'\n"
     );
-    try { await wait; return true; } catch (_) { return false; }
+    try { await wait; return true; }
+    catch (_) { return false; }
+    finally { try { removeOutputFilter(filter); } catch (_) {} }
   }
   async function remountAfterSave() {
     if (!emulator || !shellReady) return false;
     const tag = 'rsv' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
     const re = new RegExp('^__REMOUNT_OK__:' + tag + '\\b');
     const wait = awaitGuestMarker(re, 4000);
+    const filter = addOutputFilter({
+      beginRe: /mount -t 9p/,
+      endRe: new RegExp('__REMOUNT_OK__:' + tag),
+      timeoutMs: 5000,
+      maxBuf: 4096,
+    });
     sendGuestText(
       "mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192,cache=none,access=any," +
       "dfltuid=0,dfltgid=0,uid=0,gid=0,rw host9p /mnt/host 2>/dev/null; " +
       "printf '__REMOUNT_OK__:" + tag + "\\n'\n"
     );
-    try { await wait; return true; } catch (_) { return false; }
+    try { await wait; return true; }
+    catch (_) { return false; }
+    finally { try { removeOutputFilter(filter); } catch (_) {} }
   }
 
   const sendCmd = sendGuestText;
