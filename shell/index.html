@@ -5534,6 +5534,19 @@
   const tnPortsAddLabel  = document.getElementById('tn-ports-add-label');
   const tnPortsResetBtn  = document.getElementById('tn-ports-reset');
 
+  // Whenever the user edits the port config in the UI, drop any stored
+  // `__default__` cmd override — otherwise a stale cmd from a previous
+  // "edit cmd" session would silently override the checkboxes/channels.
+  // The Port-config UI is the source of truth.
+  function tnInvalidateDefaultOverride() {
+    try {
+      if (localStorage.getItem(TUNNEL_CMD_OVERRIDE_PREFIX + '__default__')) {
+        localStorage.removeItem(TUNNEL_CMD_OVERRIDE_PREFIX + '__default__');
+        tnLog('cleared stale cmd override — using port-config defaults', 'info');
+      }
+    } catch (_) {}
+  }
+
   function tnRenderPortsConfig() {
     if (!tnPortsListEl) return;
     const ports = tnLoadPorts();
@@ -5557,6 +5570,8 @@
       cb.onchange = () => {
         const arr = tnLoadPorts();
         if (arr[idx]) { arr[idx].enabled = cb.checked; tnSavePorts(arr); }
+        tnInvalidateDefaultOverride();
+        tnRefresh();
       };
       row.appendChild(cb);
 
@@ -5573,6 +5588,8 @@
       lbl.onchange = () => {
         const arr = tnLoadPorts();
         if (arr[idx]) { arr[idx].label = lbl.value; tnSavePorts(arr); }
+        tnInvalidateDefaultOverride();
+        tnRefresh();
       };
       row.appendChild(lbl);
 
@@ -5591,6 +5608,8 @@
         const v = parseInt(chan.value, 10);
         arr[idx].channels = (Number.isFinite(v) && v > 0) ? v : null;
         tnSavePorts(arr);
+        tnInvalidateDefaultOverride();
+        tnRefresh();
       };
       row.appendChild(chan);
 
@@ -5602,7 +5621,9 @@
         const arr = tnLoadPorts();
         arr.splice(idx, 1);
         tnSavePorts(arr);
+        tnInvalidateDefaultOverride();
         tnRenderPortsConfig();
+        tnRefresh();
       };
       row.appendChild(del);
 
@@ -5626,15 +5647,19 @@
       }
       arr.push({ port, label, enabled: true });
       tnSavePorts(arr);
+      tnInvalidateDefaultOverride();
       tnPortsAddPort.value = '';
       tnPortsAddLabel.value = '';
       tnRenderPortsConfig();
+      tnRefresh();
     };
   }
   if (tnPortsResetBtn) {
     tnPortsResetBtn.onclick = () => {
       tnSavePorts(TUNNEL_DEFAULT_PORTS.map(p => ({ ...p })));
+      tnInvalidateDefaultOverride();
       tnRenderPortsConfig();
+      tnRefresh();
       tnLog('port config reset to defaults', 'ok');
     };
   }
