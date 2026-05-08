@@ -141,6 +141,9 @@
   #tn-ports-list .tn-port-chan-input { background:#0b0d10; color:#7ab8f5; border:1px solid #2a2f36; border-radius:3px; padding:1px 4px; font:inherit; width:48px; text-align:right; }
   #tn-ports-list .tn-port-chan-input:focus { outline:none; border-color:#3a424d; }
   #tn-ports-list .tn-port-chan-input::-webkit-inner-spin-button, #tn-ports-list .tn-port-chan-input::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
+  #tn-ports-list .tn-port-expose { display:inline-flex; align-items:center; gap:3px; color:#7a8392; font-size:11px; cursor:pointer; user-select:none; }
+  #tn-ports-list .tn-port-expose input[type=checkbox] { accent-color:#facc15; cursor:pointer; }
+  #tn-ports-list .tn-port-expose.tn-expose-on { color:#facc15; }
   #tn-ports-list .tn-port-del { background:transparent; color:#7a8392; border:none; cursor:pointer; padding:2px 6px; border-radius:3px; font:inherit; }
   #tn-ports-list .tn-port-del:hover { background:#3a2225; color:#f87171; }
   .tn-ports-add { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
@@ -5178,14 +5181,20 @@
   // means use the script default (32). Syncthing GUI fires many parallel
   // long-polls so it benefits from more channels.
   const TUNNEL_DEFAULT_PORTS = [
-    { port: 22,    label: 'ssh',            enabled: true,  channels: null },
-    { port: 8080,  label: 'public-http',    enabled: true,  channels: null },
-    { port: 22000, label: 'syncthing-sync', enabled: true,  channels: null },
-    { port: 8384,  label: 'syncthing-gui',  enabled: true,  channels: 64 },
+    { port: 22,    label: 'ssh',            enabled: true,  channels: null, expose: false },
+    { port: 8080,  label: 'public-http',    enabled: true,  channels: null, expose: false },
+    { port: 22000, label: 'syncthing-sync', enabled: true,  channels: null, expose: false },
+    { port: 8384,  label: 'syncthing-gui',  enabled: true,  channels: 64,   expose: false },
   ];
   const TUNNEL_RELAY_ENDPOINTS = [
     'https://linuxontab-tunnel.fly.dev',
     'https://tunnel.linuxontab.com',
+  ];
+  // Public TCP expose endpoints live ONLY on the Fly relay (CF Worker
+  // can't accept inbound raw TCP). Use this list for /port/expose,
+  // /port/unexpose, /port/expose-status calls.
+  const TUNNEL_EXPOSE_ENDPOINTS = [
+    'https://linuxontab-tunnel.fly.dev',
   ];
 
   function tnLoadPorts() {
@@ -5202,6 +5211,7 @@
             label: String(e.label || ''),
             enabled: !!e.enabled,
             channels: Number.isFinite(ch) && ch > 0 ? ch : null,
+            expose: !!e.expose,
           };
         })
         .filter(e => Number.isFinite(e.port) && e.port > 0 && e.port < 65536);
@@ -5286,6 +5296,131 @@
     return null;
   }
 
+  // ── Public TCP exposure (Fly relay only) ──────────────────────────────
+  // POST /port/expose claims a public TCP slot bridging to (code, internalPort).
+  // The slot lives at <host>:<publicPort> for ~TTL seconds; we refresh on
+  // every tnRefresh while the user keeps the expose checkbox on.
+  const TUNNEL_EXPOSE_TTL_MS = 60 * 60 * 1000; // 1h, server clamps anyway
+  async function tnExposePort(code, port, ttlMs) {
+    if (!code || !port) return null;
+    for (const base of TUNNEL_EXPOSE_ENDPOINTS) {
+      try {
+        const ctrl = new AbortController();
+        const tm = setTimeout(() => ctrl.abort(), 5000);
+        const r = await fetch(base + '/port/expose', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ code, port, ttlMs: ttlMs || TUNNEL_EXPOSE_TTL_MS }),
+          signal: ctrl.signal,
+        });
+        clearTimeout(tm);
+        if (!r.ok) continue;
+        return await r.json();
+      } catch (_) {}
+    }
+    return null;
+  }
+  async function tnUnexposePort(port, code) {
+    for (const base of TUNNEL_EXPOSE_ENDPOINTS) {
+      try {
+        const ctrl = new AbortController();
+        const tm = setTimeout(() => ctrl.abort(), 4000);
+        // Server accepts either {publicPort} or {code}; here `port` is the
+        // INTERNAL port (the guest port). To unexpose by internal port we
+        // need to find the assignment via expose-status first.
+        let releaseBody = null;
+        if (code) {
+          const st = await tnFetchExposeStatus(code);
+          if (st && Array.isArray(st.assignments)) {
+            const hit = st.assignments.find(a => a.port === port);
+            if (hit) releaseBody = { publicPort: hit.publicPort };
+          }
+        }
+        if (!releaseBody) {
+          clearTimeout(tm);
+          continue;
+        }
+        const r = await fetch(base + '/port/unexpose', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(releaseBody),
+          signal: ctrl.signal,
+        });
+        clearTimeout(tm);
+        if (!r.ok) continue;
+        return await r.json();
+      } catch (_) {}
+    }
+    return null;
+  }
+  async function tnUnexposeAll(code) {
+    if (!code) return null;
+    for (const base of TUNNEL_EXPOSE_ENDPOINTS) {
+      try {
+        const ctrl = new AbortController();
+        const tm = setTimeout(() => ctrl.abort(), 4000);
+        const r = await fetch(base + '/port/unexpose', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ code }),
+          signal: ctrl.signal,
+        });
+        clearTimeout(tm);
+        if (!r.ok) continue;
+        return await r.json();
+      } catch (_) {}
+    }
+    return null;
+  }
+  async function tnFetchExposeStatus(code) {
+    if (!code) return null;
+    for (const base of TUNNEL_EXPOSE_ENDPOINTS) {
+      try {
+        const ctrl = new AbortController();
+        const tm = setTimeout(() => ctrl.abort(), 4000);
+        const r = await fetch(base + '/port/expose-status?code=' + encodeURIComponent(code), { signal: ctrl.signal });
+        clearTimeout(tm);
+        if (!r.ok) continue;
+        return await r.json();
+      } catch (_) {}
+    }
+    return null;
+  }
+  // Reconcile: for each enabled+expose port, claim/refresh a slot.
+  // For each existing assignment that's NOT in the wanted set, release it.
+  async function tnSyncExposures(code, registeredPorts) {
+    if (!code) return null;
+    const cfg = tnLoadPorts();
+    const wanted = new Set(
+      cfg
+        .filter(e => e.enabled && e.expose)
+        .map(e => e.port)
+        // only expose ports actually registered with the relay
+        .filter(p => !registeredPorts || registeredPorts.includes(p))
+    );
+    // Snapshot current assignments first so we can decide what to release.
+    const status = await tnFetchExposeStatus(code);
+    const have = (status && status.assignments) || [];
+    // Release stale.
+    for (const a of have) {
+      if (!wanted.has(a.port)) {
+        try {
+          await fetch(TUNNEL_EXPOSE_ENDPOINTS[0] + '/port/unexpose', {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ publicPort: a.publicPort }),
+          });
+        } catch (_) {}
+      }
+    }
+    // Claim/refresh wanted.
+    const results = [];
+    for (const p of wanted) {
+      const r = await tnExposePort(code, p);
+      if (r) results.push(r);
+    }
+    return { wanted: [...wanted], assignments: results };
+  }
+
   async function tnDiscoverTunnels() {
     // Single guest call to gather everything we need.
     // Outputs distinct sections marked with sentinels for easy parsing.
@@ -5360,6 +5495,13 @@
     relay.textContent = 'relay: querying…';
     row.appendChild(relay);
 
+    // Public TCP exposures (Fly relay TCP pool). Rendered after we know
+    // which guest ports the relay sees as registered.
+    const exposeEl = document.createElement('div');
+    exposeEl.className = 'tn-meta';
+    exposeEl.style.display = 'none';
+    row.appendChild(exposeEl);
+
     if (t.code) {
       tnFetchRelayStatus(t.code).then(s => {
         if (!s) {
@@ -5381,6 +5523,39 @@
         relay.className = 'tn-meta ' + (active && guestPorts.length ? 'tn-relay-ok' : (active ? 'tn-relay-warn' : 'tn-relay-err'));
         relay.textContent = 'relay: ' + parts.join('  ');
         relay.title = JSON.stringify(s, null, 2);
+
+        // Sync public TCP exposures based on per-port "expose" checkboxes.
+        // Only do this if the relay sees the session as active so we don't
+        // claim slots for a dead code.
+        if (active) {
+          const regPorts = guestPorts.map(p => parseInt(p, 10)).filter(Number.isFinite);
+          tnSyncExposures(t.code, regPorts).then(sync => {
+            const list = (sync && sync.assignments) || [];
+            if (!list.length) {
+              exposeEl.style.display = 'none';
+              return;
+            }
+            exposeEl.style.display = '';
+            exposeEl.className = 'tn-meta tn-relay-ok';
+            const lines = list.map(a =>
+              '<a href=\"#\" data-host=\"' + a.host + '\" data-port=\"' + a.publicPort +
+              '\" style=\"color:#facc15;text-decoration:none\" ' +
+              'title=\"click to copy\">' +
+              a.host + ':' + a.publicPort + '</a> → guest:' + a.port
+            );
+            exposeEl.innerHTML = 'exposed: ' + lines.join(' &nbsp; ');
+            exposeEl.querySelectorAll('a').forEach(a => {
+              a.onclick = (ev) => {
+                ev.preventDefault();
+                const txt = a.dataset.host + ':' + a.dataset.port;
+                try {
+                  navigator.clipboard.writeText(txt);
+                  tnLog('copied: ' + txt, 'ok');
+                } catch (_) {}
+              };
+            });
+          }).catch(() => {});
+        }
       });
     } else {
       relay.className = 'tn-meta tn-relay-warn';
@@ -5504,6 +5679,10 @@
 
   async function tnStopTunnel(t) {
     tnLog('$ stop ' + (t.code || '(unmanaged)'), 'cmd');
+    // Best-effort release of any public TCP slots claimed for this code.
+    if (t.code) {
+      tnUnexposeAll(t.code).catch(() => {});
+    }
     const cmd =
       'if [ -s /tmp/tunnel.pids ]; then ' +
         'while read p; do kill "$p" 2>/dev/null; done < /tmp/tunnel.pids; ' +
@@ -5767,6 +5946,40 @@
         tnRefresh();
       };
       row.appendChild(chan);
+
+      // Expose checkbox: when on, the active tunnel will claim a public TCP
+      // slot (linuxontab-tunnel.fly.dev:PORT) bridged to this guest port,
+      // so any TCP client (irssi, ssh, nc, ...) can connect directly with
+      // no Mac-side helper.
+      const exposeWrap = document.createElement('label');
+      exposeWrap.className = 'tn-port-expose' + (p.expose ? ' tn-expose-on' : '');
+      exposeWrap.title =
+        'Expose this guest port publicly on the relay TCP pool. ' +
+        'Any TCP client can connect to linuxontab-tunnel.fly.dev:<publicPort> ' +
+        'directly (no helper). Costs nothing extra; uses 1 of 10 pool slots ' +
+        'for ~1 hour TTL, refreshed automatically while the tunnel is up.';
+      const exposeCb = document.createElement('input');
+      exposeCb.type = 'checkbox';
+      exposeCb.checked = !!p.expose;
+      exposeCb.onchange = () => {
+        const arr = tnLoadPorts();
+        if (!arr[idx]) return;
+        arr[idx].expose = exposeCb.checked;
+        tnSavePorts(arr);
+        exposeWrap.classList.toggle('tn-expose-on', exposeCb.checked);
+        // If we have an active code and the user just turned expose OFF,
+        // unexpose immediately. If turned ON, sync will pick it up on the
+        // next tnRefresh — but trigger one now for snappy UX.
+        if (!exposeCb.checked) {
+          tnUnexposePort(p.port).catch(() => {});
+        }
+        tnRefresh();
+      };
+      const exposeTxt = document.createElement('span');
+      exposeTxt.textContent = 'expose';
+      exposeWrap.appendChild(exposeCb);
+      exposeWrap.appendChild(exposeTxt);
+      row.appendChild(exposeWrap);
 
       const del = document.createElement('button');
       del.className = 'tn-port-del';
