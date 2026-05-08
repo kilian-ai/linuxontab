@@ -615,24 +615,6 @@ class HttpResponseParser {
 }
 
 async function httpProxy(req, res, session, port, guestPath) {
-  // Wait for an idle bridge in the pool. With keep-alive, bridges survive
-  // multiple requests, so the pool only needs to drain on respawn (e.g.
-  // upstream keep-alive timeout, server hiccup). Wait up to 8s.
-  const RECONNECT_WAIT_MS = 8000;
-  const waitStart = Date.now();
-  let guestWs = null;
-  while (true) {
-    guestWs = session.pickFreshGuest(port);
-    if (guestWs) break;
-    if (Date.now() - waitStart > RECONNECT_WAIT_MS) {
-      cors(res);
-      res.writeHead(503);
-      res.end(`guest not connected on port ${port}`);
-      return;
-    }
-    await new Promise(r => setTimeout(r, 100));
-  }
-
   const method = req.method;
   let bodyBytes = null;
   if (method !== 'GET' && method !== 'HEAD') {
@@ -660,58 +642,105 @@ async function httpProxy(req, res, session, port, guestPath) {
   const reqHead = Buffer.from(hdrs.join('\r\n') + '\r\n\r\n');
   const reqBytes = bodyBytes ? Buffer.concat([reqHead, bodyBytes]) : reqHead;
 
-  const parser = new HttpResponseParser(method);
-  let settle;
-  const done = new Promise(r => { settle = r; });
-  let firstByte = false;
-  // Long-poll endpoints (Syncthing /rest/events, etc.) legitimately hold
-  // the connection for up to 60s with no bytes before responding. Anything
-  // shorter than that here surfaces as "Connection Error" flicker in the
-  // GUI on every long-poll cycle. Give upstream plenty of room.
-  let firstByteTimer = setTimeout(() => settle('no-headers'), 90000);
-  let overallTimer = setTimeout(() => settle('timeout'), 300000);
+  // attemptOnce: pick a bridge, send the request, await response.
+  // Returns { result, parser, guestWs, dur, wasReused }.
+  const attemptOnce = async () => {
+    const RECONNECT_WAIT_MS = 8000;
+    const waitStart = Date.now();
+    let guestWs = null;
+    while (true) {
+      guestWs = session.pickFreshGuest(port);
+      if (guestWs) break;
+      if (Date.now() - waitStart > RECONNECT_WAIT_MS) return { result: 'no-bridge' };
+      await new Promise(r => setTimeout(r, 100));
+    }
+    const wasReused = session.guestLastUsed.has(guestWs);
 
-  session.proxyCalls.set(guestWs, {
-    feed: (buf) => {
-      if (!firstByte) { firstByte = true; clearTimeout(firstByteTimer); }
-      try { parser.feed(buf); }
-      catch (e) { settle('parse-error'); return; }
-      if (parser.error) { settle('parse-error'); return; }
-      if (parser.complete) { settle('done'); }
-    },
-    settle,
-  });
+    const parser = new HttpResponseParser(method);
+    let settle;
+    const done = new Promise(r => { settle = r; });
+    let firstByte = false;
+    // Stale keep-alive detection: a freshly-spawned bridge has never
+    // served a request, so any first-byte delay is upstream legitimately
+    // taking time (e.g. Syncthing /rest/events long-poll = up to 60s).
+    // A REUSED bridge however may be sitting on a TCP socket that
+    // upstream already closed without our v86 websocat noticing yet —
+    // in that case we'll never get bytes back. Use a tight first-byte
+    // timeout for reused bridges so we can fail fast and retry on a
+    // fresh one. Long-polling on a reused bridge will hit the 8s limit
+    // and trigger a retry with a fresh bridge — wasteful but correct.
+    const FIRST_BYTE_MS = wasReused ? 8000 : 90000;
+    let firstByteTimer = setTimeout(() => settle('no-headers'), FIRST_BYTE_MS);
+    let overallTimer = setTimeout(() => settle('timeout'), 300000);
 
-  try { guestWs.send(reqBytes, { binary: true }); }
-  catch (_) {
+    session.proxyCalls.set(guestWs, {
+      feed: (buf) => {
+        if (!firstByte) { firstByte = true; clearTimeout(firstByteTimer); }
+        try { parser.feed(buf); }
+        catch (_) { settle('parse-error'); return; }
+        if (parser.error) { settle('parse-error'); return; }
+        if (parser.complete) { settle('done'); }
+      },
+      settle,
+    });
+
+    try { guestWs.send(reqBytes, { binary: true }); }
+    catch (_) {
+      session.proxyCalls.delete(guestWs);
+      clearTimeout(firstByteTimer); clearTimeout(overallTimer);
+      try { guestWs.close(1011, 'send failed'); } catch (_) {}
+      return { result: 'send-failed', parser, guestWs, dur: 0, wasReused };
+    }
+
+    const t0 = Date.now();
+    const result = await done;
+    clearTimeout(firstByteTimer);
+    clearTimeout(overallTimer);
     session.proxyCalls.delete(guestWs);
-    clearTimeout(firstByteTimer); clearTimeout(overallTimer);
-    try { guestWs.close(1011, 'send failed'); } catch (_) {}
+    const dur = Date.now() - t0;
+    return { result, parser, guestWs, dur, wasReused };
+  };
+
+  // First attempt. If it fails on a REUSED bridge with no headers (likely
+  // a stale keep-alive), kill that bridge and retry once on a fresh one.
+  let { result, parser, guestWs, dur, wasReused } = await attemptOnce();
+  let retried = false;
+  if (result === 'no-headers' && wasReused && guestWs) {
+    // Mark this bridge dead so siblings don't pick it.
+    try { guestWs.close(1000, 'stale keep-alive'); } catch (_) {}
+    console.log(`[httpProxy] stale keep-alive on ${method} ${guestPath} — retrying with fresh bridge`);
+    const retry = await attemptOnce();
+    result = retry.result; parser = retry.parser; guestWs = retry.guestWs;
+    dur = (dur || 0) + (retry.dur || 0); wasReused = retry.wasReused;
+    retried = true;
+  }
+
+  if (result === 'no-bridge') {
+    cors(res);
+    res.writeHead(503);
+    res.end(`guest not connected on port ${port}`);
+    return;
+  }
+  if (result === 'send-failed') {
     cors(res);
     res.writeHead(502);
     res.end('failed to send to guest');
     return;
   }
 
-  const t0 = Date.now();
-  const result = await done;
-  clearTimeout(firstByteTimer);
-  clearTimeout(overallTimer);
-  session.proxyCalls.delete(guestWs);
-  const dur = Date.now() - t0;
-  if (result !== 'done' || dur > 5000 || parser.status >= 400) {
+  if (result !== 'done' || dur > 5000 || (parser && parser.status >= 400)) {
+    const bodyLen = parser ? parser.bodyBytes.reduce((n,c)=>n+c.length,0) : 0;
     console.log(`[httpProxy] ${method} ${guestPath} port=${port} → ` +
-      `result=${result} status=${parser.status} dur=${dur}ms ` +
-      `bodyLen=${parser.bodyBytes.reduce((n,c)=>n+c.length,0)} ` +
-      `reuse=${result === 'done' && parser.canReuse() && guestWs.readyState === 1}`);
+      `result=${result} status=${parser ? parser.status : 0} dur=${dur}ms ` +
+      `bodyLen=${bodyLen} retried=${retried} wasReused=${wasReused}`);
   }
 
-  // Bridge fate: reuse iff the response framed cleanly AND upstream
-  // didn't say `Connection: close`. Otherwise close so websocat respawns.
-  const reuse = result === 'done' && parser.canReuse() && guestWs.readyState === 1;
+  // Bridge fate: reuse iff response framed cleanly AND upstream didn't
+  // say `Connection: close`. Otherwise close so websocat respawns.
+  const reuse = result === 'done' && parser && parser.canReuse() && guestWs && guestWs.readyState === 1;
   if (reuse) {
     session.guestLastUsed.set(guestWs, Date.now());
-  } else {
+  } else if (guestWs) {
     try { guestWs.close(1000, 'http call complete'); } catch (_) {}
   }
 
