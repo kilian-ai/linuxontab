@@ -31,6 +31,9 @@
   #promo a { color:#cbd1d9; text-decoration:none; border-bottom:1px dotted #3a424d; }
   #promo a:hover { color:#fff; border-bottom-color:#7a828c; }
   #promo .muted { color:#5b626c; }
+  #promo-close { background:transparent; border:none; color:#5b626c; cursor:pointer; font-size:14px; line-height:1; padding:0 4px; margin-left:6px; border-radius:3px; }
+  #promo-close:hover { color:#cbd1d9; background:#1d2127; }
+  #promo.hidden { display:none; }
   #bar { padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   #bar b { color:#fff; }
   #bar select, #bar button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 8px; font:inherit; cursor:pointer; }
@@ -316,6 +319,7 @@
     <span class="dot" aria-hidden="true"></span>
     <span><a href="https://getclaw.site" target="_blank" rel="noopener">claw</a> <span class="muted">— a POSIX shell agent harness. AI tools, your terminal, zero glue.</span></span>
     <span class="muted" style="margin-left:auto">getclaw.site</span>
+    <button id="promo-close" type="button" title="dismiss (won't show again)" aria-label="dismiss promo">✕</button>
   </div>
   <div id="bar">
     <b>v86</b>
@@ -681,6 +685,28 @@
 
   const $ = id => document.getElementById(id);
   const termEl = $('term'), snapEl = $('snap');
+
+  // ── Promo banner dismiss ─────────────────────────────────────────────────
+  // Hide the claw promo bar once the user clicks ✕. Persists across reloads
+  // via localStorage. To resurface: localStorage.removeItem('lot.promo.dismissed').
+  (function initPromo() {
+    const PROMO_KEY = 'lot.promo.dismissed';
+    const promoEl = $('promo');
+    const closeBtn = $('promo-close');
+    if (!promoEl) return;
+    try {
+      if (localStorage.getItem(PROMO_KEY) === '1') {
+        promoEl.classList.add('hidden');
+        return;
+      }
+    } catch (_) {}
+    if (closeBtn) {
+      closeBtn.onclick = () => {
+        promoEl.classList.add('hidden');
+        try { localStorage.setItem(PROMO_KEY, '1'); } catch (_) {}
+      };
+    }
+  })();
 
   // ---- In-page prompt/confirm replacements.
   // Cross-origin / sandboxed iframes (and some embedded contexts) throw
