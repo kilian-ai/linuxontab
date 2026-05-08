@@ -2230,6 +2230,50 @@
     emulator.add_listener('emulator-started', () => { setStatus(doRestore ? 'restored' : 'running', 'ok'); });
     emulator.add_listener('emulator-stopped', () => setStatus('stopped'));
 
+    // ── Anti-throttle silent oscillator ────────────────────────────────────
+    // Chromium/WebKit aggressively throttle JS timers in background tabs
+    // (down to ~1Hz after 5 min hidden), which slows v86 to a crawl and
+    // causes "Connection Error" flicker in tunneled apps (Syncthing GUI,
+    // long-poll endpoints, etc.). A tab that's playing audio is exempt
+    // from background throttling, so we run a silent (gain=0) sine
+    // oscillator for the lifetime of the page.
+    //
+    // AudioContext requires a user gesture to start (autoplay policy), so
+    // we attach lazy starters to the first click/keydown/touch event.
+    (() => {
+      let started = false;
+      const start = () => {
+        if (started) return;
+        try {
+          const Ctx = window.AudioContext || window.webkitAudioContext;
+          if (!Ctx) return;
+          const ctx = new Ctx();
+          // Resume in case the context was created in suspended state.
+          if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          gain.gain.value = 0;            // truly silent
+          osc.frequency.value = 1;        // doesn't matter, gain is 0
+          osc.connect(gain).connect(ctx.destination);
+          osc.start();
+          window.__antiThrottle = { ctx, osc, gain };
+          started = true;
+          console.log('[anti-throttle] silent oscillator running — tab will not be throttled when backgrounded');
+        } catch (e) {
+          console.log('[anti-throttle] failed:', e && e.message);
+        }
+      };
+      const opts = { once: true, capture: true, passive: true };
+      window.addEventListener('click', start, opts);
+      window.addEventListener('keydown', start, opts);
+      window.addEventListener('touchstart', start, opts);
+      // Also try immediately — some browsers (e.g. Chrome with site engagement)
+      // allow AudioContext without a gesture for sites the user has interacted
+      // with before. Cheaper to try than to wait.
+      try { start(); } catch (_) {}
+    })();
+
+
     // ── Restore-path instrumentation ───────────────────────────────────────
     // Visible in browser console. Captures WispNetworkAdapter WS lifecycle so
     // we can see whether the tunnel reattaches cleanly on restore.
