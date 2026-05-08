@@ -54,10 +54,26 @@ mkdir -p "$HOME_DIR"
 CONFIG="$HOME_DIR/config.xml"
 if [ ! -f "$CONFIG" ]; then
     echo "[syncthing-up] generating initial config in $HOME_DIR ..."
-    syncthing generate --home="$HOME_DIR" >/dev/null 2>&1 || {
-        echo "[syncthing-up] syncthing generate failed" >&2
-        exit 1
-    }
+    # Newer syncthing dropped the `generate` subcommand entirely; the daemon
+    # auto-generates config on first launch. Older versions used
+    # `syncthing -generate=DIR`, then `syncthing generate --home=DIR`. Try
+    # them in order, falling back to a no-op (let `syncthing serve` create it).
+    GEN_LOG="$HOME_DIR/.generate.log"
+    if syncthing generate --home="$HOME_DIR" >"$GEN_LOG" 2>&1; then
+        :
+    elif syncthing --generate="$HOME_DIR" >"$GEN_LOG" 2>&1; then
+        :
+    elif syncthing --no-browser --home="$HOME_DIR" --generate >"$GEN_LOG" 2>&1; then
+        :
+    else
+        echo "[syncthing-up] WARN: explicit config generation failed, will let 'syncthing serve' create it on first run" >&2
+        echo "[syncthing-up] last attempt log:" >&2
+        sed 's/^/[syncthing-up]   /' "$GEN_LOG" >&2 2>/dev/null || true
+        # Pre-touch a stub so the awk patcher below has something to read;
+        # serve will overwrite it on first launch if it's not a valid xml.
+        # Actually skip patching if no config — patch on second run instead.
+        SKIP_PATCH=1
+    fi
 fi
 
 # Patch config.xml in place:
@@ -66,6 +82,38 @@ fi
 #   add/replace <insecureSkipHostcheck>true</insecureSkipHostcheck>
 #
 # BusyBox sed; use a temp file approach since -i.bak suffix handling varies.
+SKIP_PATCH="${SKIP_PATCH:-0}"
+
+# If we couldn't generate config explicitly, bootstrap it by running syncthing
+# briefly so it auto-creates the config files, then kill it and patch.
+if [ "$SKIP_PATCH" = "1" ] || [ ! -f "$CONFIG" ]; then
+    echo "[syncthing-up] bootstrapping config via 'syncthing serve' ..."
+    BOOT_LOG="$HOME_DIR/.bootstrap.log"
+    syncthing serve --home="$HOME_DIR" --no-browser >"$BOOT_LOG" 2>&1 &
+    BOOT_PID=$!
+    # Wait up to 15s for config.xml to appear
+    i=0
+    while [ ! -f "$CONFIG" ] && [ "$i" -lt 15 ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    kill "$BOOT_PID" 2>/dev/null
+    # Wait up to 5s for clean exit so we can rewrite config.xml safely.
+    i=0
+    while kill -0 "$BOOT_PID" 2>/dev/null && [ "$i" -lt 5 ]; do
+        sleep 1
+        i=$((i + 1))
+    done
+    kill -9 "$BOOT_PID" 2>/dev/null || true
+    if [ ! -f "$CONFIG" ]; then
+        echo "[syncthing-up] FAILED: bootstrap did not create $CONFIG" >&2
+        echo "[syncthing-up] bootstrap log:" >&2
+        sed 's/^/[syncthing-up]   /' "$BOOT_LOG" >&2 2>/dev/null || true
+        exit 1
+    fi
+    echo "[syncthing-up] bootstrapped config at $CONFIG"
+fi
+
 TMP="$CONFIG.tmp.$$"
 awk -v gui_addr="$GUI_ADDR" -v listen_addr="$LISTEN_ADDR" '
     BEGIN { in_gui = 0; in_options = 0; hostcheck_set = 0 }
