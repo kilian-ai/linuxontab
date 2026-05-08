@@ -2748,12 +2748,17 @@
         'ip route replace default via 192.168.86.1 dev eth0 2>/dev/null\n' +
         'arp -d 192.168.86.1 2>/dev/null\n' +
         'arp -s 192.168.86.1 52:54:00:01:02:03\n' +
+        // v86 NE2K driver does NOT bring up lo automatically; many services
+        // (syncthing port probe, sshd 127.0.0.1 listeners, unbound) fail
+        // with EADDRNOTAVAIL until 127.0.0.1 is configured on lo.
+        'ifconfig lo 127.0.0.1 up 2>/dev/null || ip link set lo up 2>/dev/null\n' +
         'printf "nameserver 1.1.1.1\\nnameserver 1.0.0.1\\n" > /etc/resolv.conf\n' +
         'echo "[net] eth0 operstate=$st flags=$fl (retries=$i)"\n';
 
       const dhcpSegment =
         ifacesSeedCmd +
         'ip link set eth0 up 2>/dev/null\n' +
+        'ifconfig lo 127.0.0.1 up 2>/dev/null || ip link set lo up 2>/dev/null\n' +
         'udhcpc -i eth0 -q -n -f -T 2 -t 3 >/dev/null 2>&1\n' +
         'printf "nameserver 1.1.1.1\\nnameserver 1.0.0.1\\n" > /etc/resolv.conf\n';
 
