@@ -810,11 +810,21 @@ const tcpListeners   = new Map();         // publicPort → net.Server
 const TCP_ASSIGN_TTL_MS = 60 * 60 * 1000; // 1h default
 
 function tcpAssignSlot(code, internalPort, ttlMs) {
+  const now = Date.now();
+  const ttl = ttlMs || TCP_ASSIGN_TTL_MS;
+  // Prefer matching public port = internal port when it's in the pool
+  // and free. Makes "expose 6667 → :6667" the natural case for IRC,
+  // SSH, etc., instead of the surprising fallback to :6660.
+  if (internalPort >= TCP_POOL_BASE && internalPort < TCP_POOL_BASE + TCP_POOL_SIZE
+      && !tcpAssignments.has(internalPort) && tcpListeners.has(internalPort)) {
+    const a = { code, internalPort, createdAt: now, expiresAt: now + ttl };
+    tcpAssignments.set(internalPort, a);
+    return { publicPort: internalPort, ...a };
+  }
   for (let i = 0; i < TCP_POOL_SIZE; i++) {
     const p = TCP_POOL_BASE + i;
     if (!tcpAssignments.has(p) && tcpListeners.has(p)) {
-      const now = Date.now();
-      const a = { code, internalPort, createdAt: now, expiresAt: now + (ttlMs || TCP_ASSIGN_TTL_MS) };
+      const a = { code, internalPort, createdAt: now, expiresAt: now + ttl };
       tcpAssignments.set(p, a);
       return { publicPort: p, ...a };
     }
