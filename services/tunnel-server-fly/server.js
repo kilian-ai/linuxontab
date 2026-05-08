@@ -20,6 +20,7 @@
 //                     (default: wss://<host> derived from request Host header)
 
 import http from 'node:http';
+import net from 'node:net';
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { URL } from 'node:url';
@@ -27,6 +28,18 @@ import { URL } from 'node:url';
 const PORT = parseInt(process.env.PORT || '8787', 10);
 const TUNNEL_SECRET = process.env.TUNNEL_SECRET || '';
 const TUNNEL_PUBLIC_URL = process.env.TUNNEL_PUBLIC_URL || ''; // e.g. wss://tunnel.linuxontab.com
+
+// Public TCP listener pool. Each port in this range is a slot that
+// can be claimed via POST /port/expose to bridge a guest's internal
+// TCP service (e.g. ngircd on :6667) to a public address. The listeners
+// are pre-bound at startup and remain bound; when a port has no
+// assignment, incoming TCP connections are immediately closed.
+//
+// Fly note: each port in this range MUST also appear as a [[services]]
+// block in fly.toml so the public LB forwards it to the container.
+const TCP_POOL_BASE = parseInt(process.env.TCP_POOL_BASE || '6660', 10);
+const TCP_POOL_SIZE = parseInt(process.env.TCP_POOL_SIZE || '10', 10);
+const TCP_PUBLIC_HOST = process.env.TCP_PUBLIC_HOST || ''; // e.g. tunnel.linuxontab.com
 
 // ── Token signing (HMAC-SHA256) ────────────────────────────────────────────
 
@@ -778,6 +791,165 @@ async function httpProxy(req, res, session, port, guestPath, code) {
   else res.end(parser.body());
 }
 
+// ── Public TCP bridge pool ─────────────────────────────────────────────────
+//
+// Each public TCP port in [TCP_POOL_BASE, TCP_POOL_BASE + TCP_POOL_SIZE) is
+// a "slot". POST /port/expose assigns a slot to a (code, internalPort) pair.
+// Incoming TCP connections on assigned slots are bridged to a fresh guest
+// WS bridge (same pool used by /port/client), giving any TCP client (irssi,
+// ssh, nc, ...) public access to a guest service without a Mac helper.
+//
+// Slots are stored in `tcpAssignments`: publicPort → { code, internalPort,
+// expiresAt, createdAt }. Idle slots are reclaimed by a periodic sweeper.
+//
+// IMPORTANT: each public port in this range MUST also appear as a
+// [[services]] block in fly.toml so the public LB forwards it to the
+// container.
+const tcpAssignments = new Map();         // publicPort → assignment
+const tcpListeners   = new Map();         // publicPort → net.Server
+const TCP_ASSIGN_TTL_MS = 60 * 60 * 1000; // 1h default
+
+function tcpAssignSlot(code, internalPort, ttlMs) {
+  for (let i = 0; i < TCP_POOL_SIZE; i++) {
+    const p = TCP_POOL_BASE + i;
+    if (!tcpAssignments.has(p) && tcpListeners.has(p)) {
+      const now = Date.now();
+      const a = { code, internalPort, createdAt: now, expiresAt: now + (ttlMs || TCP_ASSIGN_TTL_MS) };
+      tcpAssignments.set(p, a);
+      return { publicPort: p, ...a };
+    }
+  }
+  return null;
+}
+
+function bridgeTcpToWs(sock, ws, pairId) {
+  // tcp → ws  (client bytes to guest)
+  sock.on('data', (chunk) => {
+    if (ws.readyState !== 1) return;
+    try { ws.send(chunk, { binary: true }); } catch (e) {
+      console.log(`[tcp-bridge ${pairId}] tcp→ws send failed: ${e.message}`);
+      try { sock.destroy(); } catch (_) {}
+      return;
+    }
+    if ((ws.bufferedAmount || 0) > BP_HIGH && !sock.__bpPaused) {
+      sock.__bpPaused = true;
+      try { sock.pause(); } catch (_) {}
+      const tick = setInterval(() => {
+        if (sock.destroyed || ws.readyState !== 1) {
+          clearInterval(tick); sock.__bpPaused = false;
+          try { sock.resume(); } catch (_) {}
+          return;
+        }
+        if ((ws.bufferedAmount || 0) <= BP_LOW) {
+          clearInterval(tick); sock.__bpPaused = false;
+          try { sock.resume(); } catch (_) {}
+        }
+      }, 50);
+    }
+  });
+
+  // ws → tcp  (guest bytes to client). We attach via 'message' so we
+  // bypass PortSession.addGuest's message handler (the guest WS is
+  // already attached and routing to proxyCalls.feed; we override here
+  // by re-listening — both listeners fire, but proxyCalls.feed is a
+  // no-op for tcp bridges).
+  const onWsMsg = (data, isBinary) => {
+    if (sock.destroyed) return;
+    const buf = isBinary ? data : Buffer.from(data);
+    const ok = sock.write(buf);
+    if (!ok) {
+      const innerSock = ws._socket;
+      if (innerSock && !ws.__bpPaused) {
+        ws.__bpPaused = true;
+        try { innerSock.pause(); } catch (_) {}
+        sock.once('drain', () => {
+          ws.__bpPaused = false;
+          try { innerSock.resume(); } catch (_) {}
+        });
+      }
+    }
+  };
+  ws.on('message', onWsMsg);
+
+  let closed = false;
+  const closePair = (origin, info) => {
+    if (closed) return;
+    closed = true;
+    console.log(`[tcp-bridge ${pairId}] ${origin} closed${info ? ': ' + info : ''}`);
+    try { sock.destroy(); } catch (_) {}
+    try { ws.close(1000, origin + ' closed'); } catch (_) {}
+  };
+  sock.on('close', () => closePair('tcp'));
+  sock.on('error', (e) => closePair('tcp', e.message));
+  ws.on('close', (code, reason) => closePair('ws', `code=${code} reason=${String(reason||'').slice(0,40)}`));
+  ws.on('error', (e) => closePair('ws', e.message));
+}
+
+function startTcpPool() {
+  for (let i = 0; i < TCP_POOL_SIZE; i++) {
+    const publicPort = TCP_POOL_BASE + i;
+    const srv = net.createServer((sock) => {
+      const a = tcpAssignments.get(publicPort);
+      if (!a) { try { sock.destroy(); } catch (_) {} return; }
+      if (Date.now() > a.expiresAt) {
+        tcpAssignments.delete(publicPort);
+        try { sock.destroy(); } catch (_) {}
+        return;
+      }
+      const session = getSession(a.code);
+      if (!session) {
+        console.log(`[tcp-bridge :${publicPort}] no session for code=${a.code}`);
+        try { sock.destroy(); } catch (_) {}
+        return;
+      }
+      const guest = session.pickFreshGuest(a.internalPort);
+      if (!guest) {
+        console.log(`[tcp-bridge :${publicPort}] no guest bridge for ${a.code}:${a.internalPort}`);
+        try { sock.destroy(); } catch (_) {}
+        return;
+      }
+      const pairId = Math.random().toString(36).slice(2, 8);
+      console.log(`[tcp-bridge ${pairId}] :${publicPort} → ${a.code}:${a.internalPort} paired ` +
+        `(remote=${sock.remoteAddress}:${sock.remotePort})`);
+
+      // Claim the guest WS so other consumers (HTTP proxy / /port/client)
+      // skip it. proxyCalls.feed must be a no-op so it doesn't try to
+      // parse our bytes as HTTP — bridgeTcpToWs handles bytes via its
+      // own 'message' listener.
+      session.proxyCalls.set(guest, { feed: () => {}, settle: () => {} });
+
+      // Flush any pre-pair buffered bytes (e.g. ngircd's NOTICE banner).
+      const pre = session.guestBuffer.get(guest);
+      if (pre && pre.length) {
+        session.guestBuffer.delete(guest);
+        for (const d of pre) { try { sock.write(d); } catch (_) {} }
+      }
+
+      bridgeTcpToWs(sock, guest, pairId);
+
+      const cleanup = () => {
+        session.proxyCalls.delete(guest);
+        try { guest.close(1000, 'tcp pair complete'); } catch (_) {}
+      };
+      sock.once('close', cleanup);
+      guest.once('close', cleanup);
+    });
+    srv.on('error', (e) => console.log(`[tcp-pool] :${publicPort} error: ${e.message}`));
+    srv.listen(publicPort, '0.0.0.0', () => {
+      console.log(`[tcp-pool] listening on :${publicPort}`);
+    });
+    tcpListeners.set(publicPort, srv);
+  }
+}
+
+// Sweep expired assignments.
+setInterval(() => {
+  const now = Date.now();
+  for (const [p, a] of tcpAssignments) {
+    if (now > a.expiresAt) tcpAssignments.delete(p);
+  }
+}, 30 * 1000).unref?.();
+
 // ── HTTP server ────────────────────────────────────────────────────────────
 
 function publicRelayUrl(req) {
@@ -828,6 +1000,66 @@ const server = http.createServer(async (req, res) => {
     const s = getSession(code);
     if (s) { s.destroy(); sessions.delete(code); }
     return sendJson(res, { ok: true });
+  }
+
+  // POST /port/expose  { code, port, ttlMs? } → { host, publicPort, expiresAt }
+  // Reserves a public TCP slot from the pool that bridges to the given
+  // (code, internalPort). Lets any TCP client (irssi, ssh, nc, ...)
+  // connect directly to <host>:<publicPort> with no Mac-side helper.
+  if (url.pathname === '/port/expose' && req.method === 'POST') {
+    const body = await readBodyJson(req);
+    const code = normalizeCode(body.code);
+    if (!code) return sendJson(res, { error: 'missing code' }, 400);
+    const internalPort = parsePort(body.port);
+    if (!internalPort) return sendJson(res, { error: 'missing/invalid port' }, 400);
+    const s = getSession(code);
+    if (!s) return sendJson(res, { error: 'code not found' }, 404);
+    if (s.registeredPorts.size > 0 && !s.registeredPorts.has(internalPort)) {
+      return sendJson(res, { error: 'port not registered for this code' }, 400);
+    }
+    // Reuse existing assignment for this (code, port) if present so
+    // repeat calls are idempotent.
+    for (const [p, a] of tcpAssignments) {
+      if (a.code === code && a.internalPort === internalPort) {
+        a.expiresAt = Date.now() + (parseInt(body.ttlMs, 10) || TCP_ASSIGN_TTL_MS);
+        const host = TCP_PUBLIC_HOST || (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+        return sendJson(res, { host, publicPort: p, code, port: internalPort, expiresAt: a.expiresAt, reused: true });
+      }
+    }
+    const slot = tcpAssignSlot(code, internalPort, parseInt(body.ttlMs, 10));
+    if (!slot) return sendJson(res, { error: 'TCP pool exhausted' }, 503);
+    const host = TCP_PUBLIC_HOST || (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+    console.log(`[expose] ${code}:${internalPort} → public :${slot.publicPort} (expires in ${Math.round((slot.expiresAt - Date.now())/1000)}s)`);
+    return sendJson(res, { host, publicPort: slot.publicPort, code, port: internalPort, expiresAt: slot.expiresAt, reused: false });
+  }
+
+  // POST /port/unexpose { publicPort? , code? }
+  // Releases a public TCP slot. Either by publicPort, or by code (releases
+  // all slots assigned to that code).
+  if (url.pathname === '/port/unexpose' && req.method === 'POST') {
+    const body = await readBodyJson(req);
+    const pub = parsePort(body.publicPort);
+    const code = normalizeCode(body.code);
+    let n = 0;
+    if (pub && tcpAssignments.has(pub)) { tcpAssignments.delete(pub); n++; }
+    else if (code) {
+      for (const [p, a] of tcpAssignments) {
+        if (a.code === code) { tcpAssignments.delete(p); n++; }
+      }
+    }
+    return sendJson(res, { ok: true, released: n });
+  }
+
+  // GET /port/expose-status?code=X
+  if (url.pathname === '/port/expose-status' && req.method === 'GET') {
+    const code = normalizeCode(url.searchParams.get('code'));
+    const host = TCP_PUBLIC_HOST || (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
+    const list = [];
+    for (const [p, a] of tcpAssignments) {
+      if (code && a.code !== code) continue;
+      list.push({ host, publicPort: p, code: a.code, port: a.internalPort, expiresAt: a.expiresAt });
+    }
+    return sendJson(res, { assignments: list, pool_size: TCP_POOL_SIZE, pool_base: TCP_POOL_BASE });
   }
 
   // GET /port/debug
@@ -898,4 +1130,5 @@ server.on('upgrade', (req, socket, head) => {
 server.listen(PORT, () => {
   console.log(`[tunnel-server] listening on :${PORT}`);
   if (TUNNEL_PUBLIC_URL) console.log(`[tunnel-server] public URL: ${TUNNEL_PUBLIC_URL}`);
+  startTcpPool();
 });

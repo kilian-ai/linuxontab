@@ -6,6 +6,9 @@ primary_region = "sjc"
 
 [env]
   PORT = "8787"
+  TCP_POOL_BASE = "6660"
+  TCP_POOL_SIZE = "10"
+  TCP_PUBLIC_HOST = "linuxontab-tunnel.fly.dev"
   # Public wss URL announced to clients — set to the custom domain once mapped:
   # TUNNEL_PUBLIC_URL = "wss://tunnel.linuxontab.com"
 
@@ -23,6 +26,70 @@ primary_region = "sjc"
     grace_period = "10s"
     method = "GET"
     path = "/health"
+
+# Public TCP bridge pool. Each port here corresponds to a slot in
+# server.js's tcpListeners map (TCP_POOL_BASE..+TCP_POOL_SIZE). Public
+# clients connect to <app>.fly.dev:<port>; the relay bridges to the
+# guest's internal port via the registered code.
+[[services]]
+  protocol = "tcp"
+  internal_port = 6660
+  [[services.ports]]
+    port = 6660
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 6661
+  [[services.ports]]
+    port = 6661
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 6662
+  [[services.ports]]
+    port = 6662
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 6663
+  [[services.ports]]
+    port = 6663
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 6664
+  [[services.ports]]
+    port = 6664
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 6665
+  [[services.ports]]
+    port = 6665
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 6666
+  [[services.ports]]
+    port = 6666
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 6667
+  [[services.ports]]
+    port = 6667
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 6668
+  [[services.ports]]
+    port = 6668
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 6669
+  [[services.ports]]
+    port = 6669
 
 [[vm]]
   size = "shared-cpu-1x"
