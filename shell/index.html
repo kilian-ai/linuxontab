@@ -5206,12 +5206,25 @@
       return arr
         .map(e => {
           const ch = parseInt(e.channels, 10);
+          const port = parseInt(e.port, 10);
+          // Migration: ports the user explicitly added (i.e. not in
+          // TUNNEL_DEFAULT_PORTS) and that lack an `expose` field default to
+          // expose:true — they wouldn't have added a custom port unless they
+          // wanted to share it. Default ports (22/8080/22000/8384) without
+          // an explicit field stay private (expose:false).
+          let expose;
+          if (typeof e.expose === 'boolean') {
+            expose = e.expose;
+          } else {
+            const isDefault = TUNNEL_DEFAULT_PORTS.some(d => d.port === port);
+            expose = !isDefault;
+          }
           return {
-            port: parseInt(e.port, 10),
+            port,
             label: String(e.label || ''),
             enabled: !!e.enabled,
             channels: Number.isFinite(ch) && ch > 0 ? ch : null,
-            expose: !!e.expose,
+            expose,
           };
         })
         .filter(e => Number.isFinite(e.port) && e.port > 0 && e.port < 65536);
@@ -6056,7 +6069,10 @@
         tnLog('port ' + port + ' already in config', 'err');
         return;
       }
-      arr.push({ port, label, enabled: true });
+      // User-added ports default to expose:true — the whole reason to add a
+      // custom port is usually to share it (IRC, HTTP, ...). Defaults like 22
+      // stay expose:false because TUNNEL_DEFAULT_PORTS sets them so explicitly.
+      arr.push({ port, label, enabled: true, expose: true });
       tnSavePorts(arr);
       tnInvalidateDefaultOverride();
       tnPortsAddPort.value = '';
