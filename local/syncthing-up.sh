@@ -81,6 +81,14 @@ awk -v gui_addr="$GUI_ADDR" -v listen_addr="$LISTEN_ADDR" '
     }
     {
         line = $0
+        if (line ~ /<gui[ >]/) {
+            # Force tls="false" — the HTTP-over-WS tunnel proxy can not do TLS
+            # to localhost. If the user toggles HTTPS in the GUI, syncthing
+            # rewrites this attr to "true" and the tunnel breaks. We always
+            # reset it to false here so re-running this script fixes it.
+            sub(/ tls="[^"]*"/, "", line)
+            sub(/<gui /, "<gui tls=\"false\" ", line)
+        }
         if (in_gui && line ~ /<address>/) {
             sub(/<address>[^<]*<\/address>/, "<address>" gui_addr "</address>", line)
         }
@@ -95,7 +103,7 @@ awk -v gui_addr="$GUI_ADDR" -v listen_addr="$LISTEN_ADDR" '
     }
 ' "$CONFIG" > "$TMP" && mv "$TMP" "$CONFIG"
 
-echo "[syncthing-up] config patched: GUI=$GUI_ADDR listen=$LISTEN_ADDR hostcheck=disabled"
+echo "[syncthing-up] config patched: GUI=$GUI_ADDR listen=$LISTEN_ADDR hostcheck=disabled tls=false"
 
 # Start syncthing detached. Logs go to $HOME_DIR/syncthing.log.
 LOG="$HOME_DIR/syncthing.log"

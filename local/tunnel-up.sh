@@ -163,9 +163,45 @@ if [ -z "${TUNNEL_WS:-}" ]; then
         *)         TUNNEL_WS="$TUNNEL_BASE" ;;
     esac
 fi
-PORTS="${*:-22 8080 22000 8384}"
+RAW_PORT_ARGS="${*:-22 8080 22000 8384}"
 FTP_PASV_MIN="${FTP_PASV_MIN:-30000}"
 FTP_PASV_MAX="${FTP_PASV_MAX:-30010}"
+
+# Parse "port[:channels]" syntax. Each token may be a bare port (e.g. "22")
+# or "port:N" (e.g. "8384:64") to override pool size for that port. The
+# number after ":" sets how many parallel websocat bridges run for that
+# port. Bare ports use the global default (TUNNEL_BRIDGES_PER_PORT, or 32).
+#
+# Examples:
+#   sh -s 22 8384:64 22000           → 22+22000 default, 8384=64 channels
+#   TUNNEL_BRIDGES_PER_PORT=16 sh -s 22 8384  → both 16
+PORTS=""
+for spec in $RAW_PORT_ARGS; do
+    p="${spec%%:*}"
+    c="${spec#*:}"
+    [ "$c" = "$spec" ] && c=""
+    PORTS="$PORTS $p"
+    if [ -n "$c" ]; then
+        # Validate numeric
+        case "$c" in
+            ''|*[!0-9]*) echo "[tunnel] WARN: bad channel count '$c' for port $p, ignoring" >&2 ;;
+            *) eval "CHAN_${p}=${c}" ;;
+        esac
+    fi
+done
+PORTS="${PORTS# }"
+
+# port_pool_size <port>  →  channel count for that port (override or default)
+port_pool_size() {
+    local _p="$1"
+    local _v=""
+    eval "_v=\${CHAN_${_p}:-}"
+    if [ -n "$_v" ]; then
+        echo "$_v"
+    else
+        echo "${TUNNEL_BRIDGES_PER_PORT:-32}"
+    fi
+}
 
 has_port() {
     local target="$1"
@@ -661,9 +697,9 @@ for PORT in $PORTS; do
     # size. Pool 32 gives generous headroom: 16 long-polls in-flight still
     # leaves 16 free for short requests (HTML/JS/REST polls).
     #
-    # Override with TUNNEL_BRIDGES_PER_PORT=N if you expect many parallel
-    # clients per port (HTTP burst, large parallel rsync, many SFTP slots).
-    POOL_SIZE="${TUNNEL_BRIDGES_PER_PORT:-32}"
+    # Override globally with TUNNEL_BRIDGES_PER_PORT=N, or per-port via the
+    # `port:N` arg syntax (e.g. `sh -s 22 8384:64`). Per-port wins.
+    POOL_SIZE="$(port_pool_size "$PORT")"
     n=0
     while [ "$n" -lt "$POOL_SIZE" ]; do
         n=$((n+1))

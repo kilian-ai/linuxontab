@@ -135,6 +135,9 @@
   #tn-ports-list .tn-port-num { color:#7ab8f5; font-family:'Menlo','Monaco','Consolas',monospace; min-width:50px; }
   #tn-ports-list .tn-port-label-input { background:#0b0d10; color:#ddd; border:1px solid #2a2f36; border-radius:3px; padding:1px 6px; font:inherit; flex:1; min-width:0; }
   #tn-ports-list .tn-port-label-input:focus { outline:none; border-color:#3a424d; }
+  #tn-ports-list .tn-port-chan-input { background:#0b0d10; color:#7ab8f5; border:1px solid #2a2f36; border-radius:3px; padding:1px 4px; font:inherit; width:48px; text-align:right; }
+  #tn-ports-list .tn-port-chan-input:focus { outline:none; border-color:#3a424d; }
+  #tn-ports-list .tn-port-chan-input::-webkit-inner-spin-button, #tn-ports-list .tn-port-chan-input::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
   #tn-ports-list .tn-port-del { background:transparent; color:#7a8392; border:none; cursor:pointer; padding:2px 6px; border-radius:3px; font:inherit; }
   #tn-ports-list .tn-port-del:hover { background:#3a2225; color:#f87171; }
   .tn-ports-add { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
@@ -4990,11 +4993,14 @@
   // BusyBox/hush in Alpine does NOT support bash process substitution
   // `sh <(curl ...)`, so we always use `wget|sh -s ...` form.
   const TUNNEL_CMD_PREFIX = 'wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh -s';
+  // channels: per-port websocat bridge pool size override. null/0/undefined
+  // means use the script default (32). Syncthing GUI fires many parallel
+  // long-polls so it benefits from more channels.
   const TUNNEL_DEFAULT_PORTS = [
-    { port: 22,    label: 'ssh',            enabled: true },
-    { port: 8080,  label: 'public-http',    enabled: true },
-    { port: 22000, label: 'syncthing-sync', enabled: true },
-    { port: 8384,  label: 'syncthing-gui',  enabled: true },
+    { port: 22,    label: 'ssh',            enabled: true,  channels: null },
+    { port: 8080,  label: 'public-http',    enabled: true,  channels: null },
+    { port: 22000, label: 'syncthing-sync', enabled: true,  channels: null },
+    { port: 8384,  label: 'syncthing-gui',  enabled: true,  channels: 64 },
   ];
   const TUNNEL_RELAY_ENDPOINTS = [
     'https://linuxontab-tunnel.fly.dev',
@@ -5008,7 +5014,15 @@
       const arr = JSON.parse(raw);
       if (!Array.isArray(arr)) throw new Error('not array');
       return arr
-        .map(e => ({ port: parseInt(e.port, 10), label: String(e.label || ''), enabled: !!e.enabled }))
+        .map(e => {
+          const ch = parseInt(e.channels, 10);
+          return {
+            port: parseInt(e.port, 10),
+            label: String(e.label || ''),
+            enabled: !!e.enabled,
+            channels: Number.isFinite(ch) && ch > 0 ? ch : null,
+          };
+        })
         .filter(e => Number.isFinite(e.port) && e.port > 0 && e.port < 65536);
     } catch (_) {
       return TUNNEL_DEFAULT_PORTS.map(p => ({ ...p }));
@@ -5020,10 +5034,16 @@
   function tnEnabledPorts() {
     return tnLoadPorts().filter(e => e.enabled).map(e => e.port);
   }
+  // Build space-separated `port[:channels]` token list for the shell -s args.
+  function tnEnabledPortSpecs() {
+    return tnLoadPorts()
+      .filter(e => e.enabled)
+      .map(e => (e.channels && e.channels > 0) ? (e.port + ':' + e.channels) : String(e.port));
+  }
   function tnBuildDefaultCmd() {
-    const ports = tnEnabledPorts();
-    if (!ports.length) return TUNNEL_CMD_PREFIX + ' 22'; // safety: never empty
-    return TUNNEL_CMD_PREFIX + ' ' + ports.join(' ');
+    const specs = tnEnabledPortSpecs();
+    if (!specs.length) return TUNNEL_CMD_PREFIX + ' 22'; // safety: never empty
+    return TUNNEL_CMD_PREFIX + ' ' + specs.join(' ');
   }
   // Pick a sensible local listen port for a given remote port. Privileged
   // ports get a +10000 offset (22 -> 2222, 80 -> 10080, etc.) so the user
@@ -5529,6 +5549,24 @@
         if (arr[idx]) { arr[idx].label = lbl.value; tnSavePorts(arr); }
       };
       row.appendChild(lbl);
+
+      // Channel count override (websocat bridges per port). Empty = default (32).
+      const chan = document.createElement('input');
+      chan.type = 'number';
+      chan.className = 'tn-port-chan-input';
+      chan.min = '1';
+      chan.max = '256';
+      chan.value = (p.channels && p.channels > 0) ? String(p.channels) : '';
+      chan.placeholder = '32';
+      chan.title = 'parallel websocat bridges (channels) for this port. blank = default (32). higher = more parallel requests but more guest CPU/RAM.';
+      chan.onchange = () => {
+        const arr = tnLoadPorts();
+        if (!arr[idx]) return;
+        const v = parseInt(chan.value, 10);
+        arr[idx].channels = (Number.isFinite(v) && v > 0) ? v : null;
+        tnSavePorts(arr);
+      };
+      row.appendChild(chan);
 
       const del = document.createElement('button');
       del.className = 'tn-port-del';
