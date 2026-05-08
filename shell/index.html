@@ -5413,7 +5413,12 @@
       const ctrl = new AbortController();
       const tm = setTimeout(() => ctrl.abort(), 4000);
       const r = await fetch(
-        'https://relay.linuxontab.com/dns-query?name=' + encodeURIComponent(host) + '&type=A',
+        // Cloudflare's public DNS-JSON endpoint — allows CORS from any
+        // origin and returns Answer[] directly. The relay.linuxontab.com
+        // /dns-query proxy only speaks the BINARY (application/dns-message)
+        // form, which is awkward to decode in the browser; CF JSON is the
+        // ergonomic choice for a one-shot host→ip lookup.
+        'https://cloudflare-dns.com/dns-query?name=' + encodeURIComponent(host) + '&type=A',
         { headers: { accept: 'application/dns-json' }, signal: ctrl.signal }
       );
       clearTimeout(tm);
