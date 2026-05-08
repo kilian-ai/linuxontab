@@ -809,9 +809,22 @@ const tcpAssignments = new Map();         // publicPort → assignment
 const tcpListeners   = new Map();         // publicPort → net.Server
 const TCP_ASSIGN_TTL_MS = 60 * 60 * 1000; // 1h default
 
+function tcpEvictDeadAssignments() {
+  // Drop assignments whose code's session no longer exists. Run before
+  // every allocation + on each incoming TCP connection so a stale slot
+  // from a restarted/expired code never blocks a fresh expose.
+  for (const [p, a] of tcpAssignments) {
+    if (!getSession(a.code)) {
+      console.log(`[tcp-pool] evicting stale slot :${p} (code=${a.code} session gone)`);
+      tcpAssignments.delete(p);
+    }
+  }
+}
+
 function tcpAssignSlot(code, internalPort, ttlMs) {
   const now = Date.now();
   const ttl = ttlMs || TCP_ASSIGN_TTL_MS;
+  tcpEvictDeadAssignments();
   // Prefer matching public port = internal port when it's in the pool
   // and free. Makes "expose 6667 → :6667" the natural case for IRC,
   // SSH, etc., instead of the surprising fallback to :6660.
@@ -908,7 +921,10 @@ function startTcpPool() {
       }
       const session = getSession(a.code);
       if (!session) {
-        console.log(`[tcp-bridge :${publicPort}] no session for code=${a.code}`);
+        // Stale slot — code's session is gone. Evict so the next
+        // /port/expose can claim this port.
+        console.log(`[tcp-bridge :${publicPort}] no session for code=${a.code} — evicting slot`);
+        tcpAssignments.delete(publicPort);
         try { sock.destroy(); } catch (_) {}
         return;
       }
@@ -958,6 +974,7 @@ setInterval(() => {
   for (const [p, a] of tcpAssignments) {
     if (now > a.expiresAt) tcpAssignments.delete(p);
   }
+  tcpEvictDeadAssignments();
 }, 30 * 1000).unref?.();
 
 // ── HTTP server ────────────────────────────────────────────────────────────
@@ -1027,6 +1044,9 @@ const server = http.createServer(async (req, res) => {
     if (s.registeredPorts.size > 0 && !s.registeredPorts.has(internalPort)) {
       return sendJson(res, { error: 'port not registered for this code' }, 400);
     }
+    // Drop any stale (dead-session) slots first so the matching-port
+    // preference works after a tunnel restart (old code → new code).
+    tcpEvictDeadAssignments();
     // Reuse existing assignment for this (code, port) if present so
     // repeat calls are idempotent.
     for (const [p, a] of tcpAssignments) {
