@@ -432,7 +432,55 @@ auto_start_sshd() {
         echo "[tunnel]   WARNING: root has no password/authorized_keys — run 'passwd' first"
     fi
     echo "[tunnel]   launching sshd..."
-    /usr/sbin/sshd 2>&1 | head -5
+    # Tunnel-friendly flags (CRITICAL for parallel SFTP / Filezilla):
+    #   LoginGraceTime=0       — idle bridges (32 per port) sit on sshd's
+    #                            accept queue without sending a banner-reply;
+    #                            default 120s grace would close them all,
+    #                            triggering PerSourcePenalties which then
+    #                            blocks REAL clients for ~10min.
+    #   PerSourcePenalties=no  — same root cause: every bridge appears as
+    #                            127.0.0.1, so ANY churn poisons all clients.
+    #   MaxStartups=200        — pool size + parallel client capacity.
+    #   PermitRootLogin=yes    — already set above, but reinforce on cmdline
+    #                            in case sshd_config got out of sync.
+    /usr/sbin/sshd \
+        -o LoginGraceTime=0 \
+        -o PerSourcePenalties=no \
+        -o MaxStartups=200 \
+        -o PermitRootLogin=yes \
+        -o PasswordAuthentication=yes \
+        2>&1 | head -5
+}
+
+# Auto-patch ngircd config if a port matches its listen port (default 6667).
+# IRC daemons aggressively kill "unknown connections" — the standby bridge
+# pool looks exactly like that to ngircd, so the default PingTimeout=120s
+# evicts all 32 bridges within 2min of registration. Bumping PingTimeout
+# and disabling per-IP clone limits (since every bridge appears as
+# 127.0.0.1) keeps the pool stable.
+auto_patch_ngircd() {
+    local cfg=/etc/ngircd/ngircd.conf
+    [ -f "$cfg" ] || return 0
+    sed -i \
+        -e 's/^;*[[:space:]]*PingTimeout[[:space:]]*=.*/PingTimeout = 3600/' \
+        -e 's/^;*[[:space:]]*PongTimeout[[:space:]]*=.*/PongTimeout = 600/' \
+        -e 's/^;*[[:space:]]*MaxConnectionsIP[[:space:]]*=.*/MaxConnectionsIP = 0/' \
+        -e 's/^;*[[:space:]]*DNS[[:space:]]*=.*/DNS = no/' \
+        -e 's/^;*[[:space:]]*Ident[[:space:]]*=.*/Ident = no/' \
+        -e 's/^;*[[:space:]]*PAM[[:space:]]*=.*/PAM = no/' \
+        "$cfg"
+    # If the directives weren't present at all (commented OR missing),
+    # append them in [Limits]/[Options] sections — safe to duplicate as
+    # ngircd uses last-wins.
+    grep -q '^PingTimeout' "$cfg" || printf '\n[Limits]\nPingTimeout = 3600\nPongTimeout = 600\nMaxConnectionsIP = 0\n' >> "$cfg"
+    grep -q '^DNS' "$cfg" || printf '\n[Options]\nDNS = no\nIdent = no\nPAM = no\n' >> "$cfg"
+    # Restart if running so changes take effect.
+    if pgrep -x ngircd >/dev/null 2>&1; then
+        echo "[tunnel]   reloading ngircd with tunnel-friendly config..."
+        killall ngircd 2>/dev/null
+        sleep 1
+        ngircd --config "$cfg" >/dev/null 2>&1 &
+    fi
 }
 
 # The single source of truth for the public docroot. When fs9p is mounted
@@ -681,6 +729,18 @@ for PORT in $PORTS; do
                 port_listening 21 && break
                 i=$((i+1)); sleep 0.2 2>/dev/null || sleep 1
             done
+        elif [ "$PORT" = "6667" ]; then
+            echo "[tunnel] port 6667 — no listener, starting ngircd..."
+            if ! command -v ngircd >/dev/null 2>&1; then
+                apk add --no-cache ngircd >/dev/null 2>&1 || true
+            fi
+            auto_patch_ngircd
+            ngircd --config /etc/ngircd/ngircd.conf >/dev/null 2>&1 &
+            i=0
+            while [ $i -lt 15 ]; do
+                port_listening 6667 && break
+                i=$((i+1)); sleep 0.2 2>/dev/null || sleep 1
+            done
         elif is_ftp_passive_port "$PORT"; then
             # FTP passive sockets are opened on demand by vsftpd.
             # Keep relay bridge loops alive even if the port is closed now.
@@ -690,6 +750,12 @@ for PORT in $PORTS; do
     if ! port_listening "$PORT" && ! is_ftp_passive_port "$PORT"; then
         echo "[tunnel] port $PORT — no local listener, skipping bridge"
         continue
+    fi
+    # If port 6667 already had a listener (ngircd was up before us),
+    # still apply the tunnel-friendly config patches. auto_patch_ngircd
+    # is a no-op if /etc/ngircd/ngircd.conf doesn't exist.
+    if [ "$PORT" = "6667" ]; then
+        auto_patch_ngircd
     fi
     WS_URL="${TUNNEL_WS}/port/guest?code=${CODE}&port=${PORT}"
     # POOL_SIZE: how many parallel guest WS bridges to keep open per port.

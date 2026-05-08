@@ -1128,6 +1128,25 @@ const server = http.createServer(async (req, res) => {
 
 const wss = new WebSocketServer({ noServer: true });
 
+// Heartbeat: ping every 25s, evict any ws that hasn't ponged within 60s.
+// Fly.io's edge proxy kills idle WebSockets after ~60s, so we must keep
+// traffic flowing on parked bridges (idle sshd / ngircd guest connections)
+// or they go silent until a TCP client tries to use them and it appears
+// "connected" but bytes never make it to the guest.
+const HEARTBEAT_MS = 25000;
+const HEARTBEAT_TIMEOUT_MS = 60000;
+setInterval(() => {
+  const now = Date.now();
+  wss.clients.forEach((ws) => {
+    if (ws.readyState !== 1) return;
+    if (ws.__lastPong && now - ws.__lastPong > HEARTBEAT_TIMEOUT_MS) {
+      try { ws.terminate(); } catch (_) {}
+      return;
+    }
+    try { ws.ping(); } catch (_) {}
+  });
+}, HEARTBEAT_MS).unref?.();
+
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url, 'http://local');
   const pathname = url.pathname;
@@ -1152,6 +1171,8 @@ server.on('upgrade', (req, socket, head) => {
   }
 
   wss.handleUpgrade(req, socket, head, (ws) => {
+    ws.__lastPong = Date.now();
+    ws.on('pong', () => { ws.__lastPong = Date.now(); });
     if (pathname === '/port/guest') session.addGuest(port, ws);
     else                             session.addClient(port, ws);
   });

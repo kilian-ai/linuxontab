@@ -5182,6 +5182,7 @@
   // long-polls so it benefits from more channels.
   const TUNNEL_DEFAULT_PORTS = [
     { port: 22,    label: 'ssh',            enabled: true,  channels: null, expose: false },
+    { port: 6667,  label: 'irc (ngircd)',   enabled: false, channels: null, expose: false },
     { port: 8080,  label: 'public-http',    enabled: true,  channels: null, expose: false },
     { port: 22000, label: 'syncthing-sync', enabled: true,  channels: null, expose: false },
     { port: 8384,  label: 'syncthing-gui',  enabled: true,  channels: 64,   expose: false },
