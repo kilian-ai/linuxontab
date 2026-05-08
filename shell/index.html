@@ -5181,8 +5181,8 @@
   // means use the script default (32). Syncthing GUI fires many parallel
   // long-polls so it benefits from more channels.
   const TUNNEL_DEFAULT_PORTS = [
-    { port: 22,    label: 'ssh',            enabled: true,  channels: null, expose: false },
-    { port: 6667,  label: 'irc (ngircd)',   enabled: false, channels: null, expose: false },
+    { port: 22,    label: 'ssh',            enabled: true,  channels: null, expose: true  },
+    { port: 6667,  label: 'irc (ngircd)',   enabled: false, channels: null, expose: true  },
     { port: 8080,  label: 'public-http',    enabled: true,  channels: null, expose: false },
     { port: 22000, label: 'syncthing-sync', enabled: true,  channels: null, expose: false },
     { port: 8384,  label: 'syncthing-gui',  enabled: true,  channels: 64,   expose: false },
@@ -5585,22 +5585,54 @@
             exposeEl.className = 'tn-meta tn-relay-ok';
             // Resolve all distinct hosts in parallel; render once we have IPs
             // (or after a short fallback if DoH is slow). Each line ends up
-            // looking like:  host [1.2.3.4]:6667 → guest:6667
+            // looking like:  host [1.2.3.4]:6667 → guest:6667 + "Connect:" hint
             const hosts = [...new Set(list.map(a => a.host))];
             Promise.all(hosts.map(h => tnResolveHostIp(h))).then(() => {
+              // Per-port copy-friendly connect strings.
+              function connectHints(host, publicPort, guestPort) {
+                const hp = host + ' ' + publicPort;
+                const url = host + ':' + publicPort;
+                const hints = [];
+                if (guestPort === 22) {
+                  hints.push({ label: 'sftp',  cmd: 'sftp -P ' + publicPort + ' root@' + host });
+                  hints.push({ label: 'ssh',   cmd: 'ssh -p ' + publicPort + ' root@' + host });
+                } else if (guestPort === 6667) {
+                  hints.push({ label: 'irc',   cmd: 'irc://' + url });
+                  hints.push({ label: 'irssi', cmd: 'irssi -c ' + host + ' -p ' + publicPort });
+                } else if (guestPort === 8080 || guestPort === 80 || guestPort === 8000) {
+                  hints.push({ label: 'http',  cmd: 'http://' + url + '/' });
+                } else if (guestPort === 443 || guestPort === 8443) {
+                  hints.push({ label: 'https', cmd: 'https://' + url + '/' });
+                } else if (guestPort === 21) {
+                  hints.push({ label: 'ftp',   cmd: 'ftp ftp://' + url });
+                } else if (guestPort === 8384) {
+                  hints.push({ label: 'web',   cmd: 'http://' + url + '/' });
+                } else {
+                  hints.push({ label: 'tcp',   cmd: hp });
+                }
+                return hints;
+              }
               const lines = list.map(a => {
                 const ip = tnHostIpCache.get(a.host);
                 const ipStr = (ip && ip.ip) ? ' [' + ip.ip + ']' : '';
                 const copyTxt = a.host + ':' + a.publicPort;
-                return (
+                const head =
                   '<a href="#" data-copy="' + copyTxt + '"' +
                   ' style="color:#facc15;text-decoration:none"' +
                   ' title="click to copy ' + copyTxt + '">' +
                   a.host + ipStr + ':' + a.publicPort + '</a>' +
-                  ' → guest:' + a.port
-                );
+                  ' → guest:' + a.port;
+                const hints = connectHints(a.host, a.publicPort, a.port).map(h =>
+                  '<a href="#" data-copy="' + h.cmd.replace(/"/g, '&quot;') + '"' +
+                  ' style="color:#7ab8f5;text-decoration:none;margin-left:8px"' +
+                  ' title="click to copy: ' + h.cmd.replace(/"/g, '&quot;') + '">' +
+                  h.label + '</a>'
+                ).join('');
+                return '<div style="margin:2px 0">' + head + hints + '</div>';
               });
-              exposeEl.innerHTML = 'exposed: ' + lines.join(' &nbsp; ');
+              exposeEl.innerHTML =
+                '<div style="color:#aab2bc;margin-bottom:2px">public endpoints (click any to copy):</div>' +
+                lines.join('');
               exposeEl.querySelectorAll('a').forEach(el => {
                 el.onclick = (ev) => {
                   ev.preventDefault();
