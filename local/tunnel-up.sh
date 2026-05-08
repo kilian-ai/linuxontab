@@ -370,6 +370,16 @@ UNBCONF
 }
 start_dns_proxy
 
+# Ensure loopback is up. v86's NE2K driver does NOT configure lo automatically
+# on snapshot restore (or on some Alpine boot paths), which breaks every
+# 127.0.0.1 binding (sshd, syncthing port probes, unbound, websocat bridges).
+if ! ifconfig lo 2>/dev/null | grep -q '127\.0\.0\.1'; then
+    echo "[tunnel] bringing up loopback (127.0.0.1) ..."
+    ifconfig lo 127.0.0.1 up 2>/dev/null \
+        || ip link set lo up 2>/dev/null \
+        || true
+fi
+
 # Build ports JSON array  e.g. "22 8384" → [22,8384]
 PORTS_JSON=$(printf '['; first=1
 for p in $PORTS; do

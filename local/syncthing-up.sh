@@ -33,6 +33,18 @@ if ! command -v syncthing >/dev/null 2>&1; then
     }
 fi
 
+# Ensure loopback is up with 127.0.0.1 — v86's NE2K driver does NOT configure
+# lo on its own, and Syncthing's first-run config generator probes for a free
+# port via `listen tcp 127.0.0.1:0`. Without 127.0.0.1, that fails with
+# "bind: cannot assign requested address" before any config is written.
+if ! ip addr show lo 2>/dev/null | grep -q '127\.0\.0\.1' \
+   && ! ifconfig lo 2>/dev/null | grep -q '127\.0\.0\.1'; then
+    echo "[syncthing-up] bringing up loopback (127.0.0.1) ..."
+    ifconfig lo 127.0.0.1 up 2>/dev/null \
+        || ip link set lo up 2>/dev/null \
+        || true
+fi
+
 # Kill any running instance so the new binding takes effect.
 if pgrep -x syncthing >/dev/null 2>&1; then
     echo "[syncthing-up] stopping existing syncthing ..."
