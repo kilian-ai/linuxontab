@@ -183,18 +183,9 @@ class PortSession {
 
   // Pick a fresh, OPEN, unpaired, idle (no in-flight HTTP proxy) guest WS
   // for this port. Used by both addClient (TCP pairing) and httpProxy.
-  // Bridges idle in the pool >IDLE_BRIDGE_MS are preemptively closed:
-  // upstream (e.g. syncthing) may have closed the keep-alive TCP connection
-  // already, leaving websocat with a half-dead pipe. Better to force a
-  // fresh respawn than to send into a corpse.
   pickFreshGuest(port) {
     const pool = this.guestWs.get(port);
     if (!pool || !pool.size) return null;
-    // Idle eviction threshold: must be longer than any reasonable upstream
-    // keep-alive timeout, otherwise we kick perfectly healthy bridges
-    // mid-session. Syncthing default keep-alive is 75s; nginx default
-    // is 75s; node http default is 5s but most app servers set higher.
-    // 120s is a safe ceiling — bridges idle that long are likely dead.
     const IDLE_BRIDGE_MS = 120000;
     const now = Date.now();
     for (const ws of pool) {
@@ -202,7 +193,6 @@ class PortSession {
       if (this.pairs.has(ws) || this.proxyCalls.has(ws)) continue;
       const lastUsed = this.guestLastUsed.get(ws);
       if (lastUsed && (now - lastUsed) > IDLE_BRIDGE_MS) {
-        // Stale keep-alive — kick it. websocat respawn loop replaces it.
         try { ws.close(1000, 'idle keep-alive eviction'); } catch (_) {}
         continue;
       }
