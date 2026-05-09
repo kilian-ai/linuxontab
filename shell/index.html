@@ -6014,6 +6014,7 @@
     } catch (_) {}
   }
 
+
   function tnRenderPortsConfig() {
     if (!tnPortsListEl) return;
     const ports = tnLoadPorts();
@@ -6026,110 +6027,277 @@
       tnPortsListEl.appendChild(empty);
       return;
     }
-    ports.forEach((p, idx) => {
-      const row = document.createElement('div');
-      row.className = 'tn-port-row';
 
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = !!p.enabled;
-      cb.title = p.enabled ? 'enabled — included on next start' : 'disabled';
-      cb.onchange = () => {
-        const arr = tnLoadPorts();
-        if (arr[idx]) { arr[idx].enabled = cb.checked; tnSavePorts(arr); }
-        tnInvalidateDefaultOverride();
-        tnRefresh();
-      };
-      row.appendChild(cb);
+    // Add header row with new column
+    const header = document.createElement('div');
+    header.className = 'tn-port-row';
+    header.style.fontWeight = 'bold';
+    header.style.color = '#aab2bc';
+    header.innerHTML = '<span style="width:18px;display:inline-block"></span>' +
+      '<span class="tn-port-num">port</span>' +
+      '<span style="flex:1">label</span>' +
+      '<span style="width:60px">channels</span>' +
+      '<span style="width:80px">expose</span>' +
+      '<span style="width:90px">relay status</span>' +
+      '<span style="width:32px"></span>';
+    tnPortsListEl.appendChild(header);
 
-      const num = document.createElement('span');
-      num.className = 'tn-port-num';
-      num.textContent = ':' + p.port;
-      row.appendChild(num);
+    // Find the current tunnel code (if any)
+    let tunnelCode = null;
+    if (window.tunnels && Array.isArray(window.tunnels) && window.tunnels.length && window.tunnels[0].code) {
+      tunnelCode = window.tunnels[0].code;
+    } else {
+      // Try to get from /tmp/tunnel.code via tnDiscoverTunnels if not already loaded
+      if (typeof tnDiscoverTunnels === 'function') {
+        tnDiscoverTunnels().then(ts => {
+          if (ts && ts.length && ts[0].code) {
+            window.tunnels = ts;
+            tnRenderPortsConfig();
+          }
+        });
+      }
+    }
 
-      const lbl = document.createElement('input');
-      lbl.type = 'text';
-      lbl.className = 'tn-port-label-input';
-      lbl.value = p.label || '';
-      lbl.placeholder = 'label';
-      lbl.onchange = () => {
-        const arr = tnLoadPorts();
-        if (arr[idx]) { arr[idx].label = lbl.value; tnSavePorts(arr); }
-        tnInvalidateDefaultOverride();
-        tnRefresh();
-      };
-      row.appendChild(lbl);
+    // If we have a code, fetch relay status and render all rows after
+    if (tunnelCode) {
+      tnFetchRelayStatus(tunnelCode).then(relayStatus => {
+        const guestPorts = (relayStatus && relayStatus.guest_ports) ? relayStatus.guest_ports : {};
+        const queueDepth = (relayStatus && relayStatus.guest_queue_depth) ? relayStatus.guest_queue_depth : {};
+        ports.forEach((p, idx) => {
+          const row = document.createElement('div');
+          row.className = 'tn-port-row';
 
-      // Channel count override (websocat bridges per port). Empty = default (32).
-      const chan = document.createElement('input');
-      chan.type = 'number';
-      chan.className = 'tn-port-chan-input';
-      chan.min = '1';
-      chan.max = '256';
-      chan.value = (p.channels && p.channels > 0) ? String(p.channels) : '';
-      chan.placeholder = '32';
-      chan.title = 'parallel websocat bridges (channels) for this port. blank = default (32). higher = more parallel requests but more guest CPU/RAM.';
-      chan.onchange = () => {
-        const arr = tnLoadPorts();
-        if (!arr[idx]) return;
-        const v = parseInt(chan.value, 10);
-        arr[idx].channels = (Number.isFinite(v) && v > 0) ? v : null;
-        tnSavePorts(arr);
-        tnInvalidateDefaultOverride();
-        tnRefresh();
-      };
-      row.appendChild(chan);
+          // Enabled checkbox
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = !!p.enabled;
+          cb.title = p.enabled ? 'enabled — included on next start' : 'disabled';
+          cb.onchange = () => {
+            const arr = tnLoadPorts();
+            if (arr[idx]) { arr[idx].enabled = cb.checked; tnSavePorts(arr); }
+            tnInvalidateDefaultOverride();
+            tnRefresh();
+          };
+          row.appendChild(cb);
 
-      // Expose checkbox: when on, the active tunnel will claim a public TCP
-      // slot (linuxontab-tunnel.fly.dev:PORT) bridged to this guest port,
-      // so any TCP client (irssi, ssh, nc, ...) can connect directly with
-      // no Mac-side helper.
-      const exposeWrap = document.createElement('label');
-      exposeWrap.className = 'tn-port-expose' + (p.expose ? ' tn-expose-on' : '');
-      exposeWrap.title =
-        'Expose this guest port publicly on the relay TCP pool. ' +
-        'Any TCP client can connect to linuxontab-tunnel.fly.dev:<publicPort> ' +
-        'directly (no helper). Costs nothing extra; uses 1 of 10 pool slots ' +
-        'for ~1 hour TTL, refreshed automatically while the tunnel is up.';
-      const exposeCb = document.createElement('input');
-      exposeCb.type = 'checkbox';
-      exposeCb.checked = !!p.expose;
-      exposeCb.onchange = () => {
-        const arr = tnLoadPorts();
-        if (!arr[idx]) return;
-        arr[idx].expose = exposeCb.checked;
-        tnSavePorts(arr);
-        exposeWrap.classList.toggle('tn-expose-on', exposeCb.checked);
-        // If we have an active code and the user just turned expose OFF,
-        // unexpose immediately. If turned ON, sync will pick it up on the
-        // next tnRefresh — but trigger one now for snappy UX.
-        if (!exposeCb.checked) {
-          tnUnexposePort(p.port).catch(() => {});
-        }
-        tnRefresh();
-      };
-      const exposeTxt = document.createElement('span');
-      exposeTxt.textContent = 'expose';
-      exposeWrap.appendChild(exposeCb);
-      exposeWrap.appendChild(exposeTxt);
-      row.appendChild(exposeWrap);
+          // Port number
+          const num = document.createElement('span');
+          num.className = 'tn-port-num';
+          num.textContent = ':' + p.port;
+          row.appendChild(num);
 
-      const del = document.createElement('button');
-      del.className = 'tn-port-del';
-      del.textContent = '✕';
-      del.title = 'remove this port from the config';
-      del.onclick = () => {
-        const arr = tnLoadPorts();
-        arr.splice(idx, 1);
-        tnSavePorts(arr);
-        tnInvalidateDefaultOverride();
-        tnRenderPortsConfig();
-        tnRefresh();
-      };
-      row.appendChild(del);
+          // Label
+          const lbl = document.createElement('input');
+          lbl.type = 'text';
+          lbl.className = 'tn-port-label-input';
+          lbl.value = p.label || '';
+          lbl.placeholder = 'label';
+          lbl.onchange = () => {
+            const arr = tnLoadPorts();
+            if (arr[idx]) { arr[idx].label = lbl.value; tnSavePorts(arr); }
+            tnInvalidateDefaultOverride();
+            tnRefresh();
+          };
+          row.appendChild(lbl);
 
-      tnPortsListEl.appendChild(row);
-    });
+          // Channels
+          const chan = document.createElement('input');
+          chan.type = 'number';
+          chan.className = 'tn-port-chan-input';
+          chan.min = '1';
+          chan.max = '256';
+          chan.value = (p.channels && p.channels > 0) ? String(p.channels) : '';
+          chan.placeholder = '32';
+          chan.title = 'parallel websocat bridges (channels) for this port. blank = default (32). higher = more parallel requests but more guest CPU/RAM.';
+          chan.onchange = () => {
+            const arr = tnLoadPorts();
+            if (!arr[idx]) return;
+            const v = parseInt(chan.value, 10);
+            arr[idx].channels = (Number.isFinite(v) && v > 0) ? v : null;
+            tnSavePorts(arr);
+            tnInvalidateDefaultOverride();
+            tnRefresh();
+          };
+          row.appendChild(chan);
+
+          // Expose checkbox
+          const exposeWrap = document.createElement('label');
+          exposeWrap.className = 'tn-port-expose' + (p.expose ? ' tn-expose-on' : '');
+          exposeWrap.title =
+            'Expose this guest port publicly on the relay TCP pool. ' +
+            'Any TCP client can connect to linuxontab-tunnel.fly.dev:<publicPort> ' +
+            'directly (no helper). Costs nothing extra; uses 1 of 10 pool slots ' +
+            'for ~1 hour TTL, refreshed automatically while the tunnel is up.';
+          const exposeCb = document.createElement('input');
+          exposeCb.type = 'checkbox';
+          exposeCb.checked = !!p.expose;
+          exposeCb.onchange = () => {
+            const arr = tnLoadPorts();
+            if (!arr[idx]) return;
+            arr[idx].expose = exposeCb.checked;
+            tnSavePorts(arr);
+            exposeWrap.classList.toggle('tn-expose-on', exposeCb.checked);
+            if (!exposeCb.checked) {
+              tnUnexposePort(p.port).catch(() => {});
+            }
+            tnRefresh();
+          };
+          const exposeTxt = document.createElement('span');
+          exposeTxt.textContent = 'expose';
+          exposeWrap.appendChild(exposeCb);
+          exposeWrap.appendChild(exposeTxt);
+          row.appendChild(exposeWrap);
+
+          // Relay/bridge status column
+          const statusCell = document.createElement('span');
+          statusCell.style.display = 'inline-block';
+          statusCell.style.width = '90px';
+          statusCell.style.textAlign = 'center';
+          let relayState = 'unknown';
+          let relayClass = '';
+          const portStr = String(p.port);
+          if (guestPorts && Object.prototype.hasOwnProperty.call(guestPorts, portStr)) {
+            // Port is registered with relay
+            const qd = queueDepth[portStr];
+            if (qd && qd > 0) {
+              relayState = '✓ bridged';
+              relayClass = 'ok';
+            } else {
+              relayState = 'idle';
+              relayClass = 'hint';
+            }
+          } else {
+            relayState = '✗ not bridged';
+            relayClass = 'err';
+          }
+          statusCell.textContent = relayState;
+          statusCell.className = relayClass;
+          row.appendChild(statusCell);
+
+          // Delete button
+          const del = document.createElement('button');
+          del.className = 'tn-port-del';
+          del.textContent = '✕';
+          del.title = 'remove this port from the config';
+          del.onclick = () => {
+            const arr = tnLoadPorts();
+            arr.splice(idx, 1);
+            tnSavePorts(arr);
+            tnInvalidateDefaultOverride();
+            tnRenderPortsConfig();
+            tnRefresh();
+          };
+          row.appendChild(del);
+
+          tnPortsListEl.appendChild(row);
+        });
+      });
+    } else {
+      // No tunnel code yet, render rows with status as 'n/a'
+      ports.forEach((p, idx) => {
+        const row = document.createElement('div');
+        row.className = 'tn-port-row';
+        // Enabled checkbox
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = !!p.enabled;
+        cb.title = p.enabled ? 'enabled — included on next start' : 'disabled';
+        cb.onchange = () => {
+          const arr = tnLoadPorts();
+          if (arr[idx]) { arr[idx].enabled = cb.checked; tnSavePorts(arr); }
+          tnInvalidateDefaultOverride();
+          tnRefresh();
+        };
+        row.appendChild(cb);
+        // Port number
+        const num = document.createElement('span');
+        num.className = 'tn-port-num';
+        num.textContent = ':' + p.port;
+        row.appendChild(num);
+        // Label
+        const lbl = document.createElement('input');
+        lbl.type = 'text';
+        lbl.className = 'tn-port-label-input';
+        lbl.value = p.label || '';
+        lbl.placeholder = 'label';
+        lbl.onchange = () => {
+          const arr = tnLoadPorts();
+          if (arr[idx]) { arr[idx].label = lbl.value; tnSavePorts(arr); }
+          tnInvalidateDefaultOverride();
+          tnRefresh();
+        };
+        row.appendChild(lbl);
+        // Channels
+        const chan = document.createElement('input');
+        chan.type = 'number';
+        chan.className = 'tn-port-chan-input';
+        chan.min = '1';
+        chan.max = '256';
+        chan.value = (p.channels && p.channels > 0) ? String(p.channels) : '';
+        chan.placeholder = '32';
+        chan.title = 'parallel websocat bridges (channels) for this port. blank = default (32). higher = more parallel requests but more guest CPU/RAM.';
+        chan.onchange = () => {
+          const arr = tnLoadPorts();
+          if (!arr[idx]) return;
+          const v = parseInt(chan.value, 10);
+          arr[idx].channels = (Number.isFinite(v) && v > 0) ? v : null;
+          tnSavePorts(arr);
+          tnInvalidateDefaultOverride();
+          tnRefresh();
+        };
+        row.appendChild(chan);
+        // Expose checkbox
+        const exposeWrap = document.createElement('label');
+        exposeWrap.className = 'tn-port-expose' + (p.expose ? ' tn-expose-on' : '');
+        exposeWrap.title =
+          'Expose this guest port publicly on the relay TCP pool. ' +
+          'Any TCP client can connect to linuxontab-tunnel.fly.dev:<publicPort> ' +
+          'directly (no helper). Costs nothing extra; uses 1 of 10 pool slots ' +
+          'for ~1 hour TTL, refreshed automatically while the tunnel is up.';
+        const exposeCb = document.createElement('input');
+        exposeCb.type = 'checkbox';
+        exposeCb.checked = !!p.expose;
+        exposeCb.onchange = () => {
+          const arr = tnLoadPorts();
+          if (!arr[idx]) return;
+          arr[idx].expose = exposeCb.checked;
+          tnSavePorts(arr);
+          exposeWrap.classList.toggle('tn-expose-on', exposeCb.checked);
+          if (!exposeCb.checked) {
+            tnUnexposePort(p.port).catch(() => {});
+          }
+          tnRefresh();
+        };
+        const exposeTxt = document.createElement('span');
+        exposeTxt.textContent = 'expose';
+        exposeWrap.appendChild(exposeCb);
+        exposeWrap.appendChild(exposeTxt);
+        row.appendChild(exposeWrap);
+        // Relay/bridge status column
+        const statusCell = document.createElement('span');
+        statusCell.style.display = 'inline-block';
+        statusCell.style.width = '90px';
+        statusCell.style.textAlign = 'center';
+        statusCell.textContent = 'n/a';
+        statusCell.className = 'hint';
+        row.appendChild(statusCell);
+        // Delete button
+        const del = document.createElement('button');
+        del.className = 'tn-port-del';
+        del.textContent = '✕';
+        del.title = 'remove this port from the config';
+        del.onclick = () => {
+          const arr = tnLoadPorts();
+          arr.splice(idx, 1);
+          tnSavePorts(arr);
+          tnInvalidateDefaultOverride();
+          tnRenderPortsConfig();
+          tnRefresh();
+        };
+        row.appendChild(del);
+        tnPortsListEl.appendChild(row);
+      });
+    }
   }
 
   if (tnPortsAddForm) {
