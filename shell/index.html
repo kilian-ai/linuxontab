@@ -6060,9 +6060,15 @@
 
     // If we have a code, fetch relay status and render all rows after
     if (tunnelCode) {
-      tnFetchRelayStatus(tunnelCode).then(relayStatus => {
+      Promise.all([
+        tnFetchRelayStatus(tunnelCode),
+        tnFetchExposeStatus(tunnelCode)
+      ]).then(([relayStatus, exposeStatus]) => {
+        console.log('[tunnels-panel] relayStatus:', relayStatus);
+        console.log('[tunnels-panel] exposeStatus:', exposeStatus);
         const guestPorts = (relayStatus && relayStatus.guest_ports) ? relayStatus.guest_ports : {};
         const queueDepth = (relayStatus && relayStatus.guest_queue_depth) ? relayStatus.guest_queue_depth : {};
+        const assignments = (exposeStatus && exposeStatus.assignments) ? exposeStatus.assignments : [];
         ports.forEach((p, idx) => {
           const row = document.createElement('div');
           row.className = 'tn-port-row';
@@ -6155,7 +6161,10 @@
           statusCell.style.textAlign = 'center';
           let relayState = 'unknown';
           let relayClass = '';
+          let hoverTxt = '';
           const portStr = String(p.port);
+          // Find public assignment for this port
+          const assignment = assignments.find(a => a.port === p.port);
           if (guestPorts && Object.prototype.hasOwnProperty.call(guestPorts, portStr)) {
             // Port is registered with relay
             const qd = queueDepth[portStr];
@@ -6170,8 +6179,13 @@
             relayState = '✗ not bridged';
             relayClass = 'err';
           }
+          if (assignment && assignment.publicPort) {
+            relayState += ` :${assignment.publicPort}`;
+            hoverTxt = `linuxontab-tunnel.fly.dev:${assignment.publicPort}`;
+          }
           statusCell.textContent = relayState;
           statusCell.className = relayClass;
+          if (hoverTxt) statusCell.title = hoverTxt;
           row.appendChild(statusCell);
 
           // Delete button
