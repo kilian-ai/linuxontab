@@ -5489,20 +5489,39 @@
     const pids  = section('TUNNEL_PIDS').split(/\s+/).filter(Boolean);
     const cmdFile = section('TUNNEL_CMD');
     const ps    = section('TUNNEL_PS').split(/\n/).map(s => s.trim()).filter(Boolean);
-
-    const tunnels = [];
+    // If a code file exists use that single-session canonical view.
     if (code) {
-      tunnels.push({
-        id: code,
-        code,
-        ports,
-        pids,
-        cmd: cmdFile || null,
-        ps,
-      });
-    } else if (ps.length) {
-      // No code file but websocat processes running.
-      tunnels.push({ id: 'unmanaged', code: null, ports: [], pids: [], cmd: null, ps });
+      return [{ id: code, code, ports, pids, cmd: cmdFile || null, ps }];
+    }
+
+    // No /tmp/tunnel.code — attempt to infer active sessions from `ps`.
+    // Group websocat processes by extracted pairing code so multiple
+    // codes (leftover or unmanaged) are shown separately instead of
+    // collapsing into a single "unmanaged" row.
+    const byCode = Object.create(null);
+    const unmatched = [];
+    for (const line of ps) {
+      // Expected line: "<pid> websocat ... ?code=ABCD&port=123 ..."
+      const mCode = line.match(/code=([A-Z0-9]{3,})/i);
+      const mPort = line.match(/port=(\d{1,5})/i);
+      const mPid  = line.match(/^(\d+)/);
+      if (mCode) {
+        const cc = (mCode[1] || '').toUpperCase();
+        if (!byCode[cc]) byCode[cc] = { id: cc, code: cc, ports: new Set(), pids: new Set(), cmd: cmdFile || null, ps: [] };
+        if (mPort) byCode[cc].ports.add(mPort[1]);
+        if (mPid)  byCode[cc].pids.add(mPid[1]);
+        byCode[cc].ps.push(line);
+      } else {
+        unmatched.push(line);
+      }
+    }
+
+    const tunnels = Object.keys(byCode).map(k => {
+      const e = byCode[k];
+      return { id: e.code, code: e.code, ports: Array.from(e.ports).sort((a,b)=>a-b), pids: Array.from(e.pids), cmd: e.cmd, ps: e.ps };
+    });
+    if (unmatched.length) {
+      tunnels.push({ id: 'unmanaged', code: null, ports: [], pids: [], cmd: cmdFile || null, ps: unmatched });
     }
     return tunnels;
   }
