@@ -1,0 +1,10 @@
+{
+  "name": "linuxontab-dev-sync",
+  "version": "0.1.0",
+  "description": "Host/guest dev-sync utilities for LinuxOnTab",
+  "license": "MIT",
+  "dependencies": {
+    "chokidar": "^3.5.3",
+    "node-fetch": "^2.6.7"
+  }
+}
