@@ -440,6 +440,13 @@
           <button type="button" id="tn-ports-reset" title="restore default port list (22, 8080, 22000, 8384)">reset defaults</button>
         </form>
       </div>
+      <div id="tn-guest-actions">
+        <div class="tn-section-hdr">
+          <b>guest helpers</b>
+          <span class="hint" style="font-size:11px">Convenience actions to prepare guest, start IRC, and spawn websocat bridges</span>
+        </div>
+        <div id="tn-guest-actions-list"></div>
+      </div>
       <div id="tunnels-list"></div>
       <div id="tunnels-log"></div>
     </div>
@@ -6202,6 +6209,7 @@
     tunnelsPanel.hidden = false;
     panelTmuxFollow('tunnel');
     tnRenderPortsConfig();
+    tnRenderGuestActions();
     tnRefresh();
   };
   tunnelsCloseBtn.onclick = () => { tunnelsPanel.hidden = true; panelTmuxBack(); term.focus(); };
@@ -6580,6 +6588,87 @@
   }
 
   setInterval(() => { tunnelsBtn.disabled = !emulator; }, 800);
+
+  // ── Guest helper scripts & actions for the tunnels panel ─────────────
+  const tnGuestActionsList = $('tn-guest-actions-list');
+
+  const TN_GUEST_SCRIPTS = {
+    'dns-refresh': `ip link set eth0 down 2>/dev/null; ip link set eth0 up 2>/dev/null; killall udhcpc >/dev/null 2>&1; udhcpc -i eth0 -q -n -f -T 2 -t 5 >/dev/null 2>&1; printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\n' > /etc/resolv.conf; echo "[restore-net] DHCP + DNS refreshed"`,
+    'install-tools': `apk update && apk add --no-cache --upgrade websocat curl jq openssh-server unbound ngircd irssi || true`,
+    'start-sshd': `ssh-keygen -A || true; grep -q '^PermitRootLogin' /etc/ssh/sshd_config || echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config; /usr/sbin/sshd || true`,
+    'install-ngircd': `cat >/etc/ngircd/ngircd.conf <<'EOF'\n[Global]\n    Name = irc.linuxontab.local\n    AdminInfo1 = root\n    AdminInfo2 = LinuxOnTab\n    AdminEMail = root@localhost\n    Info = LinuxOnTab IRC\n    Listen = 0.0.0.0\n    Ports = 6667\n    MotdPhrase = \"Welcome to your browser-only IRC server.\"\n\n[Limits]\n    MaxConnections = 100\n    MaxJoins = 10\n\n[Options]\n    AllowRemoteOper = no\n    ConnectIPv6 = no\n    DNS = no\n    PAM = no\n\n[Channel]\n    Name = #lobby\n    Topic = LinuxOnTab lobby\nEOF\nngircd || true`,
+    'check-irc-listen': `ss -lntp | grep 6667 || true`,
+    'run-irssi': `irssi -c 127.0.0.1 -p 6667 -n kilian || true`,
+    'kill-websocat': `pkill -9 -f websocat || true; pkill -9 -f 'while.*websocat' || true; sleep 1; pgrep -af websocat || true`,
+    'register-code': `REG=$(curl -sS -m 10 -X POST https://linuxontab-tunnel.fly.dev/port/register -H 'content-type: application/json' -d '{"ports":[22,6667]}'); echo "$REG"; CODE=$(echo "$REG" | sed -n 's/.*"code":"\\([A-Z0-9]*\\)".*/\\1/p'); echo "$CODE" > /tmp/tunnel.code; echo CODE=$CODE`,
+    'start-bridges': `CODE=$(cat /tmp/tunnel.code 2>/dev/null || echo); > /tmp/ws.log; for P in 22 6667; do for i in 1 2 3 4; do setsid sh -c "while :; do websocat -b tcp:127.0.0.1:$P 'wss://linuxontab-tunnel.fly.dev/port/guest?code=$CODE&port=$P' >>/tmp/ws.log 2>&1; echo \"$(date +%T) bridge $P/$i died\" >> /tmp/ws.log; sleep 1; done" </dev/null >/dev/null 2>&1 & done; done; sleep 3; tail -n 20 /tmp/ws.log`,
+    'tail-ws-log': `tail -n 200 /tmp/ws.log || true`,
+  };
+
+  function tnGetCurrentCodeSync() {
+    if (window.tunnels && Array.isArray(window.tunnels) && window.tunnels.length && window.tunnels[0].code) return window.tunnels[0].code;
+    return null;
+  }
+
+  async function tnGetCurrentCode() {
+    const w = tnGetCurrentCodeSync();
+    if (w) return w;
+    const r = await tnExec('if [ -s /tmp/tunnel.code ]; then head -1 /tmp/tunnel.code; fi', { timeout: 3000 }).catch(() => ({ stdout: '' }));
+    return (r.stdout || '').trim().split('\n')[0] || null;
+  }
+
+  async function tnRunGuestScript(key, label, timeoutMs) {
+    const script = TN_GUEST_SCRIPTS[key];
+    if (!script) { tnLog('unknown script: ' + key, 'err'); return; }
+    tnLog('$ ' + (label || key), 'cmd');
+    tnLog(script.split('\n')[0].slice(0, 200) + (script.length > 200 ? ' …' : ''), 'out');
+    try {
+      const r = await tnExec(script, { timeout: timeoutMs || 180000 });
+      const out = (r.stdout || '').trim();
+      if (out) out.split('\n').forEach(l => tnLog(l, 'out'));
+      tnLog('exit=' + r.exitCode, r.exitCode === 0 ? 'ok' : 'err');
+    } catch (e) {
+      tnLog('script error: ' + (e && e.message || e), 'err');
+    }
+    // refresh UI state after running a helper
+    try { await tnRefresh(); } catch (_) {}
+  }
+
+  function tnRenderGuestActions() {
+    if (!tnGuestActionsList) return;
+    tnGuestActionsList.innerHTML = '';
+    const makeBtn = (id, text, cb) => {
+      const b = document.createElement('button'); b.textContent = text; b.onclick = cb; return b;
+    };
+    tnGuestActionsList.appendChild(makeBtn('dns', 'DHCP/DNS refresh', () => tnRunGuestScript('dns-refresh', 'DHCP/DNS refresh', 45000)));
+    tnGuestActionsList.appendChild(makeBtn('install', 'install prerequisites (websocat,ngircd,irssi)', () => tnRunGuestScript('install-tools', 'install tools', 240000)));
+    tnGuestActionsList.appendChild(makeBtn('sshd', 'start sshd', () => tnRunGuestScript('start-sshd', 'start sshd', 30000)));
+    tnGuestActionsList.appendChild(makeBtn('ngircd', 'install & start ngircd', () => tnRunGuestScript('install-ngircd', 'install ngircd', 30000)));
+    tnGuestActionsList.appendChild(makeBtn('checkirc', 'check IRC listening', async () => { await tnRunGuestScript('check-irc-listen', 'check IRC', 8000); }));
+    tnGuestActionsList.appendChild(makeBtn('irssi', 'run irssi (guest)', () => tnRunGuestScript('run-irssi', 'run irssi', 60000)));
+    tnGuestActionsList.appendChild(makeBtn('killws', 'kill websocat (cleanup)', () => tnRunGuestScript('kill-websocat', 'kill websocat', 20000)));
+    tnGuestActionsList.appendChild(makeBtn('reg', 'register new code (API)', async () => { await tnRunGuestScript('register-code', 'register code', 15000); }));
+    tnGuestActionsList.appendChild(makeBtn('bridges', 'spawn websocat bridges', async () => { await tnRunGuestScript('start-bridges', 'spawn bridges', 30000); }));
+    tnGuestActionsList.appendChild(makeBtn('tailws', 'tail /tmp/ws.log', () => tnRunGuestScript('tail-ws-log', 'tail ws.log', 10000)));
+    // expose helper for IRC
+    const btnExpose = document.createElement('button');
+    btnExpose.textContent = 'claim public slot :6667';
+    btnExpose.onclick = async () => {
+      const code = await tnGetCurrentCode();
+      if (!code) { tnLog('no pairing code found; start the tunnel first', 'err'); return; }
+      tnLog('claiming public slot for :6667 (code=' + code + ')', 'cmd');
+      try {
+        const r = await tnExposePort(code, 6667);
+        if (r && r.publicPort) {
+          tnLog('assigned public port: ' + r.publicPort, 'ok');
+        } else {
+          tnLog('expose failed or no publicPort returned', 'err');
+        }
+      } catch (e) { tnLog('expose error: ' + (e && e.message || e), 'err'); }
+      await tnRefresh();
+    };
+    tnGuestActionsList.appendChild(btnExpose);
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Claw panel — browser chatbot backed by clawlite running in the guest.
