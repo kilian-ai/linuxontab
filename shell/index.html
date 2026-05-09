@@ -1317,9 +1317,12 @@
     const repos = getGhRepos();
     if (!repos || !repos.length) return [];
     const out = [];
+    const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
     for (const repo of repos) {
       try {
-        const apiUrl = 'https://api.github.com/repos/' + encodeURIComponent(repo) + '/releases';
+        if (!REPO_RE.test(repo)) { console.warn('[gh] invalid repo name, skipping', repo); continue; }
+        // Do not encode the repository path separators — GitHub API expects owner/repo
+        const apiUrl = 'https://api.github.com/repos/' + repo + '/releases';
         const proxy = 'https://relay.linuxontab.com/cors?url=' + encodeURIComponent(apiUrl);
         const r = await fetch(proxy, { credentials: 'omit' });
         if (!r.ok) { console.warn('[gh] releases fetch failed', repo, r.status); continue; }
