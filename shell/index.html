@@ -5730,6 +5730,22 @@
     relay.className = 'tn-meta';
     relay.textContent = 'relay: querying…';
     row.appendChild(relay);
+    // make relay status clickable to force a refresh/probe
+    relay.style.cursor = 'pointer';
+    relay.title = (relay.title || '') + '\n(click to refresh relay status)';
+    relay.addEventListener('click', async (ev) => {
+      try {
+        ev.preventDefault();
+      } catch (_) {}
+      relay.textContent = 'relay: refreshing…';
+      try {
+        await tnFetchRelayStatus(t.code);
+        await tnRefresh();
+      } catch (e) {
+        tnLog('relay probe failed: ' + ((e && e.message) || e), 'err');
+        try { await tnRefresh(); } catch (_) {}
+      }
+    });
 
     // Public TCP exposures (Fly relay TCP pool). Rendered after we know
     // which guest ports the relay sees as registered.
@@ -5865,6 +5881,11 @@
     actions.appendChild(btnRestart);
     actions.appendChild(btnStop);
     actions.appendChild(btnEdit);
+    const btnProbe = document.createElement('button');
+    btnProbe.textContent = 'probe';
+    btnProbe.title = 're-check relay status and exposures';
+    btnProbe.onclick = async () => { tnLog('probing relay status…', 'info'); await tnRefresh(); };
+    actions.appendChild(btnProbe);
     row.appendChild(actions);
 
     // Per-port "tunnel" buttons. Works for any registered port — copies a
@@ -6355,11 +6376,12 @@
           let relayClass = '';
           let hoverTxt = '';
           const portStr = String(p.port);
-          // Find public assignment for this port
-          const assignment = assignments.find(a => a.port === p.port);
-          if (guestPorts && (Array.isArray(guestPorts) ? guestPorts.includes(p.port) : Object.prototype.hasOwnProperty.call(guestPorts, portStr))) {
+          // Find public assignment for this port (coerce to numbers for safety)
+          const assignment = assignments.find(a => Number(a.port) === Number(p.port));
+          const isRegistered = guestPorts && (Array.isArray(guestPorts) ? guestPorts.map(String).includes(portStr) : Object.prototype.hasOwnProperty.call(guestPorts, portStr));
+          if (isRegistered) {
             // Port is registered with relay
-            const qd = queueDepth[portStr];
+            const qd = queueDepth && queueDepth[portStr];
             if (qd && qd > 0) {
               relayState = '✓ bridged';
               relayClass = 'ok';
@@ -6378,6 +6400,21 @@
           statusCell.textContent = relayState;
           statusCell.className = relayClass;
           if (hoverTxt) statusCell.title = hoverTxt;
+          // allow clicking the status to re-sync exposures for this code
+          statusCell.style.cursor = 'pointer';
+          statusCell.title = (statusCell.title || '') + '\n(click to re-sync exposures)';
+          statusCell.onclick = async () => {
+            try {
+              statusCell.textContent = 'syncing…';
+              await tnSyncExposures(tunnelCode, (guestPorts && Array.isArray(guestPorts)) ? guestPorts : Object.keys(guestPorts || {}));
+              tnLog('exposures synced', 'ok');
+              tnRenderPortsConfig();
+              await tnRefresh();
+            } catch (e) {
+              tnLog('expose sync failed: ' + ((e && e.message) || e), 'err');
+              try { tnRenderPortsConfig(); } catch (_) {}
+            }
+          };
           row.appendChild(statusCell);
 
           // Delete button
