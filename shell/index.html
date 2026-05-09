@@ -328,6 +328,8 @@
     <b>v86</b>
     <label title="snapshot to boot/restore. Fresh-boot entries (★) start the ISO clean.">snapshot:
       <select id="snap"></select>
+      <button id="add-gh-snap" title="add GitHub remote snapshot">GH</button>
+      <button id="upload-snap" title="upload snapshot to GitHub">↑GH</button>
     </label>
     <button id="boot">boot</button>
     <button id="reset" disabled>reset</button>
@@ -816,6 +818,7 @@
   // sLog: console-only stub (original wrote into #social-log which is gone)
   function sLog(msg, cls) { try { console.log('[social]', msg, cls || ''); } catch (_) {} }
   const bootBtn = $('boot'), resetBtn = $('reset'), saveBtn = $('save');
+  const addGhBtn = $('add-gh-snap'), uploadSnapBtn = $('upload-snap');
   const restoreBtn = $('restore'), clearBtn = $('clear');
   const pushSnapBtn = $('push-snap');
   const renameBtn = $('rename'), cloneBtn = $('clone');
@@ -1157,6 +1160,15 @@
   function parseSel(val) {
     if (typeof val !== 'string' || val === '') return null;
     if (val.startsWith('fresh:')) return { iso: val.slice(6), name: null, isFresh: true, key: val };
+    // hosted:<iso>:<url-encoded> — remote hosted snapshot (e.g. GitHub asset)
+    if (val.startsWith('hosted:')) {
+      const rest = val.slice(7);
+      const idx = rest.indexOf(':');
+      if (idx === -1) return null;
+      const iso = rest.slice(0, idx);
+      const url = decodeURIComponent(rest.slice(idx + 1));
+      return { iso: iso || DEFAULT_ISO, name: null, isFresh: true, hostedUrl: url, key: val };
+    }
     const p = parseSnapKey(val);
     if (!p) return null;
     return { iso: p.iso, name: p.name, isFresh: false, key: val };
@@ -1235,6 +1247,20 @@
       el.value = o.value; el.textContent = o.label;
       snapEl.appendChild(el);
     }
+    // Append remote GitHub-hosted snapshots (user-configured repos)
+    try {
+      const remote = await fetchGhSnapshots();
+      if (remote && remote.length) {
+        const sep = document.createElement('option');
+        sep.disabled = true; sep.textContent = '--- Remote snapshots (GitHub) ---';
+        snapEl.appendChild(sep);
+        for (const o of remote) {
+          const el = document.createElement('option');
+          el.value = o.value; el.textContent = o.label; el.dataset.remote = 'github';
+          snapEl.appendChild(el);
+        }
+      }
+    } catch (e) { console.warn('[snap] remote fetch failed', e); }
     // Resolve desired selection
     const stored = (() => { try { return localStorage.getItem(SEL_LS_KEY) || ''; } catch (_) { return ''; } })();
     const candidates = [
@@ -1277,6 +1303,144 @@
     // selection, save creates the "default" snapshot for that ISO.
     saveBtn.disabled = !running;
   }
+
+  // ---- GitHub remote snapshots helpers ----
+  const GH_REPOS_LS = 'v86.gh-snapshot-repos';
+  function getGhRepos() {
+    try { return JSON.parse(localStorage.getItem(GH_REPOS_LS) || '[]'); } catch (_) { return []; }
+  }
+  function saveGhRepos(list) {
+    try { localStorage.setItem(GH_REPOS_LS, JSON.stringify(list || [])); } catch (_) {}
+  }
+
+  async function fetchGhSnapshots() {
+    const repos = getGhRepos();
+    if (!repos || !repos.length) return [];
+    const out = [];
+    for (const repo of repos) {
+      try {
+        const apiUrl = 'https://api.github.com/repos/' + encodeURIComponent(repo) + '/releases';
+        const proxy = 'https://relay.linuxontab.com/cors?url=' + encodeURIComponent(apiUrl);
+        const r = await fetch(proxy, { credentials: 'omit' });
+        if (!r.ok) { console.warn('[gh] releases fetch failed', repo, r.status); continue; }
+        const rels = await r.json();
+        for (const rel of rels || []) {
+          const tag = rel.tag_name || rel.name || '';
+          for (const asset of rel.assets || []) {
+            const url = asset.browser_download_url;
+            if (!url) continue;
+            const name = asset.name || url.split('/').pop();
+            // Heuristic iso detection from asset name
+            let iso = DEFAULT_ISO;
+            const lname = String(name).toLowerCase();
+            for (const cat of ISO_CATALOG) {
+              if (lname.includes(cat.iso.split('.')[0])) { iso = cat.iso; break; }
+            }
+            out.push({ value: 'hosted:' + iso + ':' + encodeURIComponent(url), label: `GH: ${repo} · ${tag} · ${name}` });
+          }
+        }
+      } catch (e) { console.warn('[gh] fetch error', repo, e); }
+    }
+    return out;
+  }
+
+  // Add GH repo button handler: prompt for owner/repo and refresh list
+  if (addGhBtn) addGhBtn.onclick = async () => {
+    try {
+      const repo = (await uiPrompt('Add GitHub repo (owner/repo)', getGhRepos()[0] || '') ) || '';
+      if (!repo) { setStatus('add GitHub repo: cancelled'); return; }
+      const list = getGhRepos();
+      if (!list.includes(repo)) { list.unshift(repo); saveGhRepos(list); }
+      setStatus('refreshing snapshot list…');
+      await populateSnapSelect();
+      setStatus('added GitHub repo: ' + repo, 'ok');
+    } catch (e) { setStatus('add GitHub repo failed: ' + e.message, 'err'); }
+  };
+
+  // Get snapshot bytes (from IDB or live save)
+  async function getSnapshotBytesForUpload(sel) {
+    if (sel && !sel.isFresh) {
+      const v = await idbGet(sel.key);
+      if (!v) throw new Error('snapshot not found');
+      if (v instanceof Uint8Array) return v;
+      if (v instanceof ArrayBuffer) return new Uint8Array(v);
+      // Handle structured-cloned typed arrays
+      if (v && v.buffer instanceof ArrayBuffer) return new Uint8Array(v.buffer, v.byteOffset || 0, v.byteLength || v.length);
+      throw new Error('unsupported snapshot format');
+    }
+    if (!emulator) throw new Error('no running VM to snapshot');
+    // perform a manual save (unmount first)
+    const ok = await umountBeforeSave();
+    if (!ok) console.warn('umountBeforeSave failed — continuing');
+    const st = await emulator.save_state();
+    await remountAfterSave();
+    if (st instanceof Uint8Array) return st;
+    if (st instanceof ArrayBuffer) return new Uint8Array(st);
+    return new Uint8Array(st);
+  }
+
+  // Upload snapshot to GitHub via relay secret-proxy
+  if (uploadSnapBtn) uploadSnapBtn.onclick = async () => {
+    uploadSnapBtn.disabled = true;
+    try {
+      const sel = parseSel(snapEl.value);
+      setStatus('preparing snapshot…');
+      const bytes = await getSnapshotBytesForUpload(sel);
+      setStatus(`snapshot ready (${(bytes.byteLength/1048576).toFixed(1)} MB)`);
+      const defaultRepo = getGhRepos()[0] || '';
+      const repo = (await uiPrompt('Upload snapshot to GitHub repo (owner/repo)', defaultRepo)) || '';
+      if (!repo) { setStatus('upload cancelled'); return; }
+      // Save repo to list
+      const list = getGhRepos(); if (!list.includes(repo)) { list.unshift(repo); saveGhRepos(list); }
+      const tag = (await uiPrompt('Release tag (e.g. v1.0-snap)', 'v86-snap-' + Date.now().toString(36))) || '';
+      if (!tag) { setStatus('upload cancelled'); return; }
+      const fileName = (await uiPrompt('Asset filename', `v86-snap-${Date.now().toString(36)}.bin`)) || `v86-snap-${Date.now().toString(36)}.bin`;
+
+      setStatus('creating GitHub release…');
+      const createUrl = 'https://api.github.com/repos/' + repo + '/releases';
+      const createResp = await fetch('https://relay.linuxontab.com/secret-proxy/' + encodeURIComponent(createUrl), {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer LOT_SECRET_GITHUB',
+          'Accept': 'application/vnd.github+json',
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ tag_name: tag, name: tag, draft: true })
+      });
+      if (!createResp.ok) {
+        const txt = await createResp.text().catch(() => '');
+        throw new Error('create release failed: ' + createResp.status + ' ' + txt);
+      }
+      const release = await createResp.json();
+      const id = release.id;
+      if (!id) throw new Error('create release returned no id');
+
+      setStatus('uploading asset…');
+      const uploadUrl = 'https://uploads.github.com/repos/' + repo + '/releases/' + id + '/assets?name=' + encodeURIComponent(fileName);
+      const upResp = await fetch('https://relay.linuxontab.com/secret-proxy/' + encodeURIComponent(uploadUrl), {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer LOT_SECRET_GITHUB',
+          'Content-Type': 'application/octet-stream',
+          'Accept': 'application/vnd.github+json'
+        },
+        body: bytes
+      });
+      if (!(upResp.status === 200 || upResp.status === 201)) {
+        const txt = await upResp.text().catch(() => '');
+        throw new Error('upload failed: ' + upResp.status + ' ' + txt);
+      }
+      const asset = await upResp.json();
+      const url = asset.browser_download_url || asset.url || null;
+      if (!url) throw new Error('upload succeeded but no browser_download_url returned');
+      setStatus('uploaded snapshot to GitHub: ' + url, 'ok');
+      // Add to GH repos and refresh list (so the new asset appears in the dropdown)
+      await populateSnapSelect('hosted:' + (sel ? sel.iso : DEFAULT_ISO) + ':' + encodeURIComponent(url));
+    } catch (e) {
+      setStatus('upload failed: ' + (e && e.message || e), 'err');
+      console.warn('[upload]', e);
+    } finally { uploadSnapBtn.disabled = false; }
+  };
 
   // ---- Auto-save: debounced snapshot after activity settles ----
   // Live ISOs write to tmpfs, so the only way to "persist FS changes" is
@@ -2086,6 +2250,10 @@
     // selections become an idbGet-restore.
     let sel = opts.snapKey ? parseSel(opts.snapKey) : parseSel(snapEl.value);
     if (!sel) sel = parseSel('fresh:' + DEFAULT_ISO);
+    // If selection points to a hosted snapshot, treat it as opts.snapshotUrl
+    if (sel && sel.hostedUrl && !opts.snapshotUrl) {
+      opts.snapshotUrl = sel.hostedUrl;
+    }
     // ?snapshot=URL path: force a fresh-style sel (we don't touch IndexedDB,
     // we use the iso from the current selection / ?iso=) — the actual
     // restore buffer comes from a fetch() below.

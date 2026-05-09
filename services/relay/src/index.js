@@ -1551,6 +1551,7 @@ export class RelaySession {
 
 const SECRET_PROXY_ALLOW = new Set([
   'api.github.com',
+  'uploads.github.com',
   'github.com',
   'api.openai.com',
   'api.anthropic.com',
