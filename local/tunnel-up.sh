@@ -380,6 +380,30 @@ if ! ifconfig lo 2>/dev/null | grep -q '127\.0\.0\.1'; then
         || true
 fi
 
+# If Docker is present in the guest, write a conservative daemon config
+# to avoid many concurrent TLS handshakes on flaky/latency-limited links.
+# This is idempotent and only applied when `/etc/docker` is writable.
+if command -v docker >/dev/null 2>&1 || command -v dockerd >/dev/null 2>&1; then
+    echo "[tunnel] docker detected — applying conservative daemon.json"
+    if [ -w /etc/docker ] || [ -w /etc ]; then
+        cat > /etc/docker/daemon.json <<'DOCKCFG'
+{
+  "max-concurrent-downloads": 1,
+  "max-concurrent-uploads": 1
+}
+DOCKCFG
+        # Try to restart docker if service helpers are available.
+        if command -v rc-service >/dev/null 2>&1; then
+            rc-service docker restart 2>/dev/null || true
+        elif command -v service >/dev/null 2>&1; then
+            service docker restart 2>/dev/null || true
+        else
+            pkill -f dockerd 2>/dev/null || true
+            nohup dockerd >/tmp/dockerd.log 2>&1 &
+        fi
+    fi
+fi
+
 # Build ports JSON array  e.g. "22 8384" → [22,8384]
 PORTS_JSON=$(printf '['; first=1
 for p in $PORTS; do
