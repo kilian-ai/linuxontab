@@ -5556,7 +5556,9 @@
           return;
         }
         const active = !!s.active;
-        const guestPorts = (s.guest_ports && Object.keys(s.guest_ports)) || [];
+        const guestPorts = Array.isArray(s.guest_ports)
+          ? s.guest_ports
+          : (s.guest_ports ? Object.keys(s.guest_ports) : []);
         const queueDepth = s.guest_queue_depth || {};
         const pairs = s.active_pairs || {};
         const age = (typeof s.age_s === 'number') ? Math.round(s.age_s) + 's' : '';
@@ -6165,7 +6167,7 @@
           const portStr = String(p.port);
           // Find public assignment for this port
           const assignment = assignments.find(a => a.port === p.port);
-          if (guestPorts && Object.prototype.hasOwnProperty.call(guestPorts, portStr)) {
+          if (guestPorts && (Array.isArray(guestPorts) ? guestPorts.includes(p.port) : Object.prototype.hasOwnProperty.call(guestPorts, portStr))) {
             // Port is registered with relay
             const qd = queueDepth[portStr];
             if (qd && qd > 0) {

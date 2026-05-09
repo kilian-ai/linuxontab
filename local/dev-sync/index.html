@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>LinuxOnTab Sync Test</title>
+  <style>
+    body{font-family:system-ui,Arial,sans-serif;padding:20px;background:#f7f7f9;color:#111}
+    h1{font-size:20px;margin:0 0 8px}
+    .buttons{display:flex;gap:8px;flex-wrap:wrap}
+    button{padding:8px 12px;border-radius:6px;border:1px solid #ccc;background:white;cursor:pointer}
+  </style>
+</head>
+<body>
+  <h1>Synced Index (J9HS)</h1>
+  <p id="info">This page was pushed by host watcher to guest dev server.</p>
+  <div class="buttons">
+    <button id="start">Start</button>
+    <button id="restart">Restart</button>
+    <button id="stop">Stop</button>
+    <button id="expose">Expose</button>
+    <button id="refresh">Refresh</button>
+  </div>
+  <script>
+    console.log('synced index loaded');
+    document.getElementById('refresh').addEventListener('click', ()=>location.reload());
+  </script>
+</body>
+</html>
