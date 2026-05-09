@@ -256,153 +256,177 @@
     position: absolute; top: 8px; right: 8px;
     display: flex; gap: 4px; z-index: 2;
     opacity: 0.55; transition: opacity 0.15s;
-  }
-  #fsbrowser-fab:hover { opacity: 1; }
-  #fsbrowser-fab button {
-    width: 28px; height: 28px; border-radius: 6px;
-    background: rgba(20, 24, 31, 0.85);
-    border: 1px solid #2a3240; color: #e2e8f0;
-    font: 14px/1 ui-monospace, Menlo, Consolas, monospace;
-    cursor: pointer; padding: 0;
-  }
-  #fsbrowser-fab button:hover { background: #1f2937; border-color: #4aa3ff; }
-  /* When the URL bar is visible, anchor the FAB below it so it doesn't
-     overlap the input. */
-  #fsbrowser.urlbar #fsbrowser-fab { top: 44px; }
+    if (tunnelCode) {
+      Promise.all([
+        tnFetchRelayStatus(tunnelCode),
+        tnFetchExposeStatus(tunnelCode)
+      ]).then(([relayStatus, exposeStatus]) => {
+        console.log('[tunnels-panel] relayStatus:', relayStatus);
+        console.log('[tunnels-panel] exposeStatus:', exposeStatus);
+        const guestPorts = (relayStatus && relayStatus.guest_ports) ? relayStatus.guest_ports : {};
+        const queueDepth = (relayStatus && relayStatus.guest_queue_depth) ? relayStatus.guest_queue_depth : {};
+        const assignments = (exposeStatus && exposeStatus.assignments) ? exposeStatus.assignments : [];
+        let needsRetry = false;
+        ports.forEach((p, idx) => {
+          const row = document.createElement('div');
+          row.className = 'tn-port-row';
+          // Enabled checkbox
+          const cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = !!p.enabled;
+          cb.title = p.enabled ? 'enabled — included on next start' : 'disabled';
+          cb.onchange = () => {
+            const arr = tnLoadPorts();
+            if (arr[idx]) { arr[idx].enabled = cb.checked; tnSavePorts(arr); }
+            tnInvalidateDefaultOverride();
+            tnRefresh();
+          };
+          row.appendChild(cb);
 
-  /* ── Terminal Picture-in-Picture ───────────────────────────────────
-     Toggle with Ctrl+Alt+F4. When active, #term is moved into the
-     fixed-positioned #term-pip frame so it floats above everything
-     (including the fullscreen browser overlay). The frame is
-     draggable by its title bar and resizable from the bottom-right.
-     Position/size persist via inline style on #term-pip. */
-  #term-pip {
-    position: fixed;
-    display: none;
-    flex-direction: column;
-    /* Defaults — will be overridden by URL params, JS API, or
-       captureRectFromTerm() on first toggle. */
-    left: 8px; top: 44px;
-    width: 720px; height: 420px;
-    min-width: 240px; min-height: 140px;
-    z-index: 10000;            /* above #fsbrowser (z-index 9999) */
-    background: #0b0d10;
-    border: 1px solid #2a3240;
-    border-radius: 6px;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.7);
-    overflow: hidden;
-    resize: both;
-  }
-  body.term-pip #term-pip { display: flex; }
-  #term-pip-bar {
-    display: flex; align-items: center; gap: 6px;
-    padding: 4px 8px; background: #14181f;
-    border-bottom: 1px solid #232a33;
-    font: 11px/1.2 ui-monospace, Menlo, Consolas, monospace;
-    color: #94a3b8; cursor: move; user-select: none;
-    flex: 0 0 auto;
-  }
-  #term-pip-bar .pip-title { flex: 1; }
-  #term-pip-bar button {
-    background: transparent; border: 0; color: inherit;
-    cursor: pointer; padding: 2px 6px; border-radius: 4px;
-    font: inherit;
-  }
-  #term-pip-bar button:hover { background: #1f2937; color: #e2e8f0; }
-  #term-pip-content { flex: 1; min-height: 0; display: flex; }
-  /* Override the in-page #term layout when it's reparented into PiP. */
-  body.term-pip #term-pip-content > #term {
-    flex: 1; min-height: 0; height: auto; padding: 4px 6px;
-  }
-</style>
-</head>
-<body>
-<div id="wrap">
-  <div id="promo">
-    <span class="dot" aria-hidden="true"></span>
-    <span><a href="https://getclaw.site" target="_blank" rel="noopener">claw</a> <span class="muted">— a POSIX shell agent harness. AI tools, your terminal, zero glue.</span></span>
-    <span class="muted" style="margin-left:auto">getclaw.site</span>
-    <button id="promo-close" type="button" title="dismiss (won't show again)" aria-label="dismiss promo">✕</button>
-  </div>
-  <div id="bar">
-    <b>v86</b>
-    <label title="snapshot to boot/restore. Fresh-boot entries (★) start the ISO clean.">snapshot:
-      <select id="snap"></select>
-    </label>
-    <button id="boot">boot</button>
-    <button id="reset" disabled>reset</button>
-    <button id="save" disabled title="save into selected snapshot (or creates 'default' from a fresh-boot selection)">save</button>
-    <button id="restore" disabled>restore</button>
-    <button id="rename" disabled title="rename selected snapshot">rename</button>
-    <button id="clone" disabled title="clone selected snapshot — the clone becomes the active selection">clone</button>
-    <button id="clear" disabled title="delete selected snapshot">delete</button>
-    <button id="push-snap" disabled title="push selected snapshot file into guest /root via tunnel WS (so social.sh can publish it)">push</button>
-    <label title="auto-save snapshot ~3s after any serial activity"><input type="checkbox" id="autosave"> auto-save</label>
-    <button id="viewer" disabled title="Browse the entire guest filesystem via serial shell (ls/cat).">viewer</button>
-    <button id="follow" disabled title="social — bootstraps social CLI, shows your npub, follow/sync/publish via guest CLI">social</button>
-    <button id="tunnels" disabled title="manage running tunnels (ports, codes, lifecycle, edit CLI)">tunnels</button>
-    <button id="claw" disabled title="claw — AI chatbot via clawlite in the guest">claw</button>
-    <button id="terminal" disabled title="switch the tmux active window back to lot:shell (Ctrl-B 0) — useful after a panel switched you to lot:tunnel/social/viewer">terminal</button>
-    <span id="status" class="hint">idle</span>
-    <span class="stat" id="stats"></span>
-  </div>
-  <div id="term"></div>
-  <div id="viewer-overlay" hidden>
-    <div id="viewer-bar">
-      <b>viewer</b>
-      <span class="hint" style="margin-left:6px">guest filesystem (serial-backed: ls / cat / base64)</span>
-      <input id="viewer-path" value="/" spellcheck="false" autocomplete="new-password" autocorrect="off" autocapitalize="off" name="viewer-path-noautofill" list="viewer-path-empty-list" title="absolute guest path — try /, /root, /etc, /tmp">
-      <datalist id="viewer-path-empty-list"></datalist>
-      <button id="viewer-refresh" title="reload listing">refresh</button>
-      <span class="icon-group">
-        <button id="viewer-new-file" class="icon" title="new file (in selected folder, or current root)">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9 1.5H4a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5.5L9 1.5z"/><path d="M9 1.5V5.5h4"/><path d="M8 8.5v4M6 10.5h4"/></svg>
-        </button>
-        <button id="viewer-new-folder" class="icon" title="new folder (in selected folder, or current root)">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5V12a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1H8L6.5 3.5h-4a1 1 0 0 0-1 1z"/><path d="M8 7.5v4M6 9.5h4"/></svg>
-        </button>
-        <button id="viewer-delete" class="icon" title="delete selected file or folder" disabled>
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M4.5 4.5l.6 8.4a1 1 0 0 0 1 .9h3.8a1 1 0 0 0 1-.9l.6-8.4M7 7.5v4M9 7.5v4"/></svg>
-        </button>
-      </span>
-      <span class="hint" id="viewer-status"></span>
-      <button id="viewer-fullscreen" style="margin-left:auto" title="hide terminal — full-screen viewer">⤢</button>
-      <button id="viewer-close" title="close viewer">close</button>
-    </div>
-    <div id="viewer-body">
-      <div id="viewer-tree"></div>
-      <div id="viewer-preview">
-        <div id="viewer-tabs" hidden>
-          <button id="viewer-tab-render" class="vt-active" data-tab="render">render</button>
-          <button id="viewer-tab-source" data-tab="source">source</button>
-          <button id="viewer-save" hidden title="save changes to guest file">save</button>
-          <span class="vt-status" id="viewer-tab-status"></span>
-        </div>
-        <div id="viewer-stage">
-          <div id="viewer-empty" class="hint">select a file on the left</div>
-          <iframe id="viewer-frame" hidden sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-pointer-lock"></iframe>
-          <div id="viewer-editor" hidden></div>
-        </div>
-      </div>
-    </div>
-  </div>
-  <div id="viewer-divider" hidden title="drag to resize"></div>
-  <div id="follow-panel" hidden>
-    <div id="follow-hdr">
-      <b>social</b>
-      <span class="hint" style="margin-left:6px;font-size:11px">Nostr public-folder sharing</span>
-      <button id="follow-refresh" title="re-run bootstrap pipeline">refresh</button>
-      <button id="follow-close" style="margin-left:auto">close</button>
-    </div>
-    <div id="follow-body">
-      <div class="fp-section">
-        <div class="fp-label">your npub</div>
-        <div id="follow-npub"><span class="hint">(not loaded yet — click refresh)</span></div>
-        <div id="follow-status" style="margin-top:6px">idle</div>
-      </div>
-      <div class="fp-section">
-        <div class="fp-label">actions (placeholders)</div>
-        <div class="row-flex" style="display:flex;gap:6px;flex-wrap:wrap">
+          // Port number
+          const num = document.createElement('span');
+          num.className = 'tn-port-num';
+          num.textContent = ':' + p.port;
+          row.appendChild(num);
+
+          // Label
+          const lbl = document.createElement('input');
+          lbl.type = 'text';
+          lbl.className = 'tn-port-label-input';
+          lbl.value = p.label || '';
+          lbl.placeholder = 'label';
+          lbl.onchange = () => {
+            const arr = tnLoadPorts();
+            if (arr[idx]) { arr[idx].label = lbl.value; tnSavePorts(arr); }
+            tnInvalidateDefaultOverride();
+            tnRefresh();
+          };
+          row.appendChild(lbl);
+
+          // Channels
+          const chan = document.createElement('input');
+          chan.type = 'number';
+          chan.className = 'tn-port-chan-input';
+          chan.min = '1';
+          chan.max = '256';
+          chan.value = (p.channels && p.channels > 0) ? String(p.channels) : '';
+          chan.placeholder = '32';
+          chan.title = 'parallel websocat bridges (channels) for this port. blank = default (32). higher = more parallel requests but more guest CPU/RAM.';
+          chan.onchange = () => {
+            const arr = tnLoadPorts();
+            if (!arr[idx]) return;
+            const v = parseInt(chan.value, 10);
+            arr[idx].channels = (Number.isFinite(v) && v > 0) ? v : null;
+            tnSavePorts(arr);
+            tnInvalidateDefaultOverride();
+            tnRefresh();
+          };
+          row.appendChild(chan);
+
+          // Expose checkbox
+          const exposeWrap = document.createElement('label');
+          exposeWrap.className = 'tn-port-expose' + (p.expose ? ' tn-expose-on' : '');
+          exposeWrap.title =
+            'Expose this guest port publicly on the relay TCP pool. ' +
+            'Any TCP client can connect to linuxontab-tunnel.fly.dev:<publicPort> ' +
+            'directly (no helper). Costs nothing extra; uses 1 of 10 pool slots ' +
+            'for ~1 hour TTL, refreshed automatically while the tunnel is up.';
+          const exposeCb = document.createElement('input');
+          exposeCb.type = 'checkbox';
+          exposeCb.checked = !!p.expose;
+          exposeCb.onchange = () => {
+            const arr = tnLoadPorts();
+            if (!arr[idx]) return;
+            arr[idx].expose = exposeCb.checked;
+            tnSavePorts(arr);
+            exposeWrap.classList.toggle('tn-expose-on', exposeCb.checked);
+            if (!exposeCb.checked) {
+              tnUnexposePort(p.port).catch(() => {});
+            }
+            tnRefresh();
+          };
+          const exposeTxt = document.createElement('span');
+          exposeTxt.textContent = 'expose';
+          exposeWrap.appendChild(exposeCb);
+          exposeWrap.appendChild(exposeTxt);
+          row.appendChild(exposeWrap);
+
+          // Relay/bridge status column
+          const statusCell = document.createElement('span');
+          statusCell.style.display = 'inline-block';
+          statusCell.style.width = '90px';
+          statusCell.style.textAlign = 'center';
+          let relayState = 'unknown';
+          let relayClass = '';
+          let hoverTxt = '';
+          const portStr = String(p.port);
+          // Find public assignment for this port
+          const assignment = assignments.find(a => a.port === p.port);
+          if (guestPorts && Object.prototype.hasOwnProperty.call(guestPorts, portStr)) {
+            // Port is registered with relay
+            const qd = queueDepth[portStr];
+            if (qd && qd > 0) {
+              relayState = '✓ bridged';
+              relayClass = 'ok';
+            } else {
+              relayState = 'idle';
+              relayClass = 'hint';
+            }
+          } else {
+            relayState = '✗ not bridged';
+            relayClass = 'err';
+            // If enabled and exposed, mark for retry
+            if (p.enabled && p.expose) {
+              needsRetry = true;
+            }
+          }
+          if (assignment && assignment.publicPort) {
+            relayState += ` :${assignment.publicPort}`;
+            hoverTxt = `linuxontab-tunnel.fly.dev:${assignment.publicPort}`;
+          }
+          statusCell.textContent = relayState;
+          statusCell.className = relayClass;
+          if (hoverTxt) statusCell.title = hoverTxt;
+          // Add click-to-retry for not bridged
+          if (relayClass === 'err' && p.enabled && p.expose) {
+            statusCell.style.cursor = 'pointer';
+            statusCell.title = (hoverTxt ? hoverTxt + '\n' : '') + 'Click to retry bridge setup';
+            statusCell.onclick = () => {
+              tnLog('Manual retry: restarting tunnel for port :' + p.port, 'info');
+              if (window.tunnels && window.tunnels.length && window.tunnels[0].code) {
+                tnRestartTunnel(window.tunnels[0]);
+              }
+            };
+          }
+          row.appendChild(statusCell);
+
+          // Delete button
+          const del = document.createElement('button');
+          del.className = 'tn-port-del';
+          del.textContent = '✕';
+          del.title = 'remove this port from the config';
+          del.onclick = () => {
+            const arr = tnLoadPorts();
+            arr.splice(idx, 1);
+            tnSavePorts(arr);
+            tnInvalidateDefaultOverride();
+            tnRenderPortsConfig();
+            tnRefresh();
+          };
+          row.appendChild(del);
+
+          tnPortsListEl.appendChild(row);
+        });
+        // If any enabled+exposed port is not bridged, retry tunnel setup once per refresh
+        if (needsRetry) {
+          tnLog('Retrying tunnel setup for exposed but unbridged ports...', 'info');
+          // Use the first tunnel object for restart
+          if (window.tunnels && window.tunnels.length && window.tunnels[0].code) {
+            tnRestartTunnel(window.tunnels[0]);
+          }
+        }
+      });
+    } else {
           <button id="follow-action-profile" disabled title="edit your nickname / profile (kind 0 metadata)">profile…</button>
           <button id="follow-action-follow" disabled title="follow an npub (auto-syncs files)">follow user…</button>
           <button id="follow-action-sync" disabled title="re-sync all followed users">sync all</button>
