@@ -335,6 +335,9 @@
         el.style.zIndex = String(zCounter);
       }
 
+      // Main PiP should also participate in focus stacking.
+      bringToFront(pip);
+
       function nextTabId() {
         return 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
       }
@@ -683,32 +686,38 @@
       }
 
       goBtn.addEventListener('click', () => loadUrl(urlInput.value));
+      goBtn.addEventListener('pointerdown', () => bringToFront(pip));
       urlInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
           e.preventDefault();
           loadUrl(urlInput.value);
         }
       });
+      urlInput.addEventListener('pointerdown', () => bringToFront(pip));
 
       openBtn.addEventListener('click', () => {
         const u = normalizeUrl(urlInput.value);
         if (!u) return;
+        bringToFront(pip);
         spawnPipWindow(u);
         addTab(u);
       });
 
       minBtn.addEventListener('click', () => {
+        bringToFront(pip);
         if (hidden) restoreVisibility();
         setMinimized(!minimized);
       });
 
       maxBtn.addEventListener('click', () => {
+        bringToFront(pip);
         if (hidden) restoreVisibility();
         if (minimized) setMinimized(false);
         setMaximized(!maximized);
       });
 
       closeBtn.addEventListener('click', () => {
+        bringToFront(pip);
         hidden = true;
         pip.style.display = 'none';
         showDock();
@@ -716,9 +725,14 @@
       });
 
       restoreBtn.addEventListener('click', () => {
+        bringToFront(pip);
         restoreVisibility();
         if (minimized) setMinimized(false);
       });
+
+      pip.addEventListener('pointerdown', () => bringToFront(pip));
+      body.addEventListener('pointerdown', () => bringToFront(pip));
+      frame.addEventListener('pointerdown', () => bringToFront(pip));
 
       head.addEventListener('pointerdown', (e) => {
         if (e.target.closest('button')) return;
