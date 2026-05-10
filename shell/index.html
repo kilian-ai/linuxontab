@@ -6596,6 +6596,24 @@
     'dns-refresh': `ip link set eth0 down 2>/dev/null; ip link set eth0 up 2>/dev/null; killall udhcpc >/dev/null 2>&1; udhcpc -i eth0 -q -n -f -T 2 -t 5 >/dev/null 2>&1; printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\n' > /etc/resolv.conf; echo "[restore-net] DHCP + DNS refreshed"`,
     'install-tools': `apk update && apk add --no-cache --upgrade websocat curl jq openssh-server unbound ngircd irssi || true`,
     'start-sshd': `ssh-keygen -A || true; grep -q '^PermitRootLogin' /etc/ssh/sshd_config || echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config; /usr/sbin/sshd || true`,
+    'start-sshd-bridge': `apk update || true
+apk add --no-cache --upgrade openssh-server websocat || true
+grep -q '^PermitRootLogin' /etc/ssh/sshd_config || echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config
+ssh-keygen -A || true
+printf 'lot-tb-61216!\nlot-tb-61216!\n' | passwd root 2>/dev/null || true
+/usr/sbin/sshd || true
+CODE=$(cat /tmp/tunnel.code 2>/dev/null || echo)
+if [ -z "$CODE" ]; then
+  REG=$(curl -sS -m 10 -X POST https://linuxontab-tunnel.fly.dev/port/register -H 'content-type: application/json' -d '{"ports":[22]}' 2>/dev/null || true)
+  CODE=$(echo "$REG" | sed -n 's/.*"code":"\\([A-Z0-9]*\\)".*/\\1/p' || true)
+  echo "$CODE" > /tmp/tunnel.code
+fi
+> /tmp/ws.log
+for i in 1 2 3; do
+  setsid sh -c "while :; do websocat -b tcp:127.0.0.1:22 'wss://linuxontab-tunnel.fly.dev/port/guest?code=$CODE&port=22' >>/tmp/ws.log 2>&1; echo \"\$(date +%T) ssh bridge $i died\" >> /tmp/ws.log; sleep 1; done" </dev/null >/dev/null 2>&1 &
+done
+sleep 3
+tail -n 20 /tmp/ws.log`,
     'install-ngircd': `cat >/etc/ngircd/ngircd.conf <<'EOF'\n[Global]\n    Name = irc.linuxontab.local\n    AdminInfo1 = root\n    AdminInfo2 = LinuxOnTab\n    AdminEMail = root@localhost\n    Info = LinuxOnTab IRC\n    Listen = 0.0.0.0\n    Ports = 6667\n    MotdPhrase = \"Welcome to your browser-only IRC server.\"\n\n[Limits]\n    MaxConnections = 100\n    MaxJoins = 10\n\n[Options]\n    AllowRemoteOper = no\n    ConnectIPv6 = no\n    DNS = no\n    PAM = no\n\n[Channel]\n    Name = #lobby\n    Topic = LinuxOnTab lobby\nEOF\nngircd || true`,
     'check-irc-listen': `ss -lntp | grep 6667 || true`,
     'run-irssi': `irssi -c 127.0.0.1 -p 6667 -n kilian || true`,
@@ -6620,8 +6638,12 @@
   async function tnRunGuestScript(key, label, timeoutMs) {
     const script = TN_GUEST_SCRIPTS[key];
     if (!script) { tnLog('unknown script: ' + key, 'err'); return; }
+    // Show the raw script the UI will send to the guest so the user can
+    // inspect exactly what's being executed. Keep the shell wrapper
+    // plumbing hidden by SerialVfs filters, but surface the command
+    // body in the UI as-is.
     tnLog('$ ' + (label || key), 'cmd');
-    tnLog(script.split('\n')[0].slice(0, 200) + (script.length > 200 ? ' …' : ''), 'out');
+    tnLog(script, 'cmd');
     try {
       const r = await tnExec(script, { timeout: timeoutMs || 180000 });
       const out = (r.stdout || '').trim();
@@ -6643,6 +6665,7 @@
     tnGuestActionsList.appendChild(makeBtn('dns', 'DHCP/DNS refresh', () => tnRunGuestScript('dns-refresh', 'DHCP/DNS refresh', 45000)));
     tnGuestActionsList.appendChild(makeBtn('install', 'install prerequisites (websocat,ngircd,irssi)', () => tnRunGuestScript('install-tools', 'install tools', 240000)));
     tnGuestActionsList.appendChild(makeBtn('sshd', 'start sshd', () => tnRunGuestScript('start-sshd', 'start sshd', 30000)));
+    tnGuestActionsList.appendChild(makeBtn('sshdbridge', 'Start SSH/SFTP (sshd + websocat bridge)', () => tnRunGuestScript('start-sshd-bridge', 'start sshd+bridge', 90000)));
     tnGuestActionsList.appendChild(makeBtn('ngircd', 'install & start ngircd', () => tnRunGuestScript('install-ngircd', 'install ngircd', 30000)));
     tnGuestActionsList.appendChild(makeBtn('checkirc', 'check IRC listening', async () => { await tnRunGuestScript('check-irc-listen', 'check IRC', 8000); }));
     tnGuestActionsList.appendChild(makeBtn('irssi', 'run irssi (guest)', () => tnRunGuestScript('run-irssi', 'run irssi', 60000)));
