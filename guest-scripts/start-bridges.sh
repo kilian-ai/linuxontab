@@ -1,0 +1,3 @@
+#!/bin/sh
+# spawn websocat bridges
+CODE=$(cat /tmp/tunnel.code 2>/dev/null || echo); > /tmp/ws.log; for P in 22 6667; do for i in 1 2 3 4; do setsid sh -c "while :; do websocat -b tcp:127.0.0.1:$P 'wss://linuxontab-tunnel.fly.dev/port/guest?code=$CODE&port=$P' >>/tmp/ws.log 2>&1; echo \"$(date +%T) bridge $P/$i died\" >> /tmp/ws.log; sleep 1; done" </dev/null >/dev/null 2>&1 & done; done; sleep 3; tail -n 20 /tmp/ws.log

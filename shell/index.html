@@ -126,7 +126,7 @@
   #tunnels-list .tn-actions button:hover:not(:disabled) { background:#2d343d; }
   #tunnels-list .tn-actions button:disabled { opacity:0.4; cursor:not-allowed; }
   #tunnels-list .tn-cmd { font-family:'Menlo','Monaco','Consolas',monospace; font-size:11px; color:#7a8392; word-break:break-all; }
-  #tunnels-log { font-size:11px; line-height:1.45; max-height:240px; overflow:auto; background:#0b0d10; border:1px solid #2a2f36; border-radius:4px; padding:8px; font-family:'Menlo','Monaco','Consolas',monospace; }
+  #tunnels-log { font-size:11px; line-height:1.45; max-height:800px; overflow:auto; background:#0b0d10; border:1px solid #2a2f36; border-radius:4px; padding:8px; font-family:'Menlo','Monaco','Consolas',monospace; }
   #tunnels-log .tl-cmd { color:#7ab8f5; white-space:pre-wrap; word-break:break-all; }
   #tunnels-log .tl-out { color:#aab2bc; white-space:pre-wrap; word-break:break-all; padding-left:8px; }
   #tn-ports-section { background:#161a1f; border:1px solid #2a2f36; border-radius:6px; padding:10px 12px; display:flex; flex-direction:column; gap:6px; }
@@ -943,46 +943,7 @@
   let pendingBytes = [], pendingFlush = false;
   let serialTextTail = '';
 
-  // Output filters: hide echoed UI-injected commands + their markers from
-  // the user-visible terminal. Each filter has:
-  //   beginRe     RegExp that, when matched in the byte stream, marks the
-  //               start of a hidden region (the matching bytes ARE hidden).
-  //   endRe       RegExp that ends the hidden region (matching bytes
-  //               also hidden).
-  //   buf         pre-begin buffer (echoed command line) — held back until
-  //               beginRe matches, then discarded entirely so the user
-  //               never sees the long wrapped command.
-  //   maxBuf      cap on how many bytes we'll buffer before flushing as
-  //               passthrough (safety: don't eat real user output if begin
-  //               marker never arrives).
-  //   timer       safety flush after timeoutMs if begin never arrives.
-  //   active      true once begin matched; we are now suppressing until end.
-  // Filters are added by serialVfs._run / sendGuestText for our own
-  // injected commands. They are checked in order and the first match wins.
-  const outputFilters = [];
-  function addOutputFilter({ beginRe, endRe, timeoutMs = 30000, maxBuf = 16384 }) {
-    const f = { beginRe, endRe, buf: '', maxBuf, active: false, timer: null };
-    f.timer = setTimeout(() => {
-      // Begin never arrived — flush whatever we held back so the user
-      // sees their normal output. Drop the filter.
-      const i = outputFilters.indexOf(f);
-      if (i >= 0) outputFilters.splice(i, 1);
-      if (f.buf) flushFilterBuf(f.buf);
-      f.buf = '';
-    }, timeoutMs);
-    outputFilters.push(f);
-    return f;
-  }
-  function removeOutputFilter(f) {
-    const i = outputFilters.indexOf(f);
-    if (i >= 0) outputFilters.splice(i, 1);
-    clearTimeout(f.timer);
-  }
-  function flushFilterBuf(s) {
-    if (!s) return;
-    for (let i = 0; i < s.length; i++) pushByteRaw(s.charCodeAt(i));
-  }
-
+  // Output filters disabled: all injected commands and their output will be visible in the terminal.
   function pushByteRaw(b) {
     if (b === 10 || b === 13 || (b >= 32 && b <= 126)) {
       serialTextTail = (serialTextTail + String.fromCharCode(b)).slice(-32768);
@@ -1001,75 +962,8 @@
   }
 
   function pushByte(b) {
-    // Fast path when no filters are registered.
-    if (!outputFilters.length) return pushByteRaw(b);
-    // Try each filter. The first one that's actively suppressing wins.
-    // Otherwise we accumulate the byte into every filter's pre-begin buf
-    // and look for begin markers.
-    for (let i = 0; i < outputFilters.length; i++) {
-      const f = outputFilters[i];
-      if (f.active) {
-        // Inside hidden region. Append to buf and check for end marker.
-        f.buf += String.fromCharCode(b);
-        if (f.buf.length >= 64) {
-          const m = f.buf.match(f.endRe);
-          if (m) {
-            // End matched. Drop everything up to and including the marker
-            // (including any trailing newline we may also want eaten).
-            let after = f.buf.slice(m.index + m[0].length);
-            // Eat one trailing CR/LF pair if present so we don't leave a
-            // blank line where the marker used to be.
-            after = after.replace(/^\r?\n/, '');
-            removeOutputFilter(f);
-            // Whatever bytes came after the end marker are real output —
-            // pass through.
-            for (let j = 0; j < after.length; j++) pushByteRaw(after.charCodeAt(j));
-            return;
-          }
-          // Trim buf to keep memory bounded; only keep the tail that
-          // could contain the start of an end marker.
-          if (f.buf.length > 8192) f.buf = f.buf.slice(-2048);
-        }
-        return; // suppressed
-      }
-    }
-    // No filter is actively suppressing. Buffer for any filter's begin match.
-    let consumed = false;
-    for (let i = 0; i < outputFilters.length; i++) {
-      const f = outputFilters[i];
-      f.buf += String.fromCharCode(b);
-      const m = f.buf.match(f.beginRe);
-      if (m) {
-        // Begin matched. Discard buf entirely (echoed command line +
-        // begin marker). Activate suppression on this filter; drop other
-        // filters' buffers too (they were buffering the same bytes).
-        for (let j = 0; j < outputFilters.length; j++) {
-          if (j !== i) outputFilters[j].buf = '';
-        }
-        f.buf = '';
-        f.active = true;
-        consumed = true;
-        break;
-      }
-      // Cap buffer growth — if we exceed maxBuf without a match, this
-      // filter's command must have failed to echo properly. Flush its
-      // buffer once to avoid eating user output, then reset.
-      if (f.buf.length > f.maxBuf) {
-        const flush = f.buf;
-        f.buf = '';
-        // Drop this filter — better to never suppress than to keep
-        // hiding indefinitely.
-        removeOutputFilter(f);
-        flushFilterBuf(flush);
-        consumed = true;
-        break;
-      }
-    }
-    if (consumed) return;
-    // No filter caught it yet — but they all hold the byte in their buf.
-    // We do NOT pass through to the term, otherwise the echo we want to
-    // hide would already be visible. Bytes will either be flushed by a
-    // begin match (discard) or by the maxBuf overflow path above.
+    // No filtering: always show all output
+    pushByteRaw(b);
   }
 
   // ---- IndexedDB snapshot persistence ----
