@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LinuxOnTab Shell PiP Wrapper</title>
+  <style>
+    :root {
+      --bg: #0a0f1a;
+      --panel: #111827;
+      --panel-2: #0f172a;
+      --line: #334155;
+      --text: #dbe5f5;
+      --muted: #9aa9c0;
+      --accent: #22c55e;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      background:
+        radial-gradient(1200px 700px at 85% -10%, #14305f66 0%, transparent 60%),
+        radial-gradient(900px 600px at -10% 90%, #0d3a2e66 0%, transparent 60%),
+        var(--bg);
+      color: var(--text);
+      font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      overflow: hidden;
+    }
+
+    .topbar {
+      position: fixed;
+      inset: 0 0 auto 0;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #0b1220, #0a1220ee);
+      z-index: 20;
+    }
+
+    .brand {
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      white-space: nowrap;
+      color: #c7f9db;
+    }
+
+    .url {
+      flex: 1;
+      min-width: 240px;
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0 10px;
+      background: #0b1324;
+      color: var(--text);
+      outline: none;
+    }
+
+    .url:focus { border-color: #60a5fa; }
+
+    .btn {
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0 10px;
+      background: var(--panel);
+      color: var(--text);
+      cursor: pointer;
+    }
+
+    .btn:hover { background: #1c263a; }
+
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .pip {
+      position: fixed;
+      left: 40px;
+      top: 62px;
+      width: min(1100px, calc(100vw - 80px));
+      height: min(700px, calc(100vh - 102px));
+      display: flex;
+      flex-direction: column;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: linear-gradient(180deg, #0f172a, #0b1324);
+      box-shadow: 0 14px 40px #00000099;
+      overflow: hidden;
+      min-width: 360px;
+      min-height: 220px;
+      resize: both;
+      z-index: 30;
+    }
+
+    .pip.minimized {
+      height: 42px !important;
+      min-height: 42px;
+      resize: none;
+    }
+
+    .pip.maximized {
+      left: 0 !important;
+      top: 44px !important;
+      width: 100vw !important;
+      height: calc(100vh - 44px) !important;
+      border-radius: 0;
+      border-left: 0;
+      border-right: 0;
+      border-bottom: 0;
+      resize: none;
+    }
+
+    .pip-head {
+      height: 42px;
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #111b2f, #0f172a);
+      user-select: none;
+      cursor: grab;
+    }
+
+    .pip-head.dragging { cursor: grabbing; }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 0 8px #22c55eaa;
+      flex: 0 0 auto;
+    }
+
+    .title {
+      flex: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: #d8e7ff;
+    }
+
+    .ctl {
+      width: 26px;
+      height: 26px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #0c1628;
+      color: var(--text);
+      cursor: pointer;
+      padding: 0;
+      line-height: 1;
+      font: 16px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .ctl:hover { background: #1d2a43; }
+
+    .ctl.min:hover { border-color: var(--warn); }
+    .ctl.max:hover { border-color: #60a5fa; }
+    .ctl.close:hover { border-color: var(--danger); color: #fecaca; }
+
+    .frame-wrap {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+    }
+
+    iframe {
+      width: 100%;
+      height: 100%;
+      border: 0;
+      background: #000;
+    }
+
+    .dock {
+      position: fixed;
+      right: 14px;
+      bottom: 14px;
+      z-index: 40;
+      display: none;
+      gap: 8px;
+      align-items: center;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #0c1628ee;
+      backdrop-filter: blur(6px);
+    }
+
+    .dock.show { display: flex; }
+
+    @media (max-width: 900px) {
+      .hint { display: none; }
+      .pip {
+        left: 10px;
+        top: 54px;
+        width: calc(100vw - 20px);
+        height: calc(100vh - 64px);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="brand">LinuxOnTab PiP</div>
+    <input id="url" class="url" value="https://linuxontab.com/shell/" spellcheck="false" />
+    <button id="go" class="btn">Go</button>
+    <button id="newtab" class="btn" title="Open URL in a new browser tab">Open Tab</button>
+    <div class="hint">Drag header to move. Resize from bottom-right corner.</div>
+  </div>
+
+  <div id="pip" class="pip" aria-label="PiP window">
+    <div id="head" class="pip-head">
+      <span class="dot" aria-hidden="true"></span>
+      <div id="title" class="title">https://linuxontab.com/shell/</div>
+      <button id="min" class="ctl min" title="Minimize">_</button>
+      <button id="max" class="ctl max" title="Maximize / Restore">□</button>
+      <button id="close" class="ctl close" title="Hide">×</button>
+    </div>
+    <div id="body" class="frame-wrap">
+      <iframe id="frame" src="https://linuxontab.com/shell/" allow="clipboard-read; clipboard-write; fullscreen"></iframe>
+    </div>
+  </div>
+
+  <div id="dock" class="dock" aria-live="polite">
+    <span class="hint" style="display:block">PiP minimized/hidden</span>
+    <button id="restore" class="btn">Restore PiP</button>
+  </div>
+
+  <script>
+    (function () {
+      const $ = (id) => document.getElementById(id);
+      const pip = $('pip');
+      const head = $('head');
+      const body = $('body');
+      const frame = $('frame');
+      const title = $('title');
+      const urlInput = $('url');
+      const goBtn = $('go');
+      const openBtn = $('newtab');
+      const minBtn = $('min');
+      const maxBtn = $('max');
+      const closeBtn = $('close');
+      const dock = $('dock');
+      const restoreBtn = $('restore');
+
+      let drag = null;
+      let maximized = false;
+      let minimized = false;
+      let hidden = false;
+      let preRect = null;
+
+      function setTitle(text) {
+        title.textContent = text || 'PiP';
+      }
+
+      function clamp(val, min, max) {
+        return Math.max(min, Math.min(max, val));
+      }
+
+      function getRect() {
+        const r = pip.getBoundingClientRect();
+        return {
+          left: r.left,
+          top: r.top,
+          width: r.width,
+          height: r.height,
+        };
+      }
+
+      function applyRect(r) {
+        pip.style.left = r.left + 'px';
+        pip.style.top = r.top + 'px';
+        pip.style.width = r.width + 'px';
+        pip.style.height = r.height + 'px';
+      }
+
+      function loadUrl(raw) {
+        let u = String(raw || '').trim();
+        if (!u) return;
+        if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
+        urlInput.value = u;
+        frame.src = u;
+        setTitle(u);
+      }
+
+      function restoreVisibility() {
+        hidden = false;
+        pip.style.display = 'flex';
+        dock.classList.remove('show');
+      }
+
+      function showDock() {
+        dock.classList.add('show');
+      }
+
+      function setMinimized(v) {
+        minimized = !!v;
+        pip.classList.toggle('minimized', minimized);
+        body.style.display = minimized ? 'none' : 'flex';
+        if (minimized) {
+          showDock();
+        } else if (!hidden) {
+          dock.classList.remove('show');
+        }
+      }
+
+      function setMaximized(v) {
+        const next = !!v;
+        if (next === maximized) return;
+
+        if (next) {
+          preRect = getRect();
+          pip.classList.add('maximized');
+          maximized = true;
+          maxBtn.textContent = '❐';
+          maxBtn.title = 'Restore';
+        } else {
+          pip.classList.remove('maximized');
+          maximized = false;
+          maxBtn.textContent = '□';
+          maxBtn.title = 'Maximize / Restore';
+          if (preRect) applyRect(preRect);
+        }
+      }
+
+      goBtn.addEventListener('click', () => loadUrl(urlInput.value));
+      urlInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          loadUrl(urlInput.value);
+        }
+      });
+
+      openBtn.addEventListener('click', () => {
+        const u = urlInput.value.trim();
+        if (!u) return;
+        window.open(u, '_blank', 'noopener');
+      });
+
+      minBtn.addEventListener('click', () => {
+        if (hidden) restoreVisibility();
+        setMinimized(!minimized);
+      });
+
+      maxBtn.addEventListener('click', () => {
+        if (hidden) restoreVisibility();
+        if (minimized) setMinimized(false);
+        setMaximized(!maximized);
+      });
+
+      closeBtn.addEventListener('click', () => {
+        hidden = true;
+        pip.style.display = 'none';
+        showDock();
+      });
+
+      restoreBtn.addEventListener('click', () => {
+        restoreVisibility();
+        if (minimized) setMinimized(false);
+      });
+
+      head.addEventListener('pointerdown', (e) => {
+        if (e.target.closest('button')) return;
+        if (maximized) return;
+        drag = {
+          x: e.clientX,
+          y: e.clientY,
+          rect: getRect(),
+        };
+        head.classList.add('dragging');
+        head.setPointerCapture(e.pointerId);
+        e.preventDefault();
+      });
+
+      head.addEventListener('pointermove', (e) => {
+        if (!drag) return;
+        const dx = e.clientX - drag.x;
+        const dy = e.clientY - drag.y;
+        const w = drag.rect.width;
+        const h = drag.rect.height;
+
+        const left = clamp(drag.rect.left + dx, 0, Math.max(0, window.innerWidth - w));
+        const top = clamp(drag.rect.top + dy, 44, Math.max(44, window.innerHeight - 32));
+
+        pip.style.left = left + 'px';
+        pip.style.top = top + 'px';
+      });
+
+      head.addEventListener('pointerup', (e) => {
+        drag = null;
+        head.classList.remove('dragging');
+        try { head.releasePointerCapture(e.pointerId); } catch (_) {}
+      });
+
+      window.addEventListener('keydown', (e) => {
+        if (!(e.ctrlKey && e.altKey)) return;
+        if (e.key === 'F4') {
+          e.preventDefault();
+          if (hidden) {
+            restoreVisibility();
+            return;
+          }
+          setMinimized(!minimized);
+        }
+        if (e.key === 'F5') {
+          e.preventDefault();
+          if (hidden) restoreVisibility();
+          if (minimized) setMinimized(false);
+          setMaximized(!maximized);
+        }
+      }, true);
+
+      frame.addEventListener('load', () => {
+        // Keep a readable title even for cross-origin URLs.
+        setTitle(urlInput.value || frame.src);
+      });
+
+      loadUrl(urlInput.value);
+    })();
+  </script>
+</body>
+</html>
