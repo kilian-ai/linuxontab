@@ -6638,21 +6638,26 @@ tail -n 20 /tmp/ws.log`,
   async function tnRunGuestScript(key, label, timeoutMs) {
     const script = TN_GUEST_SCRIPTS[key];
     if (!script) { tnLog('unknown script: ' + key, 'err'); return; }
-    // Show the raw script the UI will send to the guest so the user can
-    // inspect exactly what's being executed. Keep the shell wrapper
-    // plumbing hidden by SerialVfs filters, but surface the command
-    // body in the UI as-is.
     tnLog('$ ' + (label || key), 'cmd');
     tnLog(script, 'cmd');
+
+    const tag = 'tn' + Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+    const doneMarker = '__TN_DONE__:' + tag;
+    const delim = 'SH_EOF_' + tag;
+    // Directly inject heredoc into the user's active shell (no output filter, no SerialVfs)
+    const payload = `printf '\n--- RUN: ${label || key} ---\\n'\nsh -x <<'${delim}'\n${script}\n${delim}\\nprintf '\n${doneMarker}\\n'\n`;
+    let waited = null;
     try {
-      const r = await tnExec(script, { timeout: timeoutMs || 180000 });
-      const out = (r.stdout || '').trim();
-      if (out) out.split('\n').forEach(l => tnLog(l, 'out'));
-      tnLog('exit=' + r.exitCode, r.exitCode === 0 ? 'ok' : 'err');
+      waited = awaitGuestMarker(new RegExp('^' + doneMarker.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&') + '\\b'), timeoutMs || 180000);
     } catch (e) {
-      tnLog('script error: ' + (e && e.message || e), 'err');
+      console.warn('[tn] awaitGuestMarker registration failed', e);
     }
-    // refresh UI state after running a helper
+    dispatchGuestCommand(payload, label || key, {});
+    if (waited) {
+      try { await waited; tnLog('script finished', 'ok'); } catch (e) { tnLog('script did not finish within timeout: ' + (e && e.message || e), 'err'); }
+    } else {
+      tnLog('script dispatched (no completion marker watcher)', 'info');
+    }
     try { await tnRefresh(); } catch (_) {}
   }
 
