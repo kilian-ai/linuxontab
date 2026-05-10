@@ -1322,19 +1322,34 @@
     try { localStorage.setItem(GH_REPOS_LS, JSON.stringify(list || [])); } catch (_) {}
   }
 
+  const GH_REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+  function normalizeGhRepo(input) {
+    let s = String(input || '').trim();
+    if (!s) return '';
+    // Accept full GitHub URLs and normalize to owner/repo.
+    s = s.replace(/^https?:\/\/(?:www\.)?github\.com\//i, '');
+    s = s.replace(/^https?:\/\/api\.github\.com\/repos\//i, '');
+    s = s.replace(/\.git$/i, '');
+    s = s.replace(/^\/+|\/+$/g, '');
+    // Keep only owner/repo if extra path segments were provided.
+    const parts = s.split('/').filter(Boolean);
+    if (parts.length >= 2) s = parts[0] + '/' + parts[1];
+    return s;
+  }
+
   async function fetchGhSnapshots() {
     const repos = getGhRepos();
     if (!repos || !repos.length) return [];
     const out = [];
-    const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
     for (const repo of repos) {
       try {
-        if (!REPO_RE.test(repo)) { console.warn('[gh] invalid repo name, skipping', repo); continue; }
+        const normalized = normalizeGhRepo(repo);
+        if (!GH_REPO_RE.test(normalized)) { console.warn('[gh] invalid repo name, skipping', repo); continue; }
         // Do not encode the repository path separators — GitHub API expects owner/repo
-        const apiUrl = 'https://api.github.com/repos/' + repo + '/releases';
+        const apiUrl = 'https://api.github.com/repos/' + normalized + '/releases';
         const proxy = 'https://relay.linuxontab.com/cors?url=' + encodeURIComponent(apiUrl);
         const r = await fetch(proxy, { credentials: 'omit' });
-        if (!r.ok) { console.warn('[gh] releases fetch failed', repo, r.status); continue; }
+        if (!r.ok) { console.warn('[gh] releases fetch failed', normalized, r.status); continue; }
         const rels = await r.json();
         for (const rel of rels || []) {
           const tag = rel.tag_name || rel.name || '';
@@ -1348,7 +1363,7 @@
             for (const cat of ISO_CATALOG) {
               if (lname.includes(cat.iso.split('.')[0])) { iso = cat.iso; break; }
             }
-            out.push({ value: 'hosted:' + iso + ':' + encodeURIComponent(url), label: `GH: ${repo} · ${tag} · ${name}` });
+            out.push({ value: 'hosted:' + iso + ':' + encodeURIComponent(url), label: `GH: ${normalized} · ${tag} · ${name}` });
           }
         }
       } catch (e) { console.warn('[gh] fetch error', repo, e); }
@@ -1359,8 +1374,13 @@
   // Add GH repo button handler: prompt for owner/repo and refresh list
   if (addGhBtn) addGhBtn.onclick = async () => {
     try {
-      const repo = (await uiPrompt('Add GitHub repo (owner/repo)', getGhRepos()[0] || '') ) || '';
+      const raw = (await uiPrompt('Add GitHub repo (owner/repo)', getGhRepos()[0] || '') ) || '';
+      const repo = normalizeGhRepo(raw);
       if (!repo) { setStatus('add GitHub repo: cancelled'); return; }
+      if (!GH_REPO_RE.test(repo)) {
+        setStatus('add GitHub repo failed: use owner/repo (or a github.com URL)', 'err');
+        return;
+      }
       const list = getGhRepos();
       if (!list.includes(repo)) { list.unshift(repo); saveGhRepos(list); }
       setStatus('refreshing snapshot list…');
@@ -1400,8 +1420,12 @@
       const bytes = await getSnapshotBytesForUpload(sel);
       setStatus(`snapshot ready (${(bytes.byteLength/1048576).toFixed(1)} MB)`);
       const defaultRepo = getGhRepos()[0] || '';
-      const repo = (await uiPrompt('Upload snapshot to GitHub repo (owner/repo)', defaultRepo)) || '';
+      const repoInput = (await uiPrompt('Upload snapshot to GitHub repo (owner/repo)', defaultRepo)) || '';
+      const repo = normalizeGhRepo(repoInput);
       if (!repo) { setStatus('upload cancelled'); return; }
+      if (!GH_REPO_RE.test(repo)) {
+        throw new Error('invalid repo: use owner/repo (or a github.com URL)');
+      }
       // Save repo to list
       const list = getGhRepos(); if (!list.includes(repo)) { list.unshift(repo); saveGhRepos(list); }
       const tag = (await uiPrompt('Release tag (e.g. v1.0-snap)', 'v86-snap-' + Date.now().toString(36))) || '';
@@ -1419,12 +1443,46 @@
         },
         body: JSON.stringify({ tag_name: tag, name: tag, draft: true })
       });
-      if (!createResp.ok) {
+      let id = null;
+      if (createResp.ok) {
+        const release = await createResp.json();
+        id = release && release.id;
+      } else {
         const txt = await createResp.text().catch(() => '');
-        throw new Error('create release failed: ' + createResp.status + ' ' + txt);
+        // Tag exists already: reuse that release instead of hard failing.
+        if (createResp.status === 422 && /already_exists/i.test(txt)) {
+          const byTagUrl = 'https://api.github.com/repos/' + repo + '/releases/tags/' + encodeURIComponent(tag);
+          const byTagResp = await fetch('https://relay.linuxontab.com/secret-proxy/' + encodeURIComponent(byTagUrl), {
+            method: 'GET',
+            headers: {
+              'Authorization': 'Bearer LOT_SECRET_GITHUB',
+              'Accept': 'application/vnd.github+json'
+            }
+          });
+          if (byTagResp.ok) {
+            const rel = await byTagResp.json();
+            id = rel && rel.id;
+          }
+        }
+        if (!id && createResp.status === 404) {
+          // 404 here is usually either bad repo path or token cannot see repo.
+          const repoProbeUrl = 'https://api.github.com/repos/' + repo;
+          const probeResp = await fetch('https://relay.linuxontab.com/secret-proxy/' + encodeURIComponent(repoProbeUrl), {
+            method: 'GET',
+            headers: {
+              'Authorization': 'Bearer LOT_SECRET_GITHUB',
+              'Accept': 'application/vnd.github+json'
+            }
+          });
+          if (probeResp.status === 404) {
+            throw new Error('repo not found or not accessible by LOT_SECRET_GITHUB: ' + repo + ' (needs access to this repo)');
+          }
+          if (probeResp.ok) {
+            throw new Error('cannot create release in ' + repo + ': LOT_SECRET_GITHUB needs release write permission (Contents:write)');
+          }
+        }
+        if (!id) throw new Error('create release failed: ' + createResp.status + ' ' + txt);
       }
-      const release = await createResp.json();
-      const id = release.id;
       if (!id) throw new Error('create release returned no id');
 
       setStatus('uploading asset…');
