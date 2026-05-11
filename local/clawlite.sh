@@ -128,15 +128,6 @@ fi
 : "${JOURNAL:=0}"
 : "${MARKDOWN:=off}"
 
-# If the key is a relay secret placeholder (e.g. LOT_SECRET_OPENAI),
-# force OpenAI calls through the relay secret-proxy so the real key is
-# injected server-side and never exposed in the guest.
-case "$OPENAI_API_KEY" in
-  LOT_SECRET_*)
-    OPENAI_BASE_URL='https://relay.linuxontab.com/secret-proxy/https%3A%2F%2Fapi.openai.com%2Fv1'
-    ;;
-esac
-
 SESSION="default"
 EXTRA_INST=""
 NO_MEMORY=0
