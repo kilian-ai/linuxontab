@@ -440,13 +440,6 @@
           <button type="button" id="tn-ports-reset" title="restore default port list (22, 8080, 22000, 8384)">reset defaults</button>
         </form>
       </div>
-      <div id="tn-guest-actions">
-        <div class="tn-section-hdr">
-          <b>bridge action</b>
-          <span class="hint" style="font-size:11px">One-click teardown + restart for all enabled ports that have expose checked</span>
-        </div>
-        <div id="tn-guest-actions-list"></div>
-      </div>
       <div id="tunnels-list"></div>
       <div id="tunnels-log"></div>
     </div>
@@ -5483,6 +5476,11 @@
       .filter(e => e.enabled)
       .map(e => (e.channels && e.channels > 0) ? (e.port + ':' + e.channels) : String(e.port));
   }
+  function tnExposedEnabledPortSpecs() {
+    return tnLoadPorts()
+      .filter(e => e.enabled && e.expose)
+      .map(e => (e.channels && e.channels > 0) ? (e.port + ':' + e.channels) : String(e.port));
+  }
   function tnBuildDefaultCmd() {
     const specs = tnEnabledPortSpecs();
     if (!specs.length) return TUNNEL_CMD_PREFIX + ' 22'; // safety: never empty
@@ -6102,7 +6100,11 @@
   async function tnRestartTunnel(t) {
     const code = t.code || (t.id !== 'default' ? t.id : null);
     // Even for the default (no code yet), honor a stored __default__ override.
-    const cmd = code ? tnEffectiveCmd(code) : (tnGetCmdOverride('__default__') || tnBuildDefaultCmd());
+    const exposedSpecs = tnExposedEnabledPortSpecs();
+    const builtCmd = exposedSpecs.length
+      ? (TUNNEL_CMD_PREFIX + ' ' + exposedSpecs.join(' '))
+      : tnBuildDefaultCmd();
+    const cmd = code ? tnEffectiveCmd(code) : (tnGetCmdOverride('__default__') || builtCmd);
     tnLog('$ restart ' + (code || '(default)'), 'cmd');
     tnLog(cmd, 'out');
     // Stop first so respawn loops are gone, then start fresh.
@@ -6269,7 +6271,6 @@
     tunnelsPanel.hidden = false;
     panelTmuxFollow('tunnel');
     tnRenderPortsConfig();
-    tnRenderGuestActions();
     tnRefresh();
   };
   tunnelsCloseBtn.onclick = () => { tunnelsPanel.hidden = true; panelTmuxBack(); term.focus(); };
@@ -6648,52 +6649,6 @@
   }
 
   setInterval(() => { tunnelsBtn.disabled = !emulator; }, 800);
-
-  // ── Guest helper scripts & actions for the tunnels panel ─────────────
-  const tnGuestActionsList = $('tn-guest-actions-list');
-
-  function tnExposedEnabledPortSpecs() {
-    return tnLoadPorts()
-      .filter(e => e.enabled && e.expose)
-      .map(e => (e.channels && e.channels > 0) ? (e.port + ':' + e.channels) : String(e.port));
-  }
-
-  async function tnRestartExposedBridges() {
-    const specs = tnExposedEnabledPortSpecs();
-    if (!specs.length) {
-      tnLog('no enabled expose ports selected; check expose boxes first', 'err');
-      return;
-    }
-    const cmd = TUNNEL_CMD_PREFIX + ' ' + specs.join(' ');
-    const prevDefault = tnGetCmdOverride('__default__');
-    tnLog('restarting bridges for expose ports: ' + specs.join(' '), 'cmd');
-    // Reuse existing restart pipeline (stop all bridges, verify cleanup,
-    // start tunnel-up, poll for code) but with an ephemeral command override.
-    tnSetCmdOverride('__default__', cmd);
-    try {
-      await tnRestartTunnel({ id: 'default', code: null });
-    } finally {
-      if (prevDefault && prevDefault.trim()) tnSetCmdOverride('__default__', prevDefault);
-      else tnSetCmdOverride('__default__', '');
-    }
-  }
-
-  function tnRenderGuestActions() {
-    if (!tnGuestActionsList) return;
-    tnGuestActionsList.innerHTML = '';
-    const btn = document.createElement('button');
-    btn.textContent = 'tear down + restart exposed bridges';
-    btn.title = 'Stops all tunnel-up/websocat bridges, then restarts using only ports with enabled+expose checked.';
-    btn.onclick = async () => {
-      btn.disabled = true;
-      try {
-        await tnRestartExposedBridges();
-      } finally {
-        btn.disabled = false;
-      }
-    };
-    tnGuestActionsList.appendChild(btn);
-  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Claw panel — browser chatbot backed by clawlite running in the guest.
