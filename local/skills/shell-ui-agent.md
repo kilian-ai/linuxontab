@@ -2,14 +2,16 @@
 
 You are running **inside the Alpine Linux guest** of LinuxOnTab (v86/WASM).  
 You serve a multi-app web UI via busybox httpd on port 8080.  
-The browser-facing URL is: `https://linuxontab-tunnel.fly.dev/port/http/6660/`
+The browser-facing URL is: `https://linuxontab-tunnel.fly.dev/port/http/CODE/8080/` (CODE = 4-char code from `/tmp/tunnel.code`)
 
 ---
 
-## File layout under `/tmp/www/`
+## File layout under `~/public/` (= `/mnt/host/public/`)
+
+This is the docroot busybox httpd serves. `~/public` is a symlink to `/mnt/host/public`.
 
 ```
-/tmp/www/
+~/public/
 ├── index.html          ← app launcher (nav cards)
 ├── shell/
 │   └── index.html      ← Alpine.js interactive shell (CGI: ../cgi-bin/run.cgi)
@@ -32,18 +34,18 @@ CGI paths are always **relative to the page's subdirectory** — e.g. shell/ use
 ## How to write / overwrite a file
 
 ```sh
-cat > /tmp/www/PATH/TO/FILE << 'HEREDOC'
+cat > ~/public/PATH/TO/FILE << 'HEREDOC'
 ...full file content...
 HEREDOC
 ```
 
 For CGI scripts, add `chmod +x`:
 ```sh
-cat > /tmp/www/cgi-bin/run.cgi << 'HEREDOC'
+cat > ~/public/cgi-bin/run.cgi << 'HEREDOC'
 #!/bin/sh
 ...
 HEREDOC
-chmod +x /tmp/www/cgi-bin/run.cgi
+chmod +x ~/public/cgi-bin/run.cgi
 ```
 
 Edits are **live immediately** — just hard-refresh the browser tab.
@@ -60,7 +62,7 @@ Edits are **live immediately** — just hard-refresh the browser tab.
 - `GET ?action=list` → `{"files":["shell/index.html",…]}`
 - `GET ?action=read&path=shell/index.html` → `{"content":"…"}`
 - `POST ?action=write&path=shell/index.html` body=raw text → `{"ok":true}`
-- Paths are relative to `/tmp/www/`. `../` is stripped for safety.
+- Paths are relative to `~/public/`. `../` is stripped for safety.
 - `.sh` and `.cgi` files are auto-chmod'd +x on write.
 
 ### `ai.cgi` — OpenAI proxy
@@ -84,8 +86,9 @@ Edits are **live immediately** — just hard-refresh the browser tab.
 ## Verify services
 
 ```sh
-pgrep -a httpd || httpd -p 8080 -h /tmp/www   # restart httpd if dead
+pgrep -a httpd || httpd -p 127.0.0.1:8080 -h ~/public   # restart httpd if dead
 curl -s http://127.0.0.1:8080/ | grep -o '<title>[^<]*'  # smoke test
+cat /tmp/tunnel.code   # get current 4-char code for browser URL
 ```
 
 ---
