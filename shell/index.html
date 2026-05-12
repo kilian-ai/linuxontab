@@ -5939,7 +5939,7 @@
     btnRestart.onclick = () => tnRestartTunnel(t);
     const btnStop = document.createElement('button');
     btnStop.textContent = 'stop';
-    btnStop.onclick = () => tnStopTunnel(t);
+    btnStop.onclick = () => { window.__tnWatchdog.stopped = true; tnStopTunnel(t); };
     const btnEdit = document.createElement('button');
     btnEdit.textContent = 'edit cmd';
     btnEdit.onclick = () => tnEditCmd(t);
@@ -6098,6 +6098,7 @@
   }
 
   async function tnRestartTunnel(t) {
+    window.__tnWatchdog.stopped = false;
     const code = t.code || (t.id !== 'default' ? t.id : null);
     // Even for the default (no code yet), honor a stored __default__ override.
     const exposedSpecs = tnExposedEnabledPortSpecs();
@@ -6166,7 +6167,11 @@
       const out = probe.stdout || '';
       if (/__HAVE_CODE__:/.test(out)) {
         const code = (out.match(/__HAVE_CODE__:([A-Z0-9]+)/) || [])[1];
-        if (code) tnLog('pairing code: ' + code, 'ok');
+        if (code) {
+          tnLog('pairing code: ' + code, 'ok');
+          const wd = window.__tnWatchdog;
+          wd.active = true; wd.code = code; wd.stopped = false; wd.restarting = false;
+        }
         tnRefresh();
         return;
       }
@@ -6649,6 +6654,28 @@
   }
 
   setInterval(() => { tunnelsBtn.disabled = !emulator; }, 800);
+
+  // Bridge watchdog — every 30s checks if websocat bridges are still alive.
+  // If a tunnel was previously active (code known) but all bridges exited,
+  // auto-restarts them. Set window.__tnWatchdog.stopped = true to suppress.
+  window.__tnWatchdog = { active: false, code: null, stopped: false, restarting: false };
+  setInterval(async () => {
+    const wd = window.__tnWatchdog;
+    if (!emulator || !wd.active || wd.stopped || wd.restarting) return;
+    try {
+      const r = await tnExec(
+        'n=$(ps -o pid,args 2>/dev/null | grep websocat | grep -v grep | wc -l); echo __WD__=$n',
+        { timeout: 6000 }
+      );
+      const m = (r.stdout || '').match(/__WD__=(\d+)/);
+      if (m && parseInt(m[1], 10) === 0) {
+        tnLog('watchdog: bridges down — auto-restarting (code=' + wd.code + ')', 'err');
+        wd.restarting = true;
+        tnRestartTunnel({ id: wd.code || 'default', code: wd.code || null })
+          .catch(() => {}).finally(() => { wd.restarting = false; });
+      }
+    } catch (_) {}
+  }, 30000);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Claw panel — browser chatbot backed by clawlite running in the guest.
