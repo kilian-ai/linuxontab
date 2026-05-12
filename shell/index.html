@@ -6410,8 +6410,8 @@
           chan.min = '1';
           chan.max = '256';
           chan.value = (p.channels && p.channels > 0) ? String(p.channels) : '';
-          chan.placeholder = '32';
-          chan.title = 'parallel websocat bridges (channels) for this port. blank = default (32). higher = more parallel requests but more guest CPU/RAM.';
+          chan.placeholder = '8';
+          chan.title = 'parallel websocat bridges (channels) for this port. blank = default (8). higher = more parallel requests but more guest CPU/RAM.';
           chan.onchange = () => {
             const arr = tnLoadPorts();
             if (!arr[idx]) return;
@@ -6561,8 +6561,8 @@
         chan.min = '1';
         chan.max = '256';
         chan.value = (p.channels && p.channels > 0) ? String(p.channels) : '';
-        chan.placeholder = '32';
-        chan.title = 'parallel websocat bridges (channels) for this port. blank = default (32). higher = more parallel requests but more guest CPU/RAM.';
+        chan.placeholder = '8';
+        chan.title = 'parallel websocat bridges (channels) for this port. blank = default (8). higher = more parallel requests but more guest CPU/RAM.';
         chan.onchange = () => {
           const arr = tnLoadPorts();
           if (!arr[idx]) return;

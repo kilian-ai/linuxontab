@@ -205,7 +205,7 @@ port_pool_size() {
     if [ -n "$_v" ]; then
         echo "$_v"
     else
-        echo "${TUNNEL_BRIDGES_PER_PORT:-32}"
+        echo "${TUNNEL_BRIDGES_PER_PORT:-8}"
     fi
 }
 
@@ -796,12 +796,10 @@ for PORT in $PORTS; do
     # protocols — Filezilla SFTP opens 2+ concurrent SSH connections by
     # default for parallel transfers, and each one needs its own bridge.
     #
-    # Default 32: chatty SPA UIs (Syncthing in particular) fire 8+ parallel
-    # /rest/events long-polls that each hold a bridge for up to 60s. Plus
-    # background tabs / mobile browsers may keep older long-polls in-flight
-    # while new ones spawn, so the working set can transiently exceed pool
-    # size. Pool 32 gives generous headroom: 16 long-polls in-flight still
-    # leaves 16 free for short requests (HTML/JS/REST polls).
+    # Default 8: enough for typical SSH + a few parallel HTTP requests.
+    # For chatty SPA UIs (Syncthing etc.) that fire 8+ parallel long-polls,
+    # override per-port via the `port:N` arg syntax (e.g. `sh -s 22 8384:64`)
+    # or globally with TUNNEL_BRIDGES_PER_PORT=N.
     #
     # Override globally with TUNNEL_BRIDGES_PER_PORT=N, or per-port via the
     # `port:N` arg syntax (e.g. `sh -s 22 8384:64`). Per-port wins.
