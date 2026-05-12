@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI — LinuxOnTab</title>
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js" defer></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #0d1117; color: #c9d1d9;
+  font: 13px/1.6 'SF Mono','Fira Code',ui-monospace,monospace;
+  height: 100dvh; display: flex; flex-direction: column;
+}
+header {
+  padding: 8px 16px; border-bottom: 1px solid #21262d;
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+header a { color: #8b949e; text-decoration: none; font-size: 12px; }
+header a:hover { color: #58a6ff; }
+.sep { color: #444d56; }
+.model-tag {
+  margin-left: auto; font-size: 11px; color: #444d56;
+  background: #161b22; border: 1px solid #21262d; border-radius: 3px;
+  padding: 2px 8px;
+}
+.msgs {
+  flex: 1; overflow-y: auto; padding: 16px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.msg {
+  max-width: 88%; border-radius: 6px; padding: 8px 12px;
+  line-height: 1.55; white-space: pre-wrap; word-break: break-word; font-size: 13px;
+}
+.msg.user      { background: #1a3a5c; color: #c9d1d9; align-self: flex-end; }
+.msg.assistant { background: #161b22; border: 1px solid #21262d; color: #c9d1d9; align-self: flex-start; }
+.msg.system    { color: #8b949e; font-size: 11px; font-style: italic; align-self: center; text-align: center; }
+.spinner { animation: spin .7s linear infinite; display: inline-block; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.input-row {
+  padding: 10px 16px; border-top: 1px solid #21262d;
+  display: flex; gap: 8px; align-items: flex-end; flex-shrink: 0;
+}
+textarea {
+  flex: 1; background: #161b22; border: 1px solid #30363d; border-radius: 4px;
+  color: #c9d1d9; font: inherit; font-size: 13px; padding: 8px 10px;
+  resize: none; min-height: 40px; max-height: 160px; outline: none;
+  overflow-y: auto; line-height: 1.5;
+}
+textarea:focus { border-color: #58a6ff; }
+.send-btn {
+  background: #1f6feb; border: none; border-radius: 4px;
+  color: #fff; padding: 8px 16px; cursor: pointer; font: inherit; font-size: 12px;
+  align-self: flex-end; flex-shrink: 0;
+}
+.send-btn:disabled { opacity: .35; cursor: default; }
+</style>
+</head>
+<body x-data="chat()" x-init="init()">
+
+<header>
+  <a href="../">&#8592; home</a>
+  <span class="sep">/</span>
+  <span style="color:#58a6ff">AI chat</span>
+  <span class="model-tag" x-text="model"></span>
+</header>
+
+<div class="msgs" x-ref="msgs">
+  <template x-for="(m,i) in msgs" :key="i">
+    <div class="msg" :class="m.role" x-text="m.content"></div>
+  </template>
+  <div class="msg system" x-show="busy">
+    <span class="spinner">&#8635;</span> thinking…
+  </div>
+</div>
+
+<div class="input-row">
+  <textarea
+    x-ref="inp"
+    x-model="draft"
+    @keydown.enter.exact.prevent="send()"
+    @keydown.enter.shift="null"
+    :disabled="busy"
+    placeholder="message — Enter to send, Shift+Enter for newline"
+    rows="2"
+    @input="$el.style.height='auto'; $el.style.height=Math.min($el.scrollHeight,160)+'px'"
+  ></textarea>
+  <button class="send-btn" @click="send()" :disabled="busy || !draft.trim()">send</button>
+</div>
+
+<script>
+function chat() {
+  return {
+    msgs: [],
+    draft: '',
+    busy: false,
+    model: 'gpt-4o-mini',
+    system: 'You are a helpful assistant running inside a LinuxOnTab Alpine Linux VM (v86/WASM). ' +
+            'You can suggest shell commands the user can run in the Shell tab. ' +
+            'The guest runs Alpine Linux i686. busybox sh is the default shell. ' +
+            'jq, curl, wget, and websocat are installed. Keep answers concise.',
+
+    init() {
+      this.msgs.push({ role: 'system', content: 'connected · ' + this.model + ' via relay.linuxontab.com' });
+      this.$nextTick(() => this.$refs.inp && this.$refs.inp.focus());
+    },
+
+    async send() {
+      const text = this.draft.trim();
+      if (!text || this.busy) return;
+      this.draft = '';
+      this.busy = true;
+      this.msgs.push({ role: 'user', content: text });
+      this.scroll();
+      try {
+        const history = this.msgs
+          .filter(m => m.role === 'user' || m.role === 'assistant')
+          .map(m => ({ role: m.role, content: m.content }));
+        const r = await fetch('../cgi-bin/ai.cgi', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: this.model,
+            messages: [{ role: 'system', content: this.system }, ...history],
+            max_tokens: 1024
+          })
+        });
+        const j = await r.json();
+        if (j.error) throw new Error(typeof j.error === 'string' ? j.error : JSON.stringify(j.error));
+        const reply = j.choices?.[0]?.message?.content ?? '(empty response)';
+        this.msgs.push({ role: 'assistant', content: reply });
+      } catch(e) {
+        this.msgs.push({ role: 'system', content: 'error: ' + e.message });
+      }
+      this.busy = false;
+      this.$nextTick(() => { this.scroll(); this.$refs.inp && this.$refs.inp.focus(); });
+    },
+
+    scroll() {
+      this.$nextTick(() => {
+        const el = this.$refs.msgs;
+        if (el) el.scrollTop = el.scrollHeight;
+      });
+    }
+  };
+}
+</script>
+</body>
+</html>

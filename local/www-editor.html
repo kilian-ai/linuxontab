@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Editor — LinuxOnTab</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/css/css.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/htmlmixed/htmlmixed.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/shell/shell.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js" defer></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #0d1117; color: #c9d1d9;
+  font: 13px/1.6 'SF Mono','Fira Code',ui-monospace,monospace;
+  height: 100dvh; display: flex; flex-direction: column;
+}
+header {
+  padding: 8px 16px; border-bottom: 1px solid #21262d;
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+header a { color: #8b949e; text-decoration: none; font-size: 12px; }
+header a:hover { color: #58a6ff; }
+.sep { color: #444d56; }
+.toolbar {
+  padding: 6px 12px; border-bottom: 1px solid #21262d;
+  display: flex; align-items: center; gap: 6px; flex-shrink: 0; flex-wrap: wrap;
+}
+select, .tbtn, .tinput {
+  background: #161b22; border: 1px solid #30363d; border-radius: 4px;
+  color: #c9d1d9; font: inherit; font-size: 12px; padding: 4px 8px;
+}
+select { cursor: pointer; max-width: 260px; }
+.tbtn { cursor: pointer; }
+.tbtn:hover { border-color: #58a6ff; color: #58a6ff; }
+.tbtn.save { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+.tbtn.save:hover { background: #388bfd; }
+.tbtn:disabled { opacity: .4; cursor: default; }
+.tinput { width: 180px; outline: none; }
+.tinput:focus { border-color: #58a6ff; }
+.st { margin-left: auto; font-size: 11px; }
+.st.ok  { color: #3fb950; }
+.st.err { color: #f85149; }
+.st.info { color: #8b949e; }
+.editor-wrap { flex: 1; overflow: hidden; }
+.CodeMirror {
+  height: 100%; font-family: 'SF Mono','Fira Code',ui-monospace,monospace;
+  font-size: 13px;
+}
+</style>
+</head>
+<body x-data="editor()" x-init="init()">
+
+<header>
+  <a href="../">&#8592; home</a>
+  <span class="sep">/</span>
+  <span style="color:#58a6ff">editor</span>
+</header>
+
+<div class="toolbar">
+  <select x-model="path" @change="load()" :disabled="busy">
+    <option value="">— pick a file —</option>
+    <template x-for="f in files" :key="f">
+      <option :value="f" x-text="f"></option>
+    </template>
+  </select>
+  <input class="tinput" x-model="newPath" placeholder="new/file.html" @keydown.enter="create()">
+  <button class="tbtn" @click="create()" :disabled="!newPath.trim() || busy">new</button>
+  <button class="tbtn save" @click="save()" :disabled="!path || busy">save</button>
+  <span class="st" :class="stClass" x-text="stMsg"></span>
+</div>
+
+<div class="editor-wrap" id="cm-wrap"></div>
+
+<script>
+function editor() {
+  let cm = null;
+  return {
+    files: [], path: '', newPath: '', busy: false,
+    stMsg: 'pick or create a file', stClass: 'info',
+
+    async init() {
+      cm = CodeMirror(document.getElementById('cm-wrap'), {
+        theme: 'dracula',
+        lineNumbers: true,
+        lineWrapping: false,
+        tabSize: 2,
+        indentWithTabs: false,
+        value: '',
+        extraKeys: {
+          'Ctrl-S': () => this.save(),
+          'Cmd-S':  () => this.save()
+        }
+      });
+      cm.setSize('100%', '100%');
+      await this.listFiles();
+    },
+
+    async listFiles() {
+      try {
+        const r = await fetch('../cgi-bin/fs.cgi?action=list');
+        const j = await r.json();
+        this.files = j.files || [];
+      } catch(e) { this.files = []; }
+    },
+
+    modeFor(p) {
+      if (p.endsWith('.html')) return 'htmlmixed';
+      if (p.endsWith('.css'))  return 'css';
+      if (p.endsWith('.js'))   return 'javascript';
+      if (p.endsWith('.sh') || p.endsWith('.cgi')) return 'shell';
+      return 'null';
+    },
+
+    async load() {
+      if (!this.path) return;
+      this.busy = true; this.st('loading…', 'info');
+      try {
+        const r = await fetch('../cgi-bin/fs.cgi?action=read&path=' + encodeURIComponent(this.path));
+        const j = await r.json();
+        if (j.error) throw new Error(j.error);
+        cm.setValue(j.content);
+        cm.setOption('mode', this.modeFor(this.path));
+        cm.clearHistory();
+        this.st('loaded — Ctrl/Cmd+S to save', 'ok');
+      } catch(e) { this.st(e.message, 'err'); }
+      this.busy = false;
+    },
+
+    async save() {
+      if (!this.path) return;
+      this.busy = true; this.st('saving…', 'info');
+      try {
+        const r = await fetch('../cgi-bin/fs.cgi?action=write&path=' + encodeURIComponent(this.path), {
+          method: 'POST',
+          body: cm.getValue(),
+          headers: { 'content-type': 'text/plain' }
+        });
+        const j = await r.json();
+        if (j.error) throw new Error(j.error);
+        this.st('saved ✓', 'ok');
+        if (!this.files.includes(this.path)) {
+          this.files = [...this.files, this.path].sort();
+        }
+      } catch(e) { this.st(e.message, 'err'); }
+      this.busy = false;
+    },
+
+    create() {
+      const p = this.newPath.trim();
+      if (!p) return;
+      this.path = p; this.newPath = '';
+      cm.setValue('');
+      cm.setOption('mode', this.modeFor(p));
+      cm.clearHistory();
+      this.st('new file — save when ready', 'info');
+    },
+
+    st(msg, cls) { this.stMsg = msg; this.stClass = cls; }
+  };
+}
+</script>
+</body>
+</html>

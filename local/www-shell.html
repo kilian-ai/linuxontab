@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Shell — LinuxOnTab</title>
+<script src="https://cdn.jsdelivr.net/npm/alpinejs@3/dist/cdn.min.js" defer></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #0d1117; color: #c9d1d9;
+  font: 13px/1.6 'SF Mono','Fira Code',ui-monospace,monospace;
+  height: 100dvh; display: flex; flex-direction: column;
+}
+header {
+  padding: 8px 16px; border-bottom: 1px solid #21262d;
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+}
+header a { color: #8b949e; text-decoration: none; font-size: 12px; }
+header a:hover { color: #58a6ff; }
+.sep { color: #444d56; }
+header h1 { font-size: 13px; color: #58a6ff; flex: 1; letter-spacing: .3px; }
+.hbtn {
+  background: none; border: 1px solid #30363d; border-radius: 4px;
+  color: #8b949e; padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px;
+}
+.hbtn:hover { color: #c9d1d9; border-color: #8b949e; }
+.output {
+  flex: 1; overflow-y: auto; padding: 10px 16px;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.line { white-space: pre-wrap; word-break: break-all; line-height: 1.5; }
+.line.cmd  { color: #58a6ff; }
+.line.cmd::before { content: '$ '; color: #3fb950; }
+.line.out  { color: #c9d1d9; }
+.line.err  { color: #f85149; }
+.line.info { color: #8b949e; font-style: italic; }
+.spinner { display: inline-block; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.prompt-row {
+  padding: 8px 16px; border-top: 1px solid #21262d;
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+.ps1 { color: #3fb950; flex-shrink: 0; user-select: none; }
+input {
+  flex: 1; background: transparent; border: none;
+  color: #c9d1d9; font: inherit; outline: none; caret-color: #58a6ff;
+}
+input::placeholder { color: #444d56; }
+.run-btn {
+  background: #1f6feb; border: none; border-radius: 4px;
+  color: #fff; padding: 5px 14px; cursor: pointer; font: inherit; font-size: 12px;
+}
+.run-btn:disabled { opacity: .35; cursor: default; }
+.statusbar {
+  padding: 2px 16px; background: #161b22; border-top: 1px solid #21262d;
+  font-size: 11px; color: #8b949e; display: flex; gap: 16px; flex-shrink: 0;
+}
+.statusbar .ok  { color: #3fb950; }
+.statusbar .bad { color: #f85149; }
+</style>
+</head>
+<body x-data="app()" x-init="init()">
+
+<header>
+  <a href="../">&#8592; home</a>
+  <span class="sep">/</span>
+  <h1>shell</h1>
+  <button class="hbtn" @click="clear()">clear</button>
+</header>
+
+<div class="output" x-ref="out">
+  <template x-for="(l,i) in log" :key="i">
+    <div class="line" :class="l.t" x-text="l.v"></div>
+  </template>
+  <div class="line info" x-show="busy">
+    <span class="spinner">&#8635;</span> running…
+  </div>
+</div>
+
+<div class="prompt-row">
+  <span class="ps1">$</span>
+  <input
+    x-ref="inp"
+    x-model="cmd"
+    @keydown.enter="run()"
+    @keydown.up.prevent="hist(-1)"
+    @keydown.down.prevent="hist(1)"
+    :disabled="busy"
+    placeholder="shell command"
+    autocomplete="off"
+    autofocus
+  />
+  <button class="run-btn" @click="run()" :disabled="busy || !cmd.trim()">run</button>
+</div>
+
+<div class="statusbar">
+  <span :class="lastExit === 0 ? 'ok' : (lastExit === '—' ? '' : 'bad')"
+        x-text="'exit: ' + lastExit"></span>
+  <span x-text="'history: ' + cmds.length"></span>
+  <span x-text="status"></span>
+</div>
+
+<script>
+function app() {
+  return {
+    cmd: '', log: [], busy: false,
+    lastExit: '—', status: '',
+    cmds: [], hi: -1,
+
+    init() {
+      this.push('info', 'LinuxOnTab interactive shell');
+      this.push('info', 'up/down = history  |  Enter = run');
+    },
+
+    push(t, v) {
+      this.log.push({ t, v });
+      this.$nextTick(() => {
+        const o = this.$refs.out;
+        if (o) o.scrollTop = o.scrollHeight;
+      });
+    },
+
+    hist(d) {
+      if (!this.cmds.length) return;
+      this.hi = Math.max(-1, Math.min(this.cmds.length - 1, this.hi + d));
+      this.cmd = this.hi < 0 ? '' : this.cmds[this.cmds.length - 1 - this.hi];
+    },
+
+    clear() { this.log = []; },
+
+    async run() {
+      const c = this.cmd.trim();
+      if (!c || this.busy) return;
+      this.cmd = ''; this.hi = -1;
+      this.cmds.push(c);
+      this.push('cmd', c);
+      this.busy = true;
+      this.status = '';
+      const t0 = Date.now();
+      try {
+        const r = await fetch('../cgi-bin/run.cgi', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ cmd: c })
+        });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        if (j.stdout) j.stdout.split('\n').forEach(l => this.push('out', l));
+        if (j.stderr) j.stderr.split('\n').forEach(l => this.push('err', l));
+        if (!j.stdout && !j.stderr) this.push('info', '(no output)');
+        this.lastExit = j.exit;
+        this.status = ((Date.now() - t0)) + 'ms';
+      } catch (e) {
+        this.push('err', 'error: ' + e.message);
+        this.lastExit = '?';
+        this.status = 'failed';
+      }
+      this.busy = false;
+      this.$nextTick(() => this.$refs.inp.focus());
+    }
+  };
+}
+</script>
+</body>
+</html>

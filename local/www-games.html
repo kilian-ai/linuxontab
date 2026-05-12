@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Games — LinuxOnTab</title>
+<script src="https://cdn.jsdelivr.net/npm/phaser@3/dist/phaser.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #0d1117; color: #c9d1d9;
+  font: 13px/1.6 'SF Mono','Fira Code',ui-monospace,monospace;
+  height: 100dvh; display: flex; flex-direction: column;
+}
+header {
+  padding: 8px 16px; border-bottom: 1px solid #21262d;
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+header a { color: #8b949e; text-decoration: none; font-size: 12px; }
+header a:hover { color: #58a6ff; }
+.sep { color: #444d56; }
+.hint { margin-left: auto; font-size: 11px; color: #444d56; }
+#game-wrap { flex: 1; display: flex; justify-content: center; align-items: center; overflow: hidden; }
+#game-wrap canvas { display: block; image-rendering: pixelated; }
+</style>
+</head>
+<body>
+<header>
+  <a href="../">&#8592; home</a>
+  <span class="sep">/</span>
+  <span style="color:#58a6ff">snake</span>
+  <span class="hint">arrow keys / WASD · SPACE to start · R to restart</span>
+</header>
+<div id="game-wrap"></div>
+<script>
+const CELL = 22, COLS = 28, ROWS = 20;
+const W = COLS * CELL, H = ROWS * CELL;
+
+class Snake extends Phaser.Scene {
+  constructor() { super('Snake'); }
+
+  create() {
+    this.snake  = [{x:14,y:10},{x:13,y:10},{x:12,y:10}];
+    this.dir    = {x:1, y:0};
+    this.next   = {x:1, y:0};
+    this.food   = null;
+    this.score  = 0;
+    this.dead   = false;
+    this.started = false;
+    this.speed  = 130;
+    this.lastTick = 0;
+
+    this.gfx = this.add.graphics();
+
+    this.scoreTxt = this.add.text(8, 6, 'score: 0', {
+      fontFamily: 'monospace', fontSize: '13px', color: '#8b949e'
+    }).setDepth(1);
+
+    this.infoTxt = this.add.text(W/2, H/2, 'SPACE to start', {
+      fontFamily: 'monospace', fontSize: '20px', color: '#58a6ff', align: 'center'
+    }).setOrigin(0.5).setDepth(1);
+
+    this.keys = this.input.keyboard.addKeys(
+      'W,A,S,D,UP,DOWN,LEFT,RIGHT,SPACE,R'
+    );
+
+    this.placeFood();
+    this.draw();
+  }
+
+  placeFood() {
+    let f;
+    do {
+      f = {
+        x: Phaser.Math.Between(0, COLS - 1),
+        y: Phaser.Math.Between(0, ROWS - 1)
+      };
+    } while (this.snake.some(s => s.x === f.x && s.y === f.y));
+    this.food = f;
+  }
+
+  update(time) {
+    const k = this.keys;
+
+    // Restart
+    if (this.dead && (
+      Phaser.Input.Keyboard.JustDown(k.SPACE) ||
+      Phaser.Input.Keyboard.JustDown(k.R)
+    )) {
+      this.scene.restart();
+      return;
+    }
+
+    // Direction input (prevent 180° reversal)
+    if ((k.LEFT.isDown  || k.A.isDown)  && this.dir.x !==  1) this.next = {x:-1, y: 0};
+    if ((k.RIGHT.isDown || k.D.isDown)  && this.dir.x !== -1) this.next = {x: 1, y: 0};
+    if ((k.UP.isDown    || k.W.isDown)  && this.dir.y !==  1) this.next = {x: 0, y:-1};
+    if ((k.DOWN.isDown  || k.S.isDown)  && this.dir.y !== -1) this.next = {x: 0, y: 1};
+
+    if (!this.started) {
+      if (Phaser.Input.Keyboard.JustDown(k.SPACE)) {
+        this.started = true;
+        this.infoTxt.setText('');
+      }
+      return;
+    }
+    if (this.dead) return;
+    if (time - this.lastTick < this.speed) return;
+    this.lastTick = time;
+
+    this.dir = { ...this.next };
+    const head = {
+      x: (this.snake[0].x + this.dir.x + COLS) % COLS,
+      y: (this.snake[0].y + this.dir.y + ROWS) % ROWS
+    };
+
+    // Self collision
+    if (this.snake.some(s => s.x === head.x && s.y === head.y)) {
+      this.dead = true;
+      this.infoTxt.setText('GAME OVER\nscore: ' + this.score + '\nSPACE or R to restart');
+      this.draw();
+      return;
+    }
+
+    this.snake.unshift(head);
+
+    if (head.x === this.food.x && head.y === this.food.y) {
+      this.score++;
+      this.speed = Math.max(55, 130 - this.score * 3);
+      this.scoreTxt.setText('score: ' + this.score);
+      this.placeFood();
+    } else {
+      this.snake.pop();
+    }
+
+    this.draw();
+  }
+
+  draw() {
+    const g = this.gfx;
+    g.clear();
+
+    // Grid
+    g.lineStyle(1, 0x161b22, 1);
+    for (let x = 0; x <= COLS; x++) g.lineBetween(x * CELL, 0, x * CELL, H);
+    for (let y = 0; y <= ROWS; y++) g.lineBetween(0, y * CELL, W, y * CELL);
+
+    // Food (pulsing red circle)
+    if (this.food) {
+      g.fillStyle(0xf85149, 1);
+      g.fillCircle(
+        this.food.x * CELL + CELL / 2,
+        this.food.y * CELL + CELL / 2,
+        CELL / 2 - 2
+      );
+    }
+
+    // Snake segments
+    this.snake.forEach((s, i) => {
+      const t = i / (this.snake.length - 1 || 1);
+      // head = blue, tail fades toward green
+      const color = i === 0 ? 0x58a6ff : (i < 3 ? 0x3fb950 : 0x2a7a3b);
+      g.fillStyle(color, this.dead ? 0.4 : 1);
+      g.fillRoundedRect(s.x * CELL + 1, s.y * CELL + 1, CELL - 2, CELL - 2, 3);
+    });
+  }
+}
+
+new Phaser.Game({
+  type: Phaser.AUTO,
+  width: W,
+  height: H,
+  backgroundColor: '#0d1117',
+  parent: 'game-wrap',
+  scene: Snake,
+  scale: {
+    mode: Phaser.Scale.FIT,
+    autoCenter: Phaser.Scale.CENTER_BOTH
+  }
+});
+</script>
+</body>
+</html>

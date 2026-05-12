@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LinuxOnTab</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #0d1117; color: #c9d1d9;
+  font: 13px/1.6 'SF Mono','Fira Code',ui-monospace,monospace;
+  min-height: 100dvh; display: flex; flex-direction: column;
+}
+header {
+  padding: 14px 24px; border-bottom: 1px solid #21262d;
+  display: flex; align-items: center; gap: 12px;
+}
+header h1 { font-size: 14px; color: #58a6ff; letter-spacing: .3px; }
+.subtitle { font-size: 11px; color: #444d56; }
+.grid {
+  flex: 1; display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px; padding: 24px;
+}
+.card {
+  background: #161b22; border: 1px solid #21262d; border-radius: 8px;
+  padding: 20px 18px; text-decoration: none; color: inherit;
+  display: flex; flex-direction: column; gap: 6px;
+  transition: border-color .15s, background .15s;
+}
+.card:hover { border-color: #58a6ff; background: #1c2128; }
+.card-icon { font-size: 26px; line-height: 1; }
+.card-title { font-size: 13px; color: #e6edf3; font-weight: bold; margin-top: 4px; }
+.card-desc { font-size: 11px; color: #8b949e; line-height: 1.5; }
+footer {
+  padding: 8px 24px; border-top: 1px solid #21262d;
+  font-size: 11px; color: #444d56; text-align: center;
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>&#9655; LinuxOnTab</h1>
+  <span class="subtitle">Alpine Linux · v86/WASM · browser-only</span>
+</header>
+
+<div class="grid">
+  <a class="card" href="shell/">
+    <div class="card-icon">&#128512;</div>
+    <div class="card-title">Shell</div>
+    <div class="card-desc">Interactive Alpine shell — run commands, see stdout/stderr</div>
+  </a>
+  <a class="card" href="editor/">
+    <div class="card-icon">&#9998;</div>
+    <div class="card-title">Editor</div>
+    <div class="card-desc">Browse and live-edit files in /tmp/www with syntax highlighting</div>
+  </a>
+  <a class="card" href="ai/">
+    <div class="card-icon">&#129302;</div>
+    <div class="card-title">AI Chat</div>
+    <div class="card-desc">LLM assistant via OpenAI relay — can suggest shell commands</div>
+  </a>
+  <a class="card" href="games/">
+    <div class="card-icon">&#127918;</div>
+    <div class="card-title">Games</div>
+    <div class="card-desc">Phaser 3 snake game — arrow keys or WASD</div>
+  </a>
+</div>
+
+<footer>linuxontab-tunnel.fly.dev &middot; port 8080 &middot; busybox httpd</footer>
+</body>
+</html>
