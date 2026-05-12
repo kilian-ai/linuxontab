@@ -5406,8 +5406,9 @@
   const TUNNEL_PORTS_KEY = 'traits.tunnels.ports';
   // NOTE: Default cmd is built from the user-editable port config below.
   // BusyBox/hush in Alpine does NOT support bash process substitution
-  // `sh <(curl ...)`, so we always use `wget|sh -s ...` form.
-  const TUNNEL_CMD_PREFIX = 'wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh -s';
+  // `sh <(curl ...)`. Download the script first to avoid truncation when
+  // piping a large script over a slow WISP connection, then execute it.
+  const TUNNEL_CMD_PREFIX = 'wget -qO /tmp/tunnel-up.sh https://linuxontab.com/local/tunnel-up.sh && sh /tmp/tunnel-up.sh';
   // channels: per-port websocat bridge pool size override. null/0/undefined
   // means use the script default (32). Syncthing GUI fires many parallel
   // long-polls so it benefits from more channels.
