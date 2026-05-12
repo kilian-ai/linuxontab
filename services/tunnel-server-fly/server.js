@@ -723,6 +723,14 @@ async function httpProxy(req, res, session, port, guestPath, code, proxyPrefixOv
     retried = true;
   }
 
+  // HTTP/1.0 (and Connection: close) servers signal end-of-body by closing
+  // the connection.  The parser never sets `complete` in that path — it just
+  // accumulates bytes until close.  Treat the WS close as implicit EOF when
+  // we already received a valid status line and no parse error.
+  if (result === 'close' && parser && parser.headersDone && !parser.error) {
+    result = 'done';
+  }
+
   if (result === 'no-bridge') {
     cors(res);
     res.writeHead(503);
