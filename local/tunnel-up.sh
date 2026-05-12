@@ -1036,7 +1036,23 @@ STATUS_CONNECT_TIMEOUT="${TUNNEL_STATUS_CONNECT_TIMEOUT:-15}"
             # Short backoff before next try (don't burn the whole interval).
             sleep 3 2>/dev/null || sleep 5
         done
-        if [ "$ok" != 1 ]; then
+        if [ "$ok" = 1 ]; then
+            # Re-expose any TCP slots that were registered via expose-tcp.sh.
+            # The Fly server loses tcpAssignments on restart; without this, direct
+            # TCP clients (FileZilla, irssi) get "socket unexpectedly closed".
+            if [ -s /tmp/tunnel.exposed ]; then
+                while IFS= read -r _ep || [ -n "$_ep" ]; do
+                    [ -z "$_ep" ] && continue
+                    _er=$(curl -sS --max-time 15 -X POST "$active_base/port/expose" \
+                        -H 'Content-Type: application/json' \
+                        -d "{\"code\":\"$CODE\",\"port\":${_ep},\"ttlMs\":3600000}" 2>&1)
+                    case "$_er" in
+                        *'"publicPort"'*) echo "[tunnel] reclaim: re-exposed port $_ep → $(printf '%s' "$_er" | sed -n 's/.*"publicPort":\([0-9]*\).*/\1/p')" ;;
+                        *) echo "[tunnel] reclaim: re-expose port $_ep failed: $(printf '%s' "$_er" | tr '\n' ' ' | cut -c1-80)" ;;
+                    esac
+                done < /tmp/tunnel.exposed
+            fi
+        else
             echo "[tunnel] reclaim: all retries failed — will retry in ${RECLAIM_INTERVAL}s"
         fi
     done
@@ -1135,6 +1151,19 @@ _DAEMON_MIN="${TUNNEL_DAEMON_MIN_BRIDGES:-4}"
                     -H 'Content-Type: application/json' \
                     -d "{\"code\":\"$_code\",\"ports\":$_ports_json}" 2>&1)
                 _dlog "re-register: $(printf '%s' "$_r" | tr '\n' ' ' | cut -c1-80)"
+                # Re-expose any TCP pool slots (FileZilla direct connections).
+                if [ -s /tmp/tunnel.exposed ]; then
+                    while IFS= read -r _ep || [ -n "$_ep" ]; do
+                        [ -z "$_ep" ] && continue
+                        _er=$(curl -sS --max-time 15 -X POST "$_base/port/expose" \
+                            -H 'Content-Type: application/json' \
+                            -d "{\"code\":\"$_code\",\"port\":${_ep},\"ttlMs\":3600000}" 2>&1)
+                        case "$_er" in
+                            *'"publicPort"'*) _dlog "re-exposed port $_ep → $(printf '%s' "$_er" | sed -n 's/.*\"publicPort\":\([0-9]*\).*/\1/p')" ;;
+                            *) _dlog "re-expose port $_ep failed: $(printf '%s' "$_er" | tr '\n' ' ' | cut -c1-60)" ;;
+                        esac
+                    done < /tmp/tunnel.exposed
+                fi
                 ;;
         esac
 

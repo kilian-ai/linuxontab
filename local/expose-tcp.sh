@@ -70,3 +70,11 @@ Connect from anywhere:
   ssh -p $PUBP user@$HOST           # if guest-port is sshd
   irssi -c $HOST -p $PUBP -n yourname
 EOF
+
+# Track this exposed port so the reclaim watchdog can re-expose after a relay restart.
+# The file is a newline-separated list of guest port numbers.
+EXPOSED_FILE="/tmp/tunnel.exposed"
+if ! grep -qx "$PORT" "$EXPOSED_FILE" 2>/dev/null; then
+  printf '%s\n' "$PORT" >> "$EXPOSED_FILE"
+fi
+echo "[expose-tcp] saved port $PORT to $EXPOSED_FILE for auto-re-expose on relay restart"
