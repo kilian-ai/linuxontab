@@ -904,7 +904,13 @@ function bridgeTcpToWs(sock, ws, pairId) {
     closed = true;
     console.log(`[tcp-bridge ${pairId}] ${origin} closed${info ? ': ' + info : ''}`);
     try { sock.destroy(); } catch (_) {}
-    try { ws.close(1000, origin + ' closed'); } catch (_) {}
+    // Only forcibly close the guest WS on WS-side errors or explicit WS close.
+    // On TCP close, we let websocat die naturally when sshd closes its local
+    // TCP — this avoids killing the websocat process prematurely and reduces
+    // the bridge restart churn for the SSH TCP-expose use case.
+    if (origin !== 'tcp') {
+      try { ws.close(1000, origin + ' closed'); } catch (_) {}
+    }
   };
   sock.on('close', () => closePair('tcp'));
   sock.on('error', (e) => closePair('tcp', e.message));
@@ -952,6 +958,11 @@ function startTcpPool() {
         try { sock.destroy(); } catch (_) {}
         return;
       }
+      // TCP client may have given up during the await wait.
+      if (sock.destroyed) {
+        // Return the guest to the pool by not claiming it.
+        return;
+      }
       const pairId = Math.random().toString(36).slice(2, 8);
       console.log(`[tcp-bridge ${pairId}] :${publicPort} → ${a.code}:${a.internalPort} paired ` +
         `(remote=${sock.remoteAddress}:${sock.remotePort})`);
@@ -971,10 +982,10 @@ function startTcpPool() {
 
       bridgeTcpToWs(sock, guest, pairId);
 
-      const cleanup = () => {
-        session.proxyCalls.delete(guest);
-        try { guest.close(1000, 'tcp pair complete'); } catch (_) {}
-      };
+      // Unclaim when done. Don't close the guest WS from here —
+      // bridgeTcpToWs only closes it on WS-side errors; on TCP close,
+      // websocat will naturally exit when sshd closes its local TCP.
+      const cleanup = () => { session.proxyCalls.delete(guest); };
       sock.once('close', cleanup);
       guest.once('close', cleanup);
     });
