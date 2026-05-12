@@ -6180,7 +6180,7 @@
         if (code) {
           tnLog('pairing code: ' + code, 'ok');
           const wd = window.__tnWatchdog;
-          wd.active = true; wd.code = code; wd.stopped = false; wd.restarting = false;
+          wd.active = true; wd.code = code; wd.stopped = false; wd.restarting = false; wd.activatedAt = Date.now();
         }
         tnRefresh();
         return;
@@ -6673,10 +6673,13 @@
   // The guest-side tunnel-daemon also runs independently (no JS dependency)
   // to respawn bridges without needing tnExec when the serial channel is busy.
   // Set window.__tnWatchdog.stopped = true to suppress auto-restart.
-  window.__tnWatchdog = { active: false, code: null, stopped: false, restarting: false };
+  window.__tnWatchdog = { active: false, code: null, stopped: false, restarting: false, activatedAt: 0 };
   setInterval(async () => {
     const wd = window.__tnWatchdog;
     if (!emulator || !wd.active || wd.stopped || wd.restarting) return;
+    // Grace period: don't check for 90s after activation (tunnel-up.sh writes code
+    // before spawning bridges; watchdog mustn't fire during that startup window).
+    if (Date.now() - wd.activatedAt < 90000) return;
     const doRestart = (reason) => {
       tnLog('watchdog: ' + reason + ' — auto-restarting (code=' + wd.code + ')', 'err');
       wd.restarting = true;
