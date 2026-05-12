@@ -1,0 +1,368 @@
+#dhcp and dns refresh (if networking is really messed up, e.g. after suspend)
+ip link set eth0 down 2>/dev/null; ip link set eth0 up 2>/dev/null; killall udhcpc >/dev/null 2>&1; udhcpc -i eth0 -q -n -f -T 2 -t 5 >/dev/null 2>&1; printf "nameserver 1.1.1.1\nnameserver 1.0.0.1\n" > /etc/resolv.conf; echo "[restore-net] DHCP + DNS refreshed"
+
+#Stop current install
+pkill -f "npm install -g openclaw" || true
+
+#Throttle npm networking hard
+npm config set maxsockets 1
+npm config set fetch-retries 20
+npm config set fetch-retry-mintimeout 5000
+npm config set fetch-retry-maxtimeout 10000
+npm config set prefer-online true
+npm config set progress false
+
+#Re-run install
+npm install -g --no-audit --no-fund openclaw@latest
+
+#Watch health while it runs
+while true; do
+date
+df -h / | tail -1
+ps | grep -E "npm|node" | grep -v grep || true
+sleep 10
+done
+
+mount -o remount,size=<rootfs> / 
+
+#  In mac: 
+ssh -o ProxyCommand='websocat wss://tunnel.traits.build/port/client?code=42G4&port=22' root@dummy
+curl -s 'https://tunnel.traits.build/port/status?code=42G4'
+
+# In guest:
+apk add openssh
+ssh-keygen -A
+passwd  # set root password
+echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config
+/usr/sbin/sshd
+# Now rerun tunnel:
+sh <(curl -sS https://linuxontab.com/local/tunnel-up.sh) 22
+
+
+
+#working tunnels!
+#guest
+wget -qO- https://www.traits.build/local/tunnel-up.sh | sh
+wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh
+
+#host
+ sh <(curl -sS https://linuxontab.com/local/tunnel-ssh.sh) ARXN
+
+ # Terminal 1: open local listener on :2222 → tunnel
+sh <(curl -sS https://linuxontab.com/local/tunnel-listen.sh) ARXN
+
+# Terminal 2: use any standard client
+ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@localhost
+scp -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null myfile root@localhost:/tmp/
+sftp -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@localhost
+rsync -e "ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" -av ./ root@localhost:/tmp/
+
+#kill
+ps | grep tunnel 
+# Expose guest port 8384 (Syncthing GUI) as local :18384
+sh <(curl -sS https://linuxontab.com/local/tunnel-listen.sh) ARXN 18384 8384
+# then open http://localhost:18384 in browser
+
+#social:
+wget -O /usr/local/bin/social https://linuxontab.com/local/social.sh && chmod +x /usr/local/bin/social
+# optional: force custom location (default is /root)
+# export SOCIAL_HOME=/root
+
+# what relays currently serve (raw event)
+cat /mnt/host/following/npub17230tdh.../.manifest.json | jq '.content | fromjson | .files'
+
+
+# 1. Refetch social.sh (gets the new pre-publish warning + auto-republish)
+ad
+# 2. Make sure tunnel-up is running with a fresh code
+wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh
+# → prints a NEW 4-char code, e.g. "K3ZQ"
+
+# 3. Refresh the cached base_url (this also auto-publishes now)
+social tunnel-up
+
+# kick a fresh tunnel:
+sh <(curl -sS https://linuxontab.com/local/tunnel-up.sh) --new &
+social tunnel-up
+
+#unblock internet:
+apk add --no-cache --upgrade unbound libcrypto3 libssl3 && \
+printf '%s\n' 'server:' '  interface: 127.0.0.1' '  do-tcp: yes' \
+  'forward-zone:' '  name: "."' '  forward-tcp-upstream: yes' \
+  '  forward-addr: 1.1.1.1' '  forward-addr: 1.0.0.1' > /etc/unbound/unbound.conf && \
+killall -q unbound 2>/dev/null; sleep 1; unbound -c /etc/unbound/unbound.conf & \
+sleep 2 && printf 'nameserver 127.0.0.1\nnameserver 1.1.1.1\n' > /etc/resolv.conf && \
+nslookup google.com
+
+#If even literal-IP HTTPS fails, the v86 NIC is detached from the WISP. Bounce it:
+ip link set eth0 down; sleep 1; ip link set eth0 up
+udhcpc -i eth0 -q -n -f -T 2 -t 5
+ip route
+
+#change password:
+printf 'dummy1234!\ndummy1234!\n' | passwd root
+echo 'root:dummy1234!' | chpasswd
+
+#apk online
+echo "https://dl-cdn.alpinelinux.org/alpine/edge/main" >> /etc/apk/repositories
+echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
+apk update
+
+apk add --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main <package>
+
+
+#INIT
+printf 'lot-tb-61216!\nlot-tb-61216!\n' | passwd root
+apk add websocat curl jq openssh-server unbound
+# 1GB zram swap — needed for rust/llvm installs (file-backed swap fails on Alpine tmpfs)
+modprobe zram num_devices=1 2>/dev/null || true
+echo 1G > /sys/block/zram0/disksize 2>/dev/null && mkswap /dev/zram0 && swapon /dev/zram0 && echo "[swap] zram 1G OK" || echo "[swap] zram skipped"
+free -m
+wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh
+
+# install rust/cargo (needs edge repos + staged install to avoid OOM at llvm22-libs)
+# NOTE: if 1GB zram isn't enough, add a second zram via hot_add first:
+#   cat /sys/class/zram-control/hot_add   # creates zram1
+#   echo 512M > /sys/block/zram1/disksize && mkswap /dev/zram1 && swapon /dev/zram1
+# NOTE: never use a swapfile on Alpine tmpfs — it just consumes swap itself and causes OOM
+echo "https://dl-cdn.alpinelinux.org/alpine/edge/main" >> /etc/apk/repositories
+echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
+apk update -q
+nohup sh -c "apk add --no-cache llvm22-libs && apk add --no-cache rust cargo && rustc --version && cargo --version" > /tmp/rust-install.log 2>&1 &
+# poll: tail -f /tmp/rust-install.log
+
+
+# tmux status bar off
+tmux set-option -t lot -g status off
+
+
+
+
+
+#Here's the OpenClaw recipe. Run these step-by-step in the guest shell — copy/paste one block at a time so you can react if something fails.
+
+# 1. Make sure networking + DNS are healthy (skip if you just booted a snapshot that has them already):
+nslookup registry.npmjs.org || {
+  apk add --no-cache --upgrade unbound libcrypto3 libssl3
+  printf '%s\n' 'server:' '  interface: 127.0.0.1' '  do-tcp: yes' \
+    'forward-zone:' '  name: "."' '  forward-tcp-upstream: yes' \
+    '  forward-addr: 1.1.1.1' '  forward-addr: 1.0.0.1' > /etc/unbound/unbound.conf
+  killall -q unbound 2>/dev/null; sleep 1
+  unbound -c /etc/unbound/unbound.conf &
+  sleep 2; printf 'nameserver 127.0.0.1\nnameserver 1.1.1.1\n' > /etc/resolv.conf
+}
+
+# 2. Free up tmpfs root if you're tight on space (v86 default rootfs is ~256–512 MB; node + npm needs room):
+df -h /
+mount -o remount,size=2G /     # bump tmpfs / to 2 GB
+df -h /
+
+# 3. Install Node + npm + git (Alpine edge has them; v86 is i686 so this works):
+grep -q 'edge/main' /etc/apk/repositories || {
+  echo 'https://dl-cdn.alpinelinux.org/alpine/edge/main'      >> /etc/apk/repositories
+  echo 'https://dl-cdn.alpinelinux.org/alpine/edge/community' >> /etc/apk/repositories
+}
+apk update
+apk add --no-cache nodejs npm git python3 make g++
+node -v && npm -v
+
+# 4. Tame npm for the WISP link (slow + flaky; one socket, lots of retries):
+npm config set maxsockets 1
+npm config set fetch-retries 20
+npm config set fetch-retry-mintimeout 5000
+npm config set fetch-retry-maxtimeout 60000
+npm config set prefer-online true
+npm config set progress false
+npm config set fund false
+npm config set audit false
+
+# 5. Install openclaw globally:
+npm install -g openclaw@latest &
+
+# to check progress, in another shell tab watch progress:
+while :; do date; df -h / | tail -1; ps | grep -E 'npm|node' | grep -v grep; sleep 10; done
+
+#To kill a stuck install: 
+pkill -f "npm install" || true
+
+# 6. Run it (depends on what binary the package installs — openclaw --help will tell us):
+which openclaw
+openclaw --help
+#If openclaw exposes a web UI on a port (it usually does; default ~3000), expose it via the tunnel so you can hit it from your Mac browser:
+# in the guest:
+wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh -s 22 8080 3000
+# → prints CODE, e.g. ARXN
+# Then on the Mac:
+# open http://localhost:13000 in your Mac browser
+sh <(curl -sS https://linuxontab.com/local/tunnel-listen.sh) ARXN 13000 3000
+#Start with step 1 and tell me what nslookup registry.npmjs.org says, then we'll proceed.
+
+## Secrets Management
+# GitHub — who am I?
+curl -s https://relay.linuxontab.com/secret-proxy/https%3A%2F%2Fapi.github.com%2Fuser \
+  -H "Authorization: Bearer LOT_SECRET_GITHUB" \
+  -H "Accept: application/vnd.github+json" | grep login
+
+# OpenAI — ask anything
+curl -s https://relay.linuxontab.com/secret-proxy/https%3A%2F%2Fapi.openai.com%2Fv1%2Fchat%2Fcompletions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer LOT_SECRET_OPENAI" \
+  -d '{"model":"gpt-4o-mini","messages":[{"role":"user","content":"hello"}],"max_tokens":50}'
+
+# Git push (already configured credential.helper in the guest)
+git push --set-upstream origin guest-smoke-20260503-211639
+
+
+
+# set time:
+rdate -s 1.1.1.1 2>/dev/null || ntpd -dnq -p pool.ntp.org
+
+# windowed terminal
+https://linuxontab.com/shell/?pip=1&pipx=20&pipy=50&pipw=600&piph=400&browser=https://getclaw.site&postboot=https://getclaw.site/install.sh
+
+# open ai key env exported in url
+https://linuxontab.com/shell/#postboot=export%20OPENAI_API_KEY%3D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&postboot=https://getclaw.site/install.sh
+
+
+# ai suggested base system setup for a fresh Alpine v86 guest (run these commands in the guest shell, one block at a time):
+apk add websocat curl jq openssh-server unbound nodejs npm git
+echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config
+ssh-keygen -A
+printf 'lot-tb-61216!\nlot-tb-61216!\n' | passwd root
+
+# export snapshot in DevTools console:
+await exportSnapshot({ name: 'alpine-base.bin' })
+
+# interfaces fix:
+cat > /etc/network/interfaces <<'EOF'
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet manual
+EOF
+rc-service networking start
+service docker start
+
+
+# syncthing:
+ifconfig lo 127.0.0.1 up
+ifconfig lo 127.0.0.1 up
+wget -qO- https://linuxontab.com/local/syncthing-up.sh | sh
+
+
+# irc
+apk add ngircd irssi
+cat > /etc/ngircd/ngircd.conf <<'EOF'
+[Global]
+    Name = irc.linuxontab.local
+    AdminInfo1 = root
+    AdminInfo2 = LinuxOnTab
+    AdminEMail = root@localhost
+    Info = LinuxOnTab IRC
+    Listen = 0.0.0.0
+    Ports = 6667
+    MotdPhrase = "Welcome to your browser-only IRC server."
+
+[Limits]
+    MaxConnections = 100
+    MaxJoins = 10
+
+[Options]
+    AllowRemoteOper = no
+    ConnectIPv6 = no
+    DNS = no
+    PAM = no
+
+[Channel]
+    Name = #lobby
+    Topic = LinuxOnTab lobby
+EOF
+ngircd
+#ss -lntp | grep 6667     # confirm listening
+irssi -c 127.0.0.1 -p 6667 -n kilian
+# inside irssi:
+/join #lobby
+
+
+# Start clean
+# 1. Kill EVERYTHING websocat-related (children AND respawn loops)
+kill %1 %2 %3 %4 %5 %6 %7 %8 %9 %10 %11 %12 2>/dev/null
+sleep 1
+pkill -9 -f websocat
+pkill -9 -f 'while.*websocat' 2>/dev/null
+sleep 1
+pgrep -af websocat        # MUST be empty
+jobs                      # MUST be empty (sshd & ngircd ok)
+
+# 2. Sanity: services still up
+nc -zv 127.0.0.1 22
+nc -zv 127.0.0.1 6667
+
+# 3. Re-register a fresh code (avoid lingering 26AV/82GK confusion)
+REG=$(curl -sS -m 10 -X POST https://linuxontab-tunnel.fly.dev/port/register \
+        -H 'content-type: application/json' \
+        -d '{"ports":[22,6667]}')
+echo "$REG"
+CODE=$(echo "$REG" | sed -n 's/.*"code":"\([A-Z0-9]*\)".*/\1/p')
+echo "$CODE" > /tmp/tunnel.code
+echo CODE=$CODE
+
+# 4. Spawn bridges (use setsid so we can pkill the whole tree later)
+> /tmp/ws.log
+for P in 22 6667; do
+  for i in 1 2 3 4; do
+    setsid sh -c "while :; do
+      websocat -b tcp:127.0.0.1:$P \
+        'wss://linuxontab-tunnel.fly.dev/port/guest?code=$CODE&port=$P' \
+        >>/tmp/ws.log 2>&1
+      echo \"\$(date +%T) bridge $P/$i died\" >> /tmp/ws.log
+      sleep 1
+    done" </dev/null >/dev/null 2>&1 &
+  done
+done
+sleep 3
+
+echo "==status=="
+curl -sS "https://linuxontab-tunnel.fly.dev/port/status?code=$CODE"
+echo
+echo "==ws.log=="
+tail -20 /tmp/ws.log
+
+#docker
+docker run -d \
+  --name=ngircd \
+  -e PUID=1000 \
+  -e PGID=1000 \
+  -e TZ=America/Los_Angeles \
+  -p 6667:6667 \
+  -v $(pwd)/config:/config \
+  --restart unless-stopped \
+  lscr.io/linuxserver/ngircd:latest
+
+
+#spawn bridges fresh
+pkill -9 -f websocat 2>/dev/null; sleep 1
+REG=$(curl -sS -m 10 -X POST https://linuxontab-tunnel.fly.dev/port/register -H 'content-type: application/json' -d '{"ports":[22]}')
+CODE=$(echo "$REG" | sed -n 's/.*"code":"\([A-Z0-9]*\)".*/\1/p')
+echo "$CODE" > /tmp/tunnel.code; echo "CODE=$CODE"
+for i in 1 2 3 4 5 6 7 8; do
+  setsid sh -c "while :; do websocat -b tcp:127.0.0.1:22 'wss://linuxontab-tunnel.fly.dev/port/guest?code=$CODE&port=22' >>/tmp/ws.log 2>&1; sleep 1; done" </dev/null >/dev/null 2>&1 &
+done
+sleep 3; curl -s "https://linuxontab-tunnel.fly.dev/port/status?code=$CODE" | grep -o '"guest_ports":\[[^]]*\]'
+
+# ── Quick bridge recovery (OOM killed websocat + wrappers, code still registered) ──
+# Run this in browser shell when `needsGuest:true` and sshd is up:
+CODE=$(cat /tmp/tunnel.code 2>/dev/null)
+if [ -z "$CODE" ]; then echo "no cached code — run tunnel-up.sh instead"; fi
+pkill -9 -f websocat 2>/dev/null; sleep 1
+ssh-keygen -A 2>/dev/null; /usr/sbin/sshd 2>/dev/null
+for i in $(seq 1 32); do
+  (trap '' HUP; echo -500 > /proc/self/oom_score_adj 2>/dev/null || true
+   while :; do echo -500 > /proc/self/oom_score_adj 2>/dev/null || true
+     websocat --binary --ping-interval 25 \
+       "wss://linuxontab-tunnel.fly.dev/port/guest?code=$CODE&port=22" \
+       "tcp:127.0.0.1:22" </dev/null >>/tmp/tunnel-22.log 2>&1
+     sleep 0.1 2>/dev/null || sleep 1; done) &
+done
+sleep 3; curl -s "https://linuxontab-tunnel.fly.dev/port/status?code=$CODE" | grep -o '"guest_queue_depth":{[^}]*}'

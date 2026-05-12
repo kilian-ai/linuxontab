@@ -816,7 +816,15 @@ for PORT in $PORTS; do
         # No sleep on respawn: lost time = dropped requests during the gap.
         (
             trap '' HUP
+            # Protect this respawn loop from the OOM killer. Without this,
+            # heavy apk/llvm extractions kill both websocat AND the wrapper
+            # shell, leaving no process to reconnect the bridge.
+            # -500 = still killable in extremis, but only after zero-scored
+            # processes (other apps, orphaned shells, etc.).
+            echo -500 > /proc/self/oom_score_adj 2>/dev/null || true
             while :; do
+                # Refresh OOM score on each iteration (child processes reset it).
+                echo -500 > /proc/self/oom_score_adj 2>/dev/null || true
                 websocat --binary --ping-interval 25 "$WS_URL" "tcp:127.0.0.1:${PORT}" </dev/null
                 # tiny jitter to avoid tight loop if TCP refused
                 sleep 0.1 2>/dev/null || sleep 1
