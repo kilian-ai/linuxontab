@@ -1045,5 +1045,109 @@ RECLAIM_PID=$!
 track_pid "$RECLAIM_PID"
 echo "[tunnel] reclaim watchdog PID $RECLAIM_PID (every ${RECLAIM_INTERVAL}s)"
 
-# Keep alive (background bridges continue)
+# ── Guest-side bridge daemon ──────────────────────────────────────────────────
+# Runs as a background subshell completely independent of any JS/tnExec channel.
+# Every 15s it counts live websocat processes. If they all die (network blip,
+# relay restart, SIGKILL storm) it re-spawns the bridge pool directly without
+# going through the full tunnel-up.sh startup sequence (no apk, no DNS setup).
+# Also re-registers the code with the relay every ~60s so a Fly redeploy
+# doesn't leave the bridges connected to a relay that's forgotten the code.
+#
+# The daemon PID is tracked so tnStopTunnel kills it alongside the bridges.
+# When tunnel-up.sh restarts (TUNNEL_FORCE_NEW=1 from the JS restart button),
+# tnStopTunnel kills the old daemon and the new tunnel-up.sh spawns a fresh one
+# with the new CODE baked in.
+#
+# Override minimum bridge count per port with TUNNEL_DAEMON_MIN_BRIDGES
+# (default 4 — enough for SSH without flooding the relay with 32 new WS each time).
+_DAEMON_MIN="${TUNNEL_DAEMON_MIN_BRIDGES:-4}"
+(
+    trap '' HUP
+    set +e
+    _code="$CODE"
+    _ports="$PORTS"
+    _base="$TUNNEL_BASE"
+    _ws="$TUNNEL_WS"
+    _ports_json="$PORTS_JSON"
+    _pid_file="$TUNNEL_PID_FILE"
+    _min="$_DAEMON_MIN"
+    _log=/tmp/tunnel-daemon.log
+    _iter=0
+
+    _dlog() { printf '%s [bridge-daemon] %s\n' "$(date '+%H:%M:%S')" "$*" >> "$_log"; }
+
+    _spawn_port() {
+        local _p="$1"
+        local _url="$_ws/port/guest?code=$_code&port=$_p"
+        local _n=0
+        while [ "$_n" -lt "$_min" ]; do
+            _n=$((_n + 1))
+            (
+                trap '' HUP
+                set +e
+                while :; do
+                    websocat --binary --ping-interval 25 "$_url" "tcp:127.0.0.1:$_p" </dev/null
+                    sleep 1
+                done
+            ) >> "/tmp/tunnel-${_p}.log" 2>&1 &
+            printf '%s\n' "$!" >> "$_pid_file"
+        done
+    }
+
+    _dlog "started CODE=$_code PORTS=$_ports MIN=$_min"
+
+    while :; do
+        sleep 15
+        _iter=$((_iter + 1))
+
+        # Count all live websocat bridges (fast: no relay call needed).
+        _n=$(ps 2>/dev/null | grep websocat | grep -v grep | wc -l | tr -d ' \t\n')
+        : "${_n:=0}"
+
+        if [ "$((_n + 0))" -gt 0 ]; then
+            # Bridges are alive. Periodic relay code health check (every 4 × 15s = 60s).
+            if [ "$((_iter % 4))" = 0 ]; then
+                _st=$(curl -sS --max-time 10 "$_base/port/status?code=$_code" 2>/dev/null)
+                case "$_st" in
+                    *'"active":true'*) ;;
+                    *'"active":false'*|*'code not found'*)
+                        _dlog "relay lost code (periodic check) — re-registering"
+                        _r=$(curl -sS --max-time 15 -X POST "$_base/port/register" \
+                            -H 'Content-Type: application/json' \
+                            -d "{\"code\":\"$_code\",\"ports\":$_ports_json}" 2>&1)
+                        _dlog "re-register: $(printf '%s' "$_r" | tr '\n' ' ' | cut -c1-80)"
+                        ;;
+                esac
+            fi
+            continue
+        fi
+
+        # All websocat processes are gone — respawn immediately.
+        _dlog "bridges all down (count=0) — checking relay then re-spawning"
+
+        # Re-register if the relay also lost our code.
+        _st=$(curl -sS --max-time 10 "$_base/port/status?code=$_code" 2>/dev/null)
+        case "$_st" in
+            *'"active":true'*) ;;
+            *)
+                _dlog "relay status: $_st — re-registering"
+                _r=$(curl -sS --max-time 15 -X POST "$_base/port/register" \
+                    -H 'Content-Type: application/json' \
+                    -d "{\"code\":\"$_code\",\"ports\":$_ports_json}" 2>&1)
+                _dlog "re-register: $(printf '%s' "$_r" | tr '\n' ' ' | cut -c1-80)"
+                ;;
+        esac
+
+        # Spawn fresh bridge pools for all ports.
+        for _p in $_ports; do
+            _spawn_port "$_p"
+        done
+        _dlog "re-spawned $_min bridges × $(echo "$_ports" | wc -w | tr -d ' ') ports"
+    done
+) >> /tmp/tunnel-daemon.log 2>&1 &
+DAEMON_PID=$!
+track_pid "$DAEMON_PID"
+echo "[tunnel] bridge daemon PID $DAEMON_PID (every 15s, logs: /tmp/tunnel-daemon.log)"
+
+# Keep alive (background bridges + watchdogs continue)
 while :; do sleep 30; done

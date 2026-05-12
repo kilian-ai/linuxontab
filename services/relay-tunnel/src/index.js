@@ -369,10 +369,17 @@ export class PortSession {
         pairsPerPort[port] = (pairsPerPort[port] || 0) + 1;
       }
     }
+    // needsGuest: true when the session has registered ports but ALL of them
+    // have zero idle guest bridges AND zero active client pairs — meaning
+    // every bridge is dead (not just busy serving requests).
+    const needsGuest = this.registeredPorts.size > 0 &&
+      [...this.registeredPorts].every(p => (guestQueueDepth[p] || 0) === 0 && (pairsPerPort[p] || 0) === 0);
     return json({
+      active: true,
       registered_ports: [...this.registeredPorts],
       guest_queue_depth: guestQueueDepth,
       active_pairs: pairsPerPort,
+      needsGuest,
       // Legacy compatibility fields (used by tunnel-up.sh reclaim watchdog
       // to detect "session lost"): non-empty if any guest is registered or
       // paired on the port.

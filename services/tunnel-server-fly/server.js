@@ -397,6 +397,9 @@ class PortSession {
     }
     const activePairs = {};
     for (const [p, pool] of this.clientWs.entries()) activePairs[p] = pool.size;
+    // needsGuest: registered but ALL ports have zero idle bridges AND zero active pairs.
+    const needsGuest = this.registeredPorts.size > 0 &&
+      [...this.registeredPorts].every(p => (guestQueueDepth[p] || 0) === 0 && (activePairs[p] || 0) === 0);
     return {
       registered_ports: [...this.registeredPorts],
       guest_ports: guestPorts,
@@ -404,6 +407,7 @@ class PortSession {
       paired_ports: clientPorts.filter(p => this.guestWs.has(p)),
       guest_queue_depth: guestQueueDepth,
       active_pairs: activePairs,
+      needsGuest,
       age_s: Math.floor((now - this.created) / 1000),
       idle_s: Math.floor((now - this.lastActivity) / 1000),
       active: true,

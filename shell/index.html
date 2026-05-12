@@ -6665,12 +6665,13 @@
 
   setInterval(() => { tunnelsBtn.disabled = !emulator; }, 800);
 
-  // Bridge watchdog — every 30s checks bridge health from two angles:
-  //  1. Local: are any websocat processes running in the guest?
-  //  2. Remote: does the relay still know our pairing code?
-  //     This catches the Fly-restart / DO-hibernate case where bridges
-  //     are alive locally but the relay rejected all their WS handshakes
-  //     with 403, so ps shows websocat but SSH is broken.
+  // Bridge watchdog — every 15s checks bridge health from three angles:
+  //  1. Local: are any websocat processes running in the guest? (via tnExec)
+  //  2. Remote local: does the relay see us as needsGuest? (bridges registered
+  //     but queue empty + no pairs — all bridges dead as seen from relay side)
+  //  3. Remote active: does the relay still know our pairing code at all?
+  // The guest-side tunnel-daemon also runs independently (no JS dependency)
+  // to respawn bridges without needing tnExec when the serial channel is busy.
   // Set window.__tnWatchdog.stopped = true to suppress auto-restart.
   window.__tnWatchdog = { active: false, code: null, stopped: false, restarting: false };
   setInterval(async () => {
@@ -6683,23 +6684,24 @@
         .catch(() => {}).finally(() => { wd.restarting = false; });
     };
     try {
-      // 1. Local process check.
+      // 1. Local process check (guest-side, requires tnExec to be responsive).
       const r = await tnExec(
-        'n=$(ps -o pid,args 2>/dev/null | grep websocat | grep -v grep | wc -l); echo __WD__=$n',
+        'n=$(ps 2>/dev/null | grep websocat | grep -v grep | wc -l); echo __WD__=$n',
         { timeout: 6000 }
       );
       const m = (r.stdout || '').match(/__WD__=(\d+)/);
       const nBridges = m ? parseInt(m[1], 10) : -1;
-      if (nBridges === 0) { doRestart('bridges down'); return; }
-      // 2. Relay status check (browser-side fetch — fast, no tnExec needed).
-      // Only acts on a clear active:false signal; ignores fetch errors
-      // (transient network hiccups should not trigger a restart).
-      if (wd.code) {
-        const st = await tnFetchRelayStatus(wd.code).catch(() => null);
-        if (st && st.active === false) { doRestart('relay lost code ' + wd.code); }
-      }
+      if (nBridges === 0) { doRestart('bridges down (local ps=0)'); return; }
     } catch (_) {}
-  }, 30000);
+    // 2+3. Relay status check — no tnExec needed, fast browser fetch.
+    // Only acts on unambiguous signals; fetch failures are transient.
+    if (wd.code) {
+      const st = await tnFetchRelayStatus(wd.code).catch(() => null);
+      if (!st) return;  // network error — skip this round
+      if (st.active === false) { doRestart('relay lost code ' + wd.code); return; }
+      if (st.needsGuest) { doRestart('relay sees no guest bridges for ' + wd.code); }
+    }
+  }, 15000);
 
   // ─────────────────────────────────────────────────────────────────────────
   // Claw panel — browser chatbot backed by clawlite running in the guest.
