@@ -56,17 +56,17 @@ case "${1:-}" in
 esac
 
 kill_prior_processes() {
-    # Kill tracked PIDs first (precise).
+    # SIGKILL tracked PIDs immediately — bridge subshells need no cleanup.
     if [ -s "$TUNNEL_PID_FILE" ]; then
         while IFS= read -r pid; do
             [ -n "$pid" ] || continue
-            kill "$pid" 2>/dev/null || true
+            kill -9 "$pid" 2>/dev/null || true
         done < "$TUNNEL_PID_FILE"
     fi
-    # Belt-and-suspenders: also pkill any websocat that points at a
-    # tunnel guest URL. This catches bridges from earlier sessions
-    # that pre-date the PID file.
-    pkill -f 'websocat.*port/guest\?code=' 2>/dev/null || true
+    # Also SIGKILL any websocat pointing at a guest tunnel URL. This catches
+    # bridges from prior sessions whose PID file was lost or stale, and
+    # websocat children that outlived their wrapper shell.
+    pkill -9 -f 'websocat.*port/guest' 2>/dev/null || true
     # Kill prior tunnel-up.sh processes EXCEPT ourselves and our parent
     # (the parent may be a `sh -c "curl ... | sh"` wrapper from
     # social tunnel-up; killing it would terminate this script too).
@@ -75,8 +75,14 @@ kill_prior_processes() {
     for pid in $(pgrep -f 'tunnel-up\.sh' 2>/dev/null); do
         [ "$pid" = "$self_pid" ] && continue
         [ "$pid" = "$parent_pid" ] && continue
-        kill "$pid" 2>/dev/null || true
+        kill -9 "$pid" 2>/dev/null || true
     done
+    # Surviving while-loop shells (with stale/recycled PID entries) respawn
+    # websocat within 0.1-1s. Kill two more times to break the cycle.
+    sleep 1
+    pkill -9 -f 'websocat.*port/guest' 2>/dev/null || true
+    sleep 1
+    pkill -9 -f 'websocat.*port/guest' 2>/dev/null || true
     rm -f "$TUNNEL_PID_FILE"
 }
 

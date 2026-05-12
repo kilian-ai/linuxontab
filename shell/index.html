@@ -6073,7 +6073,14 @@
       'pkill -9 -f "websocat.*port/guest" 2>/dev/null; ' +
       'pkill -9 -f websocat 2>/dev/null; ' +
       'sleep 0.3; ' +
-      // 4. Verify and report any survivors.
+      // 4. Extra passes: surviving while-loop shells respawn websocat within
+      //    0.1-1s on BusyBox. Two more rounds at 1s apart breaks the cycle.
+      'pkill -9 -f websocat 2>/dev/null; ' +
+      'sleep 1; ' +
+      'pkill -9 -f websocat 2>/dev/null; ' +
+      'sleep 1; ' +
+      'pkill -9 -f websocat 2>/dev/null; ' +
+      // 5. Verify and report any survivors.
       'survivors=$(ps -o pid,args 2>/dev/null | grep -E "websocat|tunnel-up\.sh" | grep -v grep | wc -l); ' +
       'echo survivors=$survivors; ' +
       'rm -f /tmp/tunnel.code /tmp/tunnel.pids /tmp/tunnel.cmd /tmp/tunnel.ports /tmp/tunnel-*.log 2>/dev/null; ' +
@@ -6085,7 +6092,7 @@
     // Default routing (lot:vfs, silent) is correct: this command
     // doesn't write to /tmp/tunnel.last.log so there's nothing for
     // the user to see anyway.
-    const r = await tnExec(cmd, { timeout: 12000 });
+    const r = await tnExec(cmd, { timeout: 16000 });
     const out = (r.stdout || '').trim();
     if (/survivors=0/.test(out)) {
       tnLog('stopped (all bridges killed)', 'ok');
@@ -6131,7 +6138,10 @@
     // Run the effective command in the background so the panel does not hang
     // on websocat's foreground respawn loop. We background it via `&` and
     // detach stdout/stderr to a log so subsequent guest commands still work.
-    const wrapped = '( ' + cmd + ' ) >/tmp/tunnel.last.log 2>&1 &';
+    // TUNNEL_FORCE_NEW=1 bypasses tunnel-up.sh's idempotency guard so a
+    // manual restart always gets a fresh registration even if orphaned
+    // while-loop shells still have websocat children alive.
+    const wrapped = '( export TUNNEL_FORCE_NEW=1; ' + cmd + ' ) >/tmp/tunnel.last.log 2>&1 &';
     // NOTE: don't route to lot:tunnel — that window has `tail -F` of
     // the very log we redirect to, running in the foreground. Routing
     // here would feed our marker keystrokes into tail's stdin and the
@@ -6655,24 +6665,38 @@
 
   setInterval(() => { tunnelsBtn.disabled = !emulator; }, 800);
 
-  // Bridge watchdog — every 30s checks if websocat bridges are still alive.
-  // If a tunnel was previously active (code known) but all bridges exited,
-  // auto-restarts them. Set window.__tnWatchdog.stopped = true to suppress.
+  // Bridge watchdog — every 30s checks bridge health from two angles:
+  //  1. Local: are any websocat processes running in the guest?
+  //  2. Remote: does the relay still know our pairing code?
+  //     This catches the Fly-restart / DO-hibernate case where bridges
+  //     are alive locally but the relay rejected all their WS handshakes
+  //     with 403, so ps shows websocat but SSH is broken.
+  // Set window.__tnWatchdog.stopped = true to suppress auto-restart.
   window.__tnWatchdog = { active: false, code: null, stopped: false, restarting: false };
   setInterval(async () => {
     const wd = window.__tnWatchdog;
     if (!emulator || !wd.active || wd.stopped || wd.restarting) return;
+    const doRestart = (reason) => {
+      tnLog('watchdog: ' + reason + ' — auto-restarting (code=' + wd.code + ')', 'err');
+      wd.restarting = true;
+      tnRestartTunnel({ id: wd.code || 'default', code: wd.code || null })
+        .catch(() => {}).finally(() => { wd.restarting = false; });
+    };
     try {
+      // 1. Local process check.
       const r = await tnExec(
         'n=$(ps -o pid,args 2>/dev/null | grep websocat | grep -v grep | wc -l); echo __WD__=$n',
         { timeout: 6000 }
       );
       const m = (r.stdout || '').match(/__WD__=(\d+)/);
-      if (m && parseInt(m[1], 10) === 0) {
-        tnLog('watchdog: bridges down — auto-restarting (code=' + wd.code + ')', 'err');
-        wd.restarting = true;
-        tnRestartTunnel({ id: wd.code || 'default', code: wd.code || null })
-          .catch(() => {}).finally(() => { wd.restarting = false; });
+      const nBridges = m ? parseInt(m[1], 10) : -1;
+      if (nBridges === 0) { doRestart('bridges down'); return; }
+      // 2. Relay status check (browser-side fetch — fast, no tnExec needed).
+      // Only acts on a clear active:false signal; ignores fetch errors
+      // (transient network hiccups should not trigger a restart).
+      if (wd.code) {
+        const st = await tnFetchRelayStatus(wd.code).catch(() => null);
+        if (st && st.active === false) { doRestart('relay lost code ' + wd.code); }
       }
     } catch (_) {}
   }, 30000);
