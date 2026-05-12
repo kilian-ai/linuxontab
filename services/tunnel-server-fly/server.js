@@ -915,7 +915,7 @@ function bridgeTcpToWs(sock, ws, pairId) {
 function startTcpPool() {
   for (let i = 0; i < TCP_POOL_SIZE; i++) {
     const publicPort = TCP_POOL_BASE + i;
-    const srv = net.createServer((sock) => {
+    const srv = net.createServer(async (sock) => {
       const a = tcpAssignments.get(publicPort);
       if (!a) { try { sock.destroy(); } catch (_) {} return; }
       if (Date.now() > a.expiresAt) {
@@ -932,9 +932,23 @@ function startTcpPool() {
         try { sock.destroy(); } catch (_) {}
         return;
       }
-      const guest = session.pickFreshGuest(a.internalPort);
+      // Retry picking a guest bridge for up to 3s (200ms intervals).
+      // Bridges reconnect with a 1s respawn delay; without this wait the
+      // TCP client gets an immediate RST if it happens to connect during the
+      // brief reconnect window.
+      let guest = session.pickFreshGuest(a.internalPort);
       if (!guest) {
-        console.log(`[tcp-bridge :${publicPort}] no guest bridge for ${a.code}:${a.internalPort}`);
+        await new Promise((resolve) => {
+          let tries = 0;
+          const iv = setInterval(() => {
+            tries++;
+            guest = session.pickFreshGuest(a.internalPort);
+            if (guest || tries >= 15) { clearInterval(iv); resolve(); }
+          }, 200);
+        });
+      }
+      if (!guest) {
+        console.log(`[tcp-bridge :${publicPort}] no guest bridge for ${a.code}:${a.internalPort} after retry`);
         try { sock.destroy(); } catch (_) {}
         return;
       }
