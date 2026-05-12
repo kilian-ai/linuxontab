@@ -9,6 +9,7 @@
 //   WS   /port/guest?code=X&port=N
 //   WS   /port/client?code=X&port=N
 //   GET  /port/http/CODE/PORT/path  (HTTP-over-WS proxy)
+//   GET  /port/http/:publicPort/path  (shorthand via TCP expose assignment)
 //   GET  /port/status?code=X
 //   POST /port/unregister        { code }
 //   GET  /port/debug?code=X
@@ -621,7 +622,7 @@ class HttpResponseParser {
   canReuse() { return !this.connectionClose && !this.error; }
 }
 
-async function httpProxy(req, res, session, port, guestPath, code) {
+async function httpProxy(req, res, session, port, guestPath, code, proxyPrefixOverride) {
   const method = req.method;
   let bodyBytes = null;
   if (method !== 'GET' && method !== 'HEAD') {
@@ -762,7 +763,8 @@ async function httpProxy(req, res, session, port, guestPath, code) {
   // Prefix all relative/localhost-pointing redirects with the proxy path so
   // the browser stays inside the tunnel (otherwise Syncthing's Location:
   // http://localhost:8384/ kicks the user out to a dead localhost URL).
-  const proxyPrefix = code ? `/port/http/${code}/${port}` : '';
+  const proxyPrefix = proxyPrefixOverride !== undefined ? proxyPrefixOverride
+    : code ? `/port/http/${code}/${port}` : '';
   const rewriteLocation = (val) => {
     if (!val || !proxyPrefix) return val;
     let s = String(val);
@@ -1134,8 +1136,27 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname.startsWith('/port/http/')) {
     const rest = url.pathname.slice('/port/http/'.length);
     const slash1 = rest.indexOf('/');
-    if (slash1 < 0) return sendJson(res, { error: 'expected /port/http/CODE/PORT/path' }, 400);
-    const code = normalizeCode(rest.slice(0, slash1));
+    const firstSeg = slash1 < 0 ? rest : rest.slice(0, slash1);
+    // Shorthand: /port/http/:publicPort/path — look up TCP expose assignment
+    const maybePublicPort = parseInt(firstSeg, 10);
+    if (Number.isFinite(maybePublicPort) && maybePublicPort >= TCP_POOL_BASE
+        && maybePublicPort < TCP_POOL_BASE + TCP_POOL_SIZE) {
+      const a = tcpAssignments.get(maybePublicPort);
+      if (!a) { cors(res); res.writeHead(404); res.end('public port not assigned'); return; }
+      if (Date.now() > a.expiresAt) {
+        tcpAssignments.delete(maybePublicPort);
+        cors(res); res.writeHead(404); res.end('public port assignment expired'); return;
+      }
+      const s = getSession(a.code);
+      if (!s) { cors(res); res.writeHead(404); res.end('code not found'); return; }
+      const afterPort = slash1 < 0 ? '' : rest.slice(slash1 + 1);
+      const guestPath = '/' + afterPort + (url.search || '');
+      const proxyPrefix = `/port/http/${maybePublicPort}`;
+      return httpProxy(req, res, s, a.internalPort, guestPath, null, proxyPrefix);
+    }
+    // Standard: /port/http/CODE/PORT/path
+    if (slash1 < 0) return sendJson(res, { error: 'expected /port/http/CODE/PORT/path or /port/http/:publicPort/path' }, 400);
+    const code = normalizeCode(firstSeg);
     if (!code) return sendJson(res, { error: 'invalid code' }, 400);
     const afterCode = rest.slice(slash1 + 1);
     const slash2 = afterCode.indexOf('/');
