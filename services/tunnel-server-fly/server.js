@@ -928,13 +928,12 @@ function bridgeTcpToWs(sock, ws, pairId) {
     closed = true;
     console.log(`[tcp-bridge ${pairId}] ${origin} closed${info ? ': ' + info : ''}`);
     try { sock.destroy(); } catch (_) {}
-    // Only forcibly close the guest WS on WS-side errors or explicit WS close.
-    // On TCP close, we let websocat die naturally when sshd closes its local
-    // TCP — this avoids killing the websocat process prematurely and reduces
-    // the bridge restart churn for the SSH TCP-expose use case.
-    if (origin !== 'tcp') {
-      try { ws.close(1000, origin + ' closed'); } catch (_) {}
-    }
+    // Always close the guest WS when either side closes. This ensures the nc
+    // process exits and lot-bridge respawns a fresh nc for the next client.
+    // Without this, a post-auth sshd close leaves the WS in the pool as a
+    // "zombie" (readyState=1 but nc about to die), causing the next SSH
+    // client to pick it up and immediately get code=1005.
+    try { ws.close(1000, origin + ' closed'); } catch (_) {}
   };
   sock.on('close', () => closePair('tcp'));
   sock.on('error', (e) => closePair('tcp', e.message));
