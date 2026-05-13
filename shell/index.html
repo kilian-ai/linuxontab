@@ -7366,9 +7366,11 @@
         lbAppend('downloading lot-bridge from linuxontab.com…', 'lb-info');
         const dl = await lbExec(
           'rm -f /usr/local/bin/lot-bridge; ' +
-          'wget -qO /usr/local/bin/lot-bridge https://linuxontab.com/local/lot-bridge; ' +
+          'wget -qO /usr/local/bin/lot-bridge https://raw.githubusercontent.com/kilian-ai/linuxontab/main/local/lot-bridge ' +
+          '|| wget -qO /usr/local/bin/lot-bridge https://linuxontab.com/local/lot-bridge; ' +
           'chmod +x /usr/local/bin/lot-bridge; ' +
-          '/usr/local/bin/lot-bridge --version 2>&1 || echo __DL_FAIL__'
+          '/usr/local/bin/lot-bridge --version 2>&1 || echo __DL_FAIL__',
+          { timeout: 30000 }
         );
         if ((dl.stdout || '').includes('__DL_FAIL__') || (dl.stdout || '').trim() === '') {
           lbAppend('download or exec failed: ' + (dl.stdout || '(no output)'), 'lb-err');
