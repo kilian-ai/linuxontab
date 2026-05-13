@@ -1,10 +1,9 @@
 #!/bin/sh
 # lot-bridge — persistent WS↔TCP bridge pool (shell implementation)
-# Same CLI: up / down / status / --version
+# CLI: up PORT [PORT...] / down / status / --version
 # Requires: websocat, curl
 # Env: LOT_BRIDGE_RELAY=https://...  LOT_BRIDGE_POOL=N
 
-set -u
 trap '' HUP
 
 RELAY="${LOT_BRIDGE_RELAY:-https://linuxontab-tunnel.fly.dev}"
@@ -26,92 +25,156 @@ relay_ws() {
 kill_bridges() {
     if [ -s "$PIDS_FILE" ]; then
         while IFS= read -r pid; do
-            [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null || true
+            kill -9 "$pid" 2>/dev/null || true
         done < "$PIDS_FILE"
     fi
     pkill -9 -f 'websocat.*port/guest' 2>/dev/null || true
-    sleep 1; pkill -9 -f 'websocat.*port/guest' 2>/dev/null || true
+    sleep 1
+    pkill -9 -f 'websocat.*port/guest' 2>/dev/null || true
     rm -f "$PIDS_FILE"
 }
 
-track_pid() { printf '%s\n' "$1" >> "$PIDS_FILE"; }
-
 cmd_up() {
-    PORTS="$*"
-    [ -z "$PORTS" ] && { echo "usage: lot-bridge up PORT [PORT ...]" >&2; exit 1; }
-    PORTS_JSON=$(echo "$PORTS" | tr ' ' '\n' | grep -E '^[0-9]+$' | paste -sd ',' -)
-    [ -z "$PORTS_JSON" ] && { echo "lot-bridge: no valid ports" >&2; exit 1; }
+    PORTS=""
+    for a in "$@"; do
+        case "$a" in [0-9]*) PORTS="$PORTS $a" ;; esac
+    done
+    PORTS="${PORTS# }"
+    if [ -z "$PORTS" ]; then
+        printf 'usage: lot-bridge up PORT [PORT ...]\n' >&2
+        exit 1
+    fi
 
-    [ -s "$PID_FILE" ] && kill "$(cat "$PID_FILE")" 2>/dev/null || true
+    # Build comma-separated port list for JSON
+    PORTS_JSON=""
+    for p in $PORTS; do
+        if [ -n "$PORTS_JSON" ]; then
+            PORTS_JSON="${PORTS_JSON},$p"
+        else
+            PORTS_JSON="$p"
+        fi
+    done
+
+    # Kill any prior instance
+    if [ -s "$PID_FILE" ]; then
+        kill "$(cat "$PID_FILE")" 2>/dev/null || true
+        sleep 1
+    fi
     kill_bridges
     rm -f "$CODE_FILE" "$STATUS_FILE"
 
-    REG=$(curl -sS --max-time 15 -X POST "${RELAY}/port/register" \
+    # Register with relay
+    REG=$(curl -sS --max-time 15 \
+        -X POST "${RELAY}/port/register" \
         -H 'Content-Type: application/json' \
-        -d "{\"ports\":[$PORTS_JSON]}" 2>/dev/null)
+        -d "{\"ports\":[$PORTS_JSON]}" 2>&1)
     CODE=$(printf '%s' "$REG" | sed -n 's/.*"code":"\([A-Z0-9]*\)".*/\1/p')
-    [ -z "$CODE" ] && { echo "lot-bridge: registration failed: $REG" >&2; exit 1; }
 
-    echo "$CODE" > "$CODE_FILE"
-    echo $$ > "$PID_FILE"
-    : > "$PIDS_FILE"
+    if [ -z "$CODE" ]; then
+        printf 'lot-bridge: registration failed: %s\n' "$REG" >&2
+        exit 1
+    fi
+
+    printf '%s' "$CODE" > "$CODE_FILE"
+    printf '%s' "$$" > "$PID_FILE"
+    printf '' > "$PIDS_FILE"
+
     WS=$(relay_ws)
     STARTED=$(date +%s 2>/dev/null || echo 0)
-    printf 'lot-bridge: code=%s relay=%s ports=%s pool=%s\n' "$CODE" "$RELAY" "$PORTS_JSON" "$POOL"
 
+    printf 'lot-bridge: code=%s relay=%s ports=%s pool=%s\n' \
+        "$CODE" "$RELAY" "$PORTS_JSON" "$POOL"
+
+    # Spawn bridge pool
     for PORT in $PORTS; do
-        I=0
-        while [ "$I" -lt "$POOL" ]; do
-            I=$((I + 1))
-            ( trap '' HUP
-              while :; do
-                  websocat --binary --ping-interval 25 \
-                      "${WS}/port/guest?code=${CODE}&port=${PORT}" \
-                      "tcp:127.0.0.1:${PORT}" \
-                      >> /tmp/lot-bridge.log 2>&1
-                  sleep 0.1 2>/dev/null || sleep 1
-              done ) &
-            track_pid $!
+        i=0
+        while [ "$i" -lt "$POOL" ]; do
+            i=$((i + 1))
+            (
+                trap '' HUP
+                echo -500 > /proc/self/oom_score_adj 2>/dev/null || true
+                while :; do
+                    echo -500 > /proc/self/oom_score_adj 2>/dev/null || true
+                    websocat --binary --ping-interval 25 \
+                        "${WS}/port/guest?code=${CODE}&port=${PORT}" \
+                        "tcp:127.0.0.1:${PORT}" \
+                        >> /tmp/lot-bridge.log 2>&1
+                    sleep 0.1 2>/dev/null || sleep 1
+                done
+            ) &
+            printf '%s\n' "$!" >> "$PIDS_FILE"
         done
     done
 
-    trap '
+    # Cleanup trap
+    cleanup() {
         kill_bridges
-        curl -sS --max-time 5 -X POST "${RELAY}/port/unregister" \
-            -H "Content-Type: application/json" \
+        curl -sS --max-time 5 \
+            -X POST "${RELAY}/port/unregister" \
+            -H 'Content-Type: application/json' \
             -d "{\"code\":\"${CODE}\"}" >/dev/null 2>&1 || true
-        rm -f "$CODE_FILE" "$PID_FILE" "$STATUS_FILE"; exit 0
-    ' TERM INT
+        rm -f "$CODE_FILE" "$PID_FILE" "$STATUS_FILE"
+        exit 0
+    }
+    trap cleanup TERM INT
 
+    # Status loop
     while :; do
         NOW=$(date +%s 2>/dev/null || echo 0)
-        UPTIME=$((NOW - STARTED))
-        LIVE=0
-        [ -s "$PIDS_FILE" ] && while IFS= read -r p; do
-            [ -n "$p" ] && kill -0 "$p" 2>/dev/null && LIVE=$((LIVE+1)) || true
-        done < "$PIDS_FILE"
-        TOTAL=$(wc -l < "$PIDS_FILE" 2>/dev/null | tr -d ' ' || echo 0)
-        printf '{"code":"%s","relay":"%s","ports":[%s],"pool_size":%s,"live":%s,"total":%s,"uptime_s":%s,"pid":%s}\n' \
-            "$CODE" "$RELAY" "$PORTS_JSON" "$POOL" "$LIVE" "$TOTAL" "$UPTIME" $$ > "$STATUS_FILE"
+        UPTIME=$(( NOW - STARTED ))
+        TOTAL=0
+        if [ -f "$PIDS_FILE" ]; then
+            TOTAL=$(wc -l < "$PIDS_FILE" 2>/dev/null || echo 0)
+            TOTAL=$(printf '%s' "$TOTAL" | tr -d ' ')
+        fi
+        printf '{"code":"%s","relay":"%s","ports":[%s],"pool":%s,"bridges":%s,"uptime":%s}\n' \
+            "$CODE" "$RELAY" "$PORTS_JSON" "$POOL" "$TOTAL" "$UPTIME" > "$STATUS_FILE"
         sleep 5
     done
 }
 
 cmd_down() {
-    CODE=""; [ -s "$CODE_FILE" ] && CODE=$(cat "$CODE_FILE")
-    [ -s "$PID_FILE" ] && kill "$(cat "$PID_FILE")" 2>/dev/null || true
+    SAVED_CODE=""
+    if [ -f "$CODE_FILE" ]; then
+        SAVED_CODE=$(cat "$CODE_FILE")
+    fi
+    if [ -s "$PID_FILE" ]; then
+        kill "$(cat "$PID_FILE")" 2>/dev/null || true
+        sleep 1
+    fi
     kill_bridges
-    [ -n "$CODE" ] && curl -sS --max-time 5 -X POST "${RELAY}/port/unregister" \
-        -H 'Content-Type: application/json' -d "{\"code\":\"${CODE}\"}" >/dev/null 2>&1 || true
+    if [ -n "$SAVED_CODE" ]; then
+        curl -sS --max-time 5 \
+            -X POST "${RELAY}/port/unregister" \
+            -H 'Content-Type: application/json' \
+            -d "{\"code\":\"${SAVED_CODE}\"}" >/dev/null 2>&1 || true
+    fi
     rm -f "$CODE_FILE" "$PID_FILE" "$STATUS_FILE"
-    echo "lot-bridge: stopped"
+    printf 'lot-bridge: stopped\n'
 }
 
-CMD="${1:-}"; shift 2>/dev/null || true
+CMD="${1:-}"
+shift 2>/dev/null || true
+
 case "$CMD" in
-    up)      cmd_up "$@" ;;
-    down)    cmd_down ;;
-    status)  [ -f "$STATUS_FILE" ] && cat "$STATUS_FILE" || echo '{"running":false}' ;;
-    --version|-v) echo "lot-bridge 0.1.0 (shell)" ;;
-    *)  printf 'usage: lot-bridge [up PORTS...|down|status|--version]\n' >&2; exit 1 ;;
+    up)
+        cmd_up "$@"
+        ;;
+    down)
+        cmd_down
+        ;;
+    status)
+        if [ -f "$STATUS_FILE" ]; then
+            cat "$STATUS_FILE"
+        else
+            printf '{"running":false}\n'
+        fi
+        ;;
+    --version|-v)
+        printf 'lot-bridge 0.1.0 (shell)\n'
+        ;;
+    *)
+        printf 'usage: lot-bridge [up PORTS...|down|status|--version]\n' >&2
+        exit 1
+        ;;
 esac
