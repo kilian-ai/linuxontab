@@ -119,10 +119,16 @@ function parsePort(s) {
 const BP_HIGH = 4 * 1024 * 1024;   // pause src reads above 4 MB peer buffer
 const BP_LOW  = 1 * 1024 * 1024;   // resume below 1 MB
 
+// ws.bufferedAmount is a browser-only property — the Node.js 'ws' library
+// does NOT implement it (always undefined). Use ws._socket.writableLength
+// instead, which is the actual kernel TCP send-buffer queue depth.
+function wsBuffered(ws) {
+  return (ws && ws._socket && ws._socket.writableLength) || 0;
+}
+
 function applyBackpressure(srcWs, dstWs) {
   if (!dstWs || dstWs.readyState !== 1) return;
-  const buffered = dstWs.bufferedAmount || 0;
-  if (buffered <= BP_HIGH) return;
+  if (wsBuffered(dstWs) <= BP_HIGH) return;
   const sock = srcWs._socket;
   if (!sock || srcWs.__bpPaused) return;
   srcWs.__bpPaused = true;
@@ -135,7 +141,7 @@ function applyBackpressure(srcWs, dstWs) {
       try { sock.resume(); } catch (_) {}
       return;
     }
-    if ((dstWs.bufferedAmount || 0) <= BP_LOW) {
+    if (wsBuffered(dstWs) <= BP_LOW) {
       clearInterval(tick);
       srcWs.__bpPaused = false;
       try { sock.resume(); } catch (_) {}
@@ -275,7 +281,7 @@ class PortSession {
           console.log(`[pair ${ws.__pair.id}] GUEST closed first ` +
             `code=${code} reason=${String(reason||'').slice(0,60)} ` +
             `c2g=${ws.__pair.c2g} g2c=${ws.__pair.g2c} dur=${dur}ms ` +
-            `peerBuffered=${peer.bufferedAmount||0}`);
+            `peerBuffered=${wsBuffered(peer)}`);
         }
         this.pairs.delete(peer);
         try { peer.close(code || 1000, String(reason || 'peer disconnected')); } catch (_) {}
@@ -378,7 +384,7 @@ class PortSession {
           console.log(`[pair ${ws.__pair.id}] CLIENT closed first ` +
             `code=${code} reason=${String(reason||'').slice(0,60)} ` +
             `c2g=${ws.__pair.c2g} g2c=${ws.__pair.g2c} dur=${dur}ms ` +
-            `peerBuffered=${peer.bufferedAmount||0}`);
+            `peerBuffered=${wsBuffered(peer)}`);
         }
         this.pairs.delete(peer);
         try { peer.close(code || 1000, String(reason || 'peer disconnected')); } catch (_) {}
@@ -876,7 +882,7 @@ function bridgeTcpToWs(sock, ws, pairId) {
       try { sock.destroy(); } catch (_) {}
       return;
     }
-    if ((ws.bufferedAmount || 0) > BP_HIGH && !sock.__bpPaused) {
+    if (wsBuffered(ws) > BP_HIGH && !sock.__bpPaused) {
       sock.__bpPaused = true;
       try { sock.pause(); } catch (_) {}
       const tick = setInterval(() => {
@@ -885,7 +891,7 @@ function bridgeTcpToWs(sock, ws, pairId) {
           try { sock.resume(); } catch (_) {}
           return;
         }
-        if ((ws.bufferedAmount || 0) <= BP_LOW) {
+        if (wsBuffered(ws) <= BP_LOW) {
           clearInterval(tick); sock.__bpPaused = false;
           try { sock.resume(); } catch (_) {}
         }
