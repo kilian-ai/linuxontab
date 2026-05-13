@@ -143,6 +143,8 @@ cmd_down() {
         sleep 1
     fi
     kill_bridges
+    # Kill any lingering tunnel-up.sh respawn loops to prevent MaxStartups flooding
+    pkill -9 -f 'tunnel-up\.sh' 2>/dev/null || true
     if [ -n "$SAVED_CODE" ]; then
         curl -sS --max-time 5 \
             -X POST "${RELAY}/port/unregister" \
