@@ -2906,7 +2906,10 @@
         // Install staple toolset from main: curl/jq (scripts + social.sh),
         // openssh-server (ssh tunnels), unbound (DNS-over-TCP workaround for
         // Fly WISP dropping UDP/53), tmux, libgcc (needed by websocat .so).
+        // mkdir /usr/lib/ssh first — Alpine 3.21 openssh-server.apk fails to
+        // create sshd-session with "I/O error" if the parent dir is absent.
         'echo "[setup] apk add curl jq openssh-server unbound tmux libgcc…"\n' +
+        'mkdir -p /usr/lib/ssh\n' +
         'apk add --no-cache curl jq openssh-server unbound tmux libgcc 2>&1 | tail -5\n' +
         // websocat lives in community; download its .apk directly via HTTP
         // (avoids the 1.8 MB community APKINDEX that times out through WISP).
