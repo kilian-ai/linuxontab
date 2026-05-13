@@ -94,7 +94,7 @@ cmd_up() {
         EXP=$(curl -sS --max-time 10 \
             -X POST "${RELAY}/port/expose" \
             -H 'Content-Type: application/json' \
-            -d "{\"code\":\"${CODE}\",\"port\":${PORT}}" 2>/dev/null)
+            -d "{\"code\":\"${CODE}\",\"port\":${PORT},\"preferPort\":${PORT}}" 2>/dev/null)
         PUBPORT=$(printf '%s' "$EXP" | sed -n 's/.*"publicPort":\([0-9]*\).*/\1/p')
         HOST=$(printf '%s' "$EXP" | sed -n 's/.*"host":"\([^"]*\)".*/\1/p')
         if [ -n "$PUBPORT" ]; then

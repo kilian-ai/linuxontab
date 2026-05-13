@@ -8,6 +8,10 @@ primary_region = "sjc"
   PORT = "8787"
   TCP_POOL_BASE = "6660"
   TCP_POOL_SIZE = "10"
+  # TCP_PORTS overrides BASE+SIZE. Each port here must also have a [[services]]
+  # block below so Fly's proxy forwards external traffic to the container.
+  # Port 22 is reserved by Fly for machine SSH and cannot be used here.
+  TCP_PORTS = "2222,3000,4000,5000,6000,7000,8000,8080,8081,8443,8888,9000,9090,6660,6661,6662,6663,6664,6665,6666,6667,6668,6669"
   TCP_PUBLIC_HOST = "linuxontab-tunnel.fly.dev"
   # Public wss URL announced to clients — set to the custom domain once mapped:
   # TUNNEL_PUBLIC_URL = "wss://tunnel.linuxontab.com"
@@ -78,6 +82,96 @@ primary_region = "sjc"
   internal_port = 6667
   [[services.ports]]
     port = 6667
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 6668
+  [[services.ports]]
+    port = 6668
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 6669
+  [[services.ports]]
+    port = 6669
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 2222
+  [[services.ports]]
+    port = 2222
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 3000
+  [[services.ports]]
+    port = 3000
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 4000
+  [[services.ports]]
+    port = 4000
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 5000
+  [[services.ports]]
+    port = 5000
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 6000
+  [[services.ports]]
+    port = 6000
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 7000
+  [[services.ports]]
+    port = 7000
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8000
+  [[services.ports]]
+    port = 8000
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+  [[services.ports]]
+    port = 8080
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8081
+  [[services.ports]]
+    port = 8081
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8443
+  [[services.ports]]
+    port = 8443
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8888
+  [[services.ports]]
+    port = 8888
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 9000
+  [[services.ports]]
+    port = 9000
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 9090
+  [[services.ports]]
+    port = 9090
 
 [[services]]
   protocol = "tcp"

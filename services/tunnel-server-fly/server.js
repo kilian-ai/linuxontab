@@ -40,6 +40,11 @@ const TUNNEL_PUBLIC_URL = process.env.TUNNEL_PUBLIC_URL || ''; // e.g. wss://tun
 // block in fly.toml so the public LB forwards it to the container.
 const TCP_POOL_BASE = parseInt(process.env.TCP_POOL_BASE || '6660', 10);
 const TCP_POOL_SIZE = parseInt(process.env.TCP_POOL_SIZE || '10', 10);
+// TCP_PORTS: explicit comma-separated list; falls back to BASE..+SIZE range.
+// fly.toml must expose every port in this list via [[services]] blocks.
+const TCP_PORTS = process.env.TCP_PORTS
+  ? process.env.TCP_PORTS.split(',').map(s => parseInt(s.trim(), 10)).filter(p => p > 0 && p < 65536)
+  : Array.from({ length: TCP_POOL_SIZE }, (_, i) => TCP_POOL_BASE + i);
 const TCP_PUBLIC_HOST = process.env.TCP_PUBLIC_HOST || ''; // e.g. tunnel.linuxontab.com
 
 // ── Token signing (HMAC-SHA256) ────────────────────────────────────────────
@@ -835,26 +840,29 @@ function tcpEvictDeadAssignments() {
   }
 }
 
-function tcpAssignSlot(code, internalPort, ttlMs) {
+// tcpAssignSlot: try preferPort (defaults to internalPort) first, walk up
+// by 1 through any listening port in [want, want+100], then fall back to
+// pool order. This lets "expose port 8080" get public port 8080 when free.
+function tcpAssignSlot(code, internalPort, preferPort, ttlMs) {
   const now = Date.now();
   const ttl = ttlMs || TCP_ASSIGN_TTL_MS;
   tcpEvictDeadAssignments();
-  // Prefer matching public port = internal port when it's in the pool
-  // and free. Makes "expose 6667 → :6667" the natural case for IRC,
-  // SSH, etc., instead of the surprising fallback to :6660.
-  if (internalPort >= TCP_POOL_BASE && internalPort < TCP_POOL_BASE + TCP_POOL_SIZE
-      && !tcpAssignments.has(internalPort) && tcpListeners.has(internalPort)) {
-    const a = { code, internalPort, createdAt: now, expiresAt: now + ttl };
-    tcpAssignments.set(internalPort, a);
-    return { publicPort: internalPort, ...a };
+  const want = (preferPort > 0 && preferPort < 65536) ? preferPort : internalPort;
+  // Walk up from want; collect any listening port in [want, want+100]
+  const tryList = [];
+  for (let p = want; p <= want + 100; p++) {
+    if (tcpListeners.has(p)) tryList.push(p);
   }
-  for (let i = 0; i < TCP_POOL_SIZE; i++) {
-    const p = TCP_POOL_BASE + i;
-    if (!tcpAssignments.has(p) && tcpListeners.has(p)) {
-      const a = { code, internalPort, createdAt: now, expiresAt: now + ttl };
-      tcpAssignments.set(p, a);
-      return { publicPort: p, ...a };
-    }
+  // Append remaining pool ports not already covered
+  for (const p of TCP_PORTS) {
+    if (!tryList.includes(p)) tryList.push(p);
+  }
+  for (const p of tryList) {
+    if (!tcpListeners.has(p)) continue;
+    if (tcpAssignments.has(p)) continue;
+    const a = { code, internalPort, createdAt: now, expiresAt: now + ttl };
+    tcpAssignments.set(p, a);
+    return { publicPort: p, ...a };
   }
   return null;
 }
@@ -929,8 +937,7 @@ function bridgeTcpToWs(sock, ws, pairId) {
 }
 
 function startTcpPool() {
-  for (let i = 0; i < TCP_POOL_SIZE; i++) {
-    const publicPort = TCP_POOL_BASE + i;
+  for (const publicPort of TCP_PORTS) {
     const srv = net.createServer(async (sock) => {
       const a = tcpAssignments.get(publicPort);
       if (!a) { try { sock.destroy(); } catch (_) {} return; }
@@ -1095,7 +1102,7 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, { host, publicPort: p, code, port: internalPort, expiresAt: a.expiresAt, reused: true });
       }
     }
-    const slot = tcpAssignSlot(code, internalPort, parseInt(body.ttlMs, 10));
+    const slot = tcpAssignSlot(code, internalPort, parsePort(body.preferPort), parseInt(body.ttlMs, 10));
     if (!slot) return sendJson(res, { error: 'TCP pool exhausted' }, 503);
     const host = TCP_PUBLIC_HOST || (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
     console.log(`[expose] ${code}:${internalPort} → public :${slot.publicPort} (expires in ${Math.round((slot.expiresAt - Date.now())/1000)}s)`);
@@ -1128,7 +1135,7 @@ const server = http.createServer(async (req, res) => {
       if (code && a.code !== code) continue;
       list.push({ host, publicPort: p, code: a.code, port: a.internalPort, expiresAt: a.expiresAt });
     }
-    return sendJson(res, { assignments: list, pool_size: TCP_POOL_SIZE, pool_base: TCP_POOL_BASE });
+    return sendJson(res, { assignments: list, pool_size: TCP_PORTS.length, pool_ports: TCP_PORTS, pool_base: TCP_POOL_BASE });
   }
 
   // GET /port/debug
@@ -1147,8 +1154,7 @@ const server = http.createServer(async (req, res) => {
     const firstSeg = slash1 < 0 ? rest : rest.slice(0, slash1);
     // Shorthand: /port/http/:publicPort/path — look up TCP expose assignment
     const maybePublicPort = parseInt(firstSeg, 10);
-    if (Number.isFinite(maybePublicPort) && maybePublicPort >= TCP_POOL_BASE
-        && maybePublicPort < TCP_POOL_BASE + TCP_POOL_SIZE) {
+    if (Number.isFinite(maybePublicPort) && tcpListeners.has(maybePublicPort)) {
       const a = tcpAssignments.get(maybePublicPort);
       if (!a) { cors(res); res.writeHead(404); res.end('public port not assigned'); return; }
       if (Date.now() > a.expiresAt) {
