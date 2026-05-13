@@ -116,8 +116,16 @@ function parsePort(s) {
 //
 // The drain check runs once per ~50ms via setInterval until the buffer
 // drains, then the timer is cleared.
-const BP_HIGH = 4 * 1024 * 1024;   // pause src reads above 4 MB peer buffer
-const BP_LOW  = 1 * 1024 * 1024;   // resume below 1 MB
+const BP_HIGH = 4 * 1024 * 1024;   // pause src reads above 4 MB peer buffer (WS↔WS)
+const BP_LOW  = 1 * 1024 * 1024;   // resume below 1 MB  (WS↔WS)
+
+// Separate lower thresholds for TCP-bridge backpressure (tcp ↔ guest WS).
+// The guest side drains at v86 speeds (~100-300 KB/s). With BP_HIGH (4 MB)
+// the relay buffers ~20 s of data before pausing the incoming TCP socket;
+// Fly's TCP proxy then times out the stalled connection (~22 s idle).
+// At 256 KB the worst-case pause is ~1 s — well within any idle timer.
+const BP_TCP_HIGH = 256 * 1024;  // 256 KB — pause incoming TCP reads
+const BP_TCP_LOW  =  64 * 1024;  //  64 KB — resume
 
 // ws.bufferedAmount is a browser-only property — the Node.js 'ws' library
 // does NOT implement it (always undefined). Use ws._socket.writableLength
@@ -882,7 +890,13 @@ function bridgeTcpToWs(sock, ws, pairId) {
       try { sock.destroy(); } catch (_) {}
       return;
     }
-    if (wsBuffered(ws) > BP_HIGH && !sock.__bpPaused) {
+    // Do NOT pause sock here. v86 receives at ~200 KB/s; if we pause sock
+    // while the 4 MB OS kernel TCP send-buffer drains, the Mac→Fly TCP
+    // connection goes idle for ~20 s and Fly's proxy drops it.  Instead,
+    // let Node.js buffer upload bytes in heap (SSH channel-window limits
+    // what the Mac sends anyway — typically ≤2 MB at a time).  Only pause
+    // as a last-resort OOM guard for gigabyte-scale transfers.
+    if (wsBuffered(ws) > 16 * 1024 * 1024 && !sock.__bpPaused) {
       sock.__bpPaused = true;
       try { sock.pause(); } catch (_) {}
       const tick = setInterval(() => {
@@ -891,7 +905,7 @@ function bridgeTcpToWs(sock, ws, pairId) {
           try { sock.resume(); } catch (_) {}
           return;
         }
-        if (wsBuffered(ws) <= BP_LOW) {
+        if (wsBuffered(ws) <= 8 * 1024 * 1024) {
           clearInterval(tick); sock.__bpPaused = false;
           try { sock.resume(); } catch (_) {}
         }
@@ -944,6 +958,11 @@ function bridgeTcpToWs(sock, ws, pairId) {
 function startTcpPool() {
   for (const publicPort of TCP_PORTS) {
     const srv = net.createServer(async (sock) => {
+      // Keep the Fly TCP proxy connection alive during backpressure pauses.
+      // Without keepalive, Fly marks the stalled connection as idle and drops it.
+      sock.setKeepAlive(true, 5000);
+      sock.setNoDelay(true);
+      sock.setTimeout(0);
       const a = tcpAssignments.get(publicPort);
       if (!a) { try { sock.destroy(); } catch (_) {} return; }
       if (Date.now() > a.expiresAt) {

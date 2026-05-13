@@ -185,6 +185,16 @@ primary_region = "sjc"
   [[services.ports]]
     port = 6669
 
+# Raw TCP proxy to the WebSocket server (port 8787). websocat uses
+# ws://...:4343/port/guest instead of wss://:443 to bypass Fly's HTTP
+# proxy write-timeout (~30s), which kills the guest WS when v86 is slow
+# to drain a large upload buffer.
+[[services]]
+  protocol = "tcp"
+  internal_port = 8787
+  [[services.ports]]
+    port = 4343
+
 [[vm]]
   size = "shared-cpu-1x"
   memory = "256mb"

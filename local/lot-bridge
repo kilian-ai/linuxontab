@@ -16,8 +16,13 @@ STATUS_FILE=/tmp/lot-bridge.status.json
 EXPOSE_FILE=/tmp/lot-bridge.expose.json
 
 relay_ws() {
+    # Guest-side bridges use ws://:4343 (Fly TCP proxy) instead of wss://:443
+    # (Fly HTTP proxy). The HTTP proxy has a ~30s write-timeout on stalled
+    # writes; the TCP proxy has none. SSH data is already encrypted in-band
+    # so transport TLS is not required for the guest bridge WS.
+    WS_PORT="${LOT_BRIDGE_WS_PORT:-4343}"
     case "$RELAY" in
-        https://*) echo "wss://${RELAY#https://}" ;;
+        https://*) echo "ws://${RELAY#https://}:${WS_PORT}" ;;
         http://*)  echo "ws://${RELAY#http://}" ;;
         *)         echo "$RELAY" ;;
     esac
