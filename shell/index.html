@@ -3435,8 +3435,15 @@
             }
           } catch (_) {}
           const u8 = new TextEncoder().encode(fullScript);
-          // create_file is async on some v86 builds; await it.
-          Promise.resolve(emulator.create_file(fsPath, u8)).then(() => {
+          // create_file(path, data, callback) — must use the callback form so
+          // we only send the bootstrap AFTER the file is confirmed written.
+          // Wrapping in a Promise; Promise.resolve(undefined) would fire
+          // immediately as a microtask and race the async write.
+          new Promise((resolve, reject) => {
+            emulator.create_file(fsPath, u8, err => {
+              if (err) reject(err); else resolve();
+            });
+          }).then(() => {
             try {
               const sp = fs.SearchPath(fsPath);
               if (sp && sp.id !== -1) {
