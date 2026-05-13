@@ -19,8 +19,8 @@ clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 
 [profile.release]
-opt-level = "z"
-lto = true
+opt-level = 2
+lto = false
 strip = true
 panic = "abort"
-codegen-units = 1
+codegen-units = 16

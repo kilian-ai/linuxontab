@@ -1,7 +1,4 @@
 [target.i686-unknown-linux-musl]
-# v86 emulates a 32-bit x86 CPU. The Linux i686 ABI only guarantees 4-byte stack
-# alignment, but SSE instructions require 16-byte. The `stackrealign` feature
-# inserts a realignment prologue in every function so SSE loads/stores never fault.
-rustflags = [
-    "-C", "target-feature=+sse,+sse2,+stackrealign",
-]
+# v86 emulates i686. Use default target features (includes SSE2).
+# No custom rustflags — relying on profile settings to avoid alignment faults.
+
