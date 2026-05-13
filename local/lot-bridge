@@ -122,7 +122,7 @@ cmd_up() {
                     echo -500 > /proc/self/oom_score_adj 2>/dev/null || true
                     websocat --binary --ping-interval 25 \
                         "${WS}/port/guest?code=${CODE}&port=${PORT}" \
-                        "tcp:127.0.0.1:${PORT}" \
+                        "exec:/bin/sh:-c:sleep 0.3; exec nc 127.0.0.1 ${PORT}" \
                         >> /tmp/lot-bridge.log 2>&1
                     sleep 0.1 2>/dev/null || sleep 1
                 done
