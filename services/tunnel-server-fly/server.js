@@ -1222,7 +1222,7 @@ const wss = new WebSocketServer({ noServer: true });
 // or they go silent until a TCP client tries to use them and it appears
 // "connected" but bytes never make it to the guest.
 const HEARTBEAT_MS = 25000;
-const HEARTBEAT_TIMEOUT_MS = 60000;
+const HEARTBEAT_TIMEOUT_MS = 300000; // 5 min: large uploads take ~1s per 200KB through v86
 setInterval(() => {
   const now = Date.now();
   wss.clients.forEach((ws) => {
