@@ -191,6 +191,10 @@
   /* ── lot-bridge panel ── */
   #lot-bridge-panel { position:absolute; right:0; top:36px; bottom:0; width:480px; max-width:60vw; display:flex; flex-direction:column; background:#0b0d10; border-left:1px solid #2a2f36; z-index:50; box-shadow:-4px 0 12px rgba(0,0,0,0.5); }
   #lot-bridge-panel[hidden] { display:none; }
+  .lb-bridge-url { display:flex; align-items:baseline; gap:6px; margin:2px 0; font-size:11px; font-family:monospace; }
+  .lb-port-tag   { color:#7ec8e3; flex-shrink:0; }
+  .lb-url-text   { color:#8b9bb4; word-break:break-all; }
+  .lb-summary    { font-size:11px; color:#6e7f94; margin-bottom:4px; }
   #lb-hdr { display:flex; gap:8px; align-items:center; padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; }
   #lb-hdr button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
   #lb-hdr button:hover:not(:disabled) { background:#2d343d; }
@@ -7339,15 +7343,26 @@
       const st = await lbReadStatus();
       if (!st) {
         lbSetRunning(false, null);
-        lbPoolInfo.textContent = '';
+        lbPoolInfo.innerHTML = '';
         return;
       }
       lbSetRunning(true, st.code);
-      // Pool summary: port → connected count
-      const parts = Object.entries(st.pool || {}).map(([p, s]) =>
-        `port ${p}: ${s.connected} WS`
-      );
-      lbPoolInfo.textContent = parts.join('  ') + `  uptime ${st.uptime_s}s`;
+
+      // Construct WS base from relay URL
+      const wsBase = (st.relay || '')
+        .replace(/^https:\/\//, 'wss://')
+        .replace(/^http:\/\//, 'ws://')
+        .replace(/\/$/, '');
+
+      // Per-port bridge URLs
+      const ports = Array.isArray(st.ports) ? st.ports : [];
+      const urlLines = ports.map(p => {
+        const url = `${wsBase}/port/client?code=${st.code}&port=${p}`;
+        return `<div class="lb-bridge-url"><span class="lb-port-tag">:${p}</span><span class="lb-url-text">${url}</span></div>`;
+      });
+
+      const summary = `bridges: ${st.bridges ?? '?'}  pool: ${st.pool ?? '?'}  uptime: ${st.uptime ?? 0}s`;
+      lbPoolInfo.innerHTML = `<div class="lb-summary">${summary}</div>` + urlLines.join('');
     }
 
     async function lbDoStart() {
