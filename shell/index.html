@@ -3435,15 +3435,9 @@
             }
           } catch (_) {}
           const u8 = new TextEncoder().encode(fullScript);
-          // create_file(path, data, callback) — must use the callback form so
-          // we only send the bootstrap AFTER the file is confirmed written.
-          // Wrapping in a Promise; Promise.resolve(undefined) would fire
-          // immediately as a microtask and race the async write.
-          new Promise((resolve, reject) => {
-            emulator.create_file(fsPath, u8, err => {
-              if (err) reject(err); else resolve();
-            });
-          }).then(() => {
+          // create_file is an async function — it returns a real Promise.
+          // Use .then() directly (no callback, no Promise.resolve wrapper).
+          emulator.create_file(fsPath, u8).then(() => {
             try {
               const sp = fs.SearchPath(fsPath);
               if (sp && sp.id !== -1) {
@@ -3453,11 +3447,14 @@
                 inode.mtime = now; inode.ctime = now;
               }
             } catch (_) {}
-            // Bootstrap: mkdir mount point, mount host9p (idempotent),
-            // exec the script. Single line, single newline.
+            // Bootstrap: force umount+remount so the guest kernel's 9P
+            // dentry cache is rebuilt. After snapshot restore, /mnt/host
+            // may already be mounted but with a stale kernel cache from
+            // the pre-snapshot state — a conditional mount would skip the
+            // remount and the guest wouldn't see the new .lot-init.sh.
             const bootstrap =
+              'umount /mnt/host 2>/dev/null; ' +
               'mkdir -p /mnt/host 2>/dev/null; ' +
-              'grep -q " /mnt/host " /proc/mounts || ' +
               'mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192,access=any host9p /mnt/host 2>/dev/null; ' +
               'sh /mnt/host/.lot-init.sh\n';
             sendGuestText(bootstrap);
