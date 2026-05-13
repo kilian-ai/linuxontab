@@ -153,6 +153,132 @@ cmd_down() {
     printf 'lot-bridge: stopped\n'
 }
 
+# find_free_port PORT — print first local port >= PORT not already bound
+find_free_port() {
+    local p="$1"
+    local max=$(( p + 99 ))
+    while [ "$p" -le "$max" ]; do
+        if ! nc -z 127.0.0.1 "$p" >/dev/null 2>&1; then
+            printf '%s' "$p"
+            return 0
+        fi
+        p=$(( p + 1 ))
+    done
+    printf '%s' "$1"  # fallback: return original and let the caller fail naturally
+}
+
+# start_listener LOCAL_PORT WS_URL — spawn a multi-client TCP→WS listener in background
+# Writes bg PID to stdout.
+start_listener() {
+    local LOCAL="$1" URL="$2"
+    if command -v socat >/dev/null 2>&1; then
+        socat "TCP-LISTEN:${LOCAL},bind=127.0.0.1,reuseaddr,fork" \
+            "EXEC:websocat --binary ${URL},nofork" &
+        printf '%s' "$!"
+    elif command -v python3 >/dev/null 2>&1; then
+        local PYFILE
+        PYFILE=$(mktemp /tmp/lot-bridge-XXXXXX.py)
+        cat > "$PYFILE" <<'PYEOF'
+import os, sys, socket, signal
+port = int(sys.argv[1]); url = sys.argv[2]
+try: signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+except Exception: pass
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", port)); s.listen(128)
+while True:
+    try: c, _ = s.accept()
+    except (KeyboardInterrupt, SystemExit): break
+    except OSError: continue
+    if os.fork() == 0:
+        os.dup2(c.fileno(), 0); os.dup2(c.fileno(), 1); c.close()
+        os.execvp("websocat", ["websocat", "--binary", url]); os._exit(1)
+    c.close()
+PYEOF
+        python3 "$PYFILE" "$LOCAL" "$URL" &
+        local pid="$!"
+        printf '%s' "$pid"
+        # clean up tempfile once python has loaded it
+        ( sleep 2; rm -f "$PYFILE" ) &
+    else
+        # single-shot respawn fallback (websocat only, one client at a time)
+        ( trap '' HUP
+          while :; do
+              websocat --binary -E "tcp-l:127.0.0.1:${LOCAL}" "$URL" 2>/dev/null
+              sleep 0.5 2>/dev/null || sleep 1
+          done ) &
+        printf '%s' "$!"
+    fi
+}
+
+cmd_listen() {
+    CODE="${1:-}"
+    if [ -z "$CODE" ]; then
+        printf 'usage: lot-bridge listen CODE\n' >&2
+        exit 1
+    fi
+
+    if ! command -v websocat >/dev/null 2>&1; then
+        printf 'lot-bridge listen: websocat not found\n' >&2
+        printf '  macOS: brew install websocat\n' >&2
+        exit 1
+    fi
+
+    STATUS=$(curl -fsS --max-time 10 "${RELAY}/port/status?code=${CODE}" 2>/dev/null)
+    if [ -z "$STATUS" ]; then
+        printf 'lot-bridge listen: relay unreachable (code=%s)\n' "$CODE" >&2
+        exit 1
+    fi
+
+    # Extract comma-separated port list from registered_ports or ports field
+    PORTS=$(printf '%s' "$STATUS" | sed -n 's/.*"registered_ports":\[\([0-9,]*\)\].*/\1/p')
+    if [ -z "$PORTS" ]; then
+        PORTS=$(printf '%s' "$STATUS" | sed -n 's/.*"ports":\[\([0-9,]*\)\].*/\1/p')
+    fi
+    if [ -z "$PORTS" ]; then
+        printf 'lot-bridge listen: no ports found for code %s\n' "$CODE" >&2
+        printf '%s\n' "$STATUS" >&2
+        exit 1
+    fi
+
+    WS=$(relay_ws)
+    LISTEN_PIDS=""
+
+    printf '──────────────────────────────────────────────────────\n'
+    printf '  lot-bridge listen  code=%s\n\n' "$CODE"
+
+    OLD_IFS="$IFS"; IFS=','
+    for PORT in $PORTS; do
+        IFS="$OLD_IFS"
+        PORT="${PORT# }"; PORT="${PORT% }"
+        LOCAL=$(find_free_port "$PORT")
+        if [ "$LOCAL" != "$PORT" ]; then
+            printf '  :%s in use → local :%s → guest :%s\n' "$PORT" "$LOCAL" "$PORT"
+        else
+            printf '  local :%s → guest :%s\n' "$LOCAL" "$PORT"
+        fi
+        URL="${WS}/port/client?code=${CODE}&port=${PORT}"
+        pid=$(start_listener "$LOCAL" "$URL")
+        LISTEN_PIDS="$LISTEN_PIDS $pid"
+        IFS=','
+    done
+    IFS="$OLD_IFS"
+
+    printf '\n  Ctrl-C to stop.\n'
+    printf '──────────────────────────────────────────────────────\n'
+
+    cleanup_listen() {
+        printf '\n[lot-bridge listen] stopping\n'
+        for p in $LISTEN_PIDS; do
+            kill "$p" 2>/dev/null || true
+        done
+        kill 0 2>/dev/null || true
+        exit 0
+    }
+    trap cleanup_listen INT TERM
+    wait
+}
+
 CMD="${1:-}"
 shift 2>/dev/null || true
 
@@ -162,6 +288,9 @@ case "$CMD" in
         ;;
     down)
         cmd_down
+        ;;
+    listen)
+        cmd_listen "$@"
         ;;
     status)
         if [ -f "$STATUS_FILE" ]; then
@@ -174,7 +303,7 @@ case "$CMD" in
         printf 'lot-bridge 0.1.0 (shell)\n'
         ;;
     *)
-        printf 'usage: lot-bridge [up PORTS...|down|status|--version]\n' >&2
+        printf 'usage: lot-bridge [up PORTS...|down|listen CODE|status|--version]\n' >&2
         exit 1
         ;;
 esac
