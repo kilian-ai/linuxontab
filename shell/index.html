@@ -7354,11 +7354,14 @@
         .replace(/^http:\/\//, 'ws://')
         .replace(/\/$/, '');
 
-      // Per-port bridge URLs
+      // Per-port bridge URLs + direct TCP expose addresses
       const ports = Array.isArray(st.ports) ? st.ports : [];
+      const expose = (typeof st.expose === 'object' && st.expose) ? st.expose : {};
       const urlLines = ports.map(p => {
-        const url = `${wsBase}/port/client?code=${st.code}&port=${p}`;
-        return `<div class="lb-bridge-url"><span class="lb-port-tag">:${p}</span><span class="lb-url-text">${url}</span></div>`;
+        const wsUrl = `${wsBase}/port/client?code=${st.code}&port=${p}`;
+        const exp = expose[String(p)];
+        const direct = exp ? `<span class="lb-url-text" style="color:#7ec87a"> ${exp.host}:${exp.publicPort}</span>` : '';
+        return `<div class="lb-bridge-url"><span class="lb-port-tag">:${p}</span>${direct}<span class="lb-url-text" style="opacity:0.5"> ${wsUrl}</span></div>`;
       });
 
       const summary = `bridges: ${st.bridges ?? '?'}  pool: ${st.pool ?? '?'}  uptime: ${st.uptime ?? 0}s`;

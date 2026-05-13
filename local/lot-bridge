@@ -13,6 +13,7 @@ CODE_FILE=/tmp/lot-bridge.code
 PID_FILE=/tmp/lot-bridge.pid
 PIDS_FILE=/tmp/lot-bridge.pids
 STATUS_FILE=/tmp/lot-bridge.status.json
+EXPOSE_FILE=/tmp/lot-bridge.expose.json
 
 relay_ws() {
     case "$RELAY" in
@@ -78,12 +79,36 @@ cmd_up() {
     printf '%s' "$CODE" > "$CODE_FILE"
     printf '%s' "$$" > "$PID_FILE"
     printf '' > "$PIDS_FILE"
+    printf '{}' > "$EXPOSE_FILE"
 
     WS=$(relay_ws)
     STARTED=$(date +%s 2>/dev/null || echo 0)
 
     printf 'lot-bridge: code=%s relay=%s ports=%s pool=%s\n' \
         "$CODE" "$RELAY" "$PORTS_JSON" "$POOL"
+
+    # Request a direct TCP expose slot for each port
+    EXPOSE_JSON='{'
+    FIRST_EXP=1
+    for PORT in $PORTS; do
+        EXP=$(curl -sS --max-time 10 \
+            -X POST "${RELAY}/port/expose" \
+            -H 'Content-Type: application/json' \
+            -d "{\"code\":\"${CODE}\",\"port\":${PORT}}" 2>/dev/null)
+        PUBPORT=$(printf '%s' "$EXP" | sed -n 's/.*"publicPort":\([0-9]*\).*/\1/p')
+        HOST=$(printf '%s' "$EXP" | sed -n 's/.*"host":"\([^"]*\)".*/\1/p')
+        if [ -n "$PUBPORT" ]; then
+            printf 'lot-bridge: port %s → %s:%s (direct TCP)\n' "$PORT" "$HOST" "$PUBPORT"
+            if [ "$FIRST_EXP" = 1 ]; then
+                EXPOSE_JSON="${EXPOSE_JSON}\"${PORT}\":{\"host\":\"${HOST}\",\"publicPort\":${PUBPORT}}"
+                FIRST_EXP=0
+            else
+                EXPOSE_JSON="${EXPOSE_JSON},\"${PORT}\":{\"host\":\"${HOST}\",\"publicPort\":${PUBPORT}}"
+            fi
+        fi
+    done
+    EXPOSE_JSON="${EXPOSE_JSON}}"
+    printf '%s' "$EXPOSE_JSON" > "$EXPOSE_FILE"
 
     # Spawn bridge pool
     for PORT in $PORTS; do
@@ -127,8 +152,10 @@ cmd_up() {
             TOTAL=$(wc -l < "$PIDS_FILE" 2>/dev/null || echo 0)
             TOTAL=$(printf '%s' "$TOTAL" | tr -d ' ')
         fi
-        printf '{"code":"%s","relay":"%s","ports":[%s],"pool":%s,"bridges":%s,"uptime":%s}\n' \
-            "$CODE" "$RELAY" "$PORTS_JSON" "$POOL" "$TOTAL" "$UPTIME" > "$STATUS_FILE"
+        EXPOSE_DATA="{}"
+        [ -f "$EXPOSE_FILE" ] && EXPOSE_DATA=$(cat "$EXPOSE_FILE")
+        printf '{"code":"%s","relay":"%s","ports":[%s],"pool":%s,"bridges":%s,"uptime":%s,"expose":%s}\n' \
+            "$CODE" "$RELAY" "$PORTS_JSON" "$POOL" "$TOTAL" "$UPTIME" "$EXPOSE_DATA" > "$STATUS_FILE"
         sleep 5
     done
 }
@@ -147,11 +174,15 @@ cmd_down() {
     pkill -9 -f 'tunnel-up\.sh' 2>/dev/null || true
     if [ -n "$SAVED_CODE" ]; then
         curl -sS --max-time 5 \
+            -X POST "${RELAY}/port/unexpose" \
+            -H 'Content-Type: application/json' \
+            -d "{\"code\":\"${SAVED_CODE}\"}" >/dev/null 2>&1 || true
+        curl -sS --max-time 5 \
             -X POST "${RELAY}/port/unregister" \
             -H 'Content-Type: application/json' \
             -d "{\"code\":\"${SAVED_CODE}\"}" >/dev/null 2>&1 || true
     fi
-    rm -f "$CODE_FILE" "$PID_FILE" "$STATUS_FILE"
+    rm -f "$CODE_FILE" "$PID_FILE" "$STATUS_FILE" "$EXPOSE_FILE"
     printf 'lot-bridge: stopped\n'
 }
 
