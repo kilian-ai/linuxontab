@@ -2893,10 +2893,16 @@
       const setupCmd = skipSetup ? '' :
         'echo "[setup] configuring apk repositories…"\n' +
         'printf "%s\\n" "https://dl-cdn.alpinelinux.org/alpine/latest-stable/main" "https://dl-cdn.alpinelinux.org/alpine/latest-stable/community" > /etc/apk/repositories\n' +
-        'echo "[setup] apk update…"\n' +
-        'apk update 2>&1 | tail -3\n' +
+        // apk update: community APKINDEX is ~50 MB and can time out through
+        // the WISP proxy. Redirect to a temp log so we can inspect for IO
+        // errors and retry once with a brief pause before proceeding.
+        'echo "[setup] apk update (retrying on IO error)…"\n' +
+        'apk update >/tmp/.apkup.log 2>&1; tail -3 /tmp/.apkup.log\n' +
+        'grep -q "IO ERROR" /tmp/.apkup.log && { sleep 3; apk update >/tmp/.apkup.log 2>&1; tail -3 /tmp/.apkup.log; } || true\n' +
         'echo "[setup] apk upgrade (rebasing libc/libcrypto)…"\n' +
-        'apk upgrade --available 2>&1 | tail -3\n' +
+        // --force-missing-repositories: don't hard-fail if community is still
+        // unreachable after the retry above; rebase libc/libcrypto from main.
+        'apk upgrade --available --force-missing-repositories 2>&1 | tail -3\n' +
         // Pre-install the staple toolset so a freshly booted ISO is
         // immediately usable: websocat (tunnels), curl/jq (scripts +
         // social.sh), openssh-server (ssh tunnels), unbound (DNS-over-TCP
@@ -2904,8 +2910,13 @@
         // shell windows so long-running tunnel/social/viewer commands
         // survive the user switching focus or running other things in
         // the foreground terminal). Idempotent.
+        // --force-missing-repositories: get main packages even when community
+        // is unavailable; curl/openssh-server/unbound come from main.
         'echo "[setup] apk add websocat curl jq openssh-server unbound tmux…"\n' +
-        'apk add --no-cache websocat curl jq openssh-server unbound tmux 2>&1 | tail -5\n' +
+        'apk add --no-cache --force-missing-repositories websocat curl jq openssh-server unbound tmux 2>&1 | tail -5\n' +
+        // websocat is community-only. If apk couldn't reach community, fall
+        // back to the upstream static musl binary (i686, works on Alpine x86).
+        'which websocat >/dev/null 2>&1 || { echo "[setup] fetching websocat binary…"; wget -q -O /usr/local/bin/websocat https://github.com/vi/websocat/releases/download/v1.13.0/websocat.i686-unknown-linux-musl && chmod +x /usr/local/bin/websocat && echo "[setup] websocat ok"; }\n' +
         'echo "[setup] ready — apk add <pkg> works now. snapshot to skip on next boot."\n';
       // Snapshot restore: WISP WebSocket is freshly reconnected (JS adapter
       // is not in the x86 snapshot), and the Wisp router config is known
