@@ -366,3 +366,6 @@ for i in $(seq 1 32); do
      sleep 0.1 2>/dev/null || sleep 1; done) &
 done
 sleep 3; curl -s "https://linuxontab-tunnel.fly.dev/port/status?code=$CODE" | grep -o '"guest_queue_depth":{[^}]*}'
+
+
+https://linuxontab.com/shell/?pip=1&pipx=20&pipy=50&pipw=600&piph=400&browser=https://linuxontab.com&snapshot=https://github.com/kilian-ai/linuxontab/releases/download/snap-v1/alpine-base.bin.gz

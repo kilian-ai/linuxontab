@@ -188,6 +188,38 @@
   #claw-send { background:#1d4ed8; color:#fff; border:1px solid #3b82f6; border-radius:4px; padding:6px 12px; font:inherit; cursor:pointer; white-space:nowrap; align-self:flex-end; }
   #claw-send:hover:not(:disabled) { background:#2563eb; }
   #claw-send:disabled { opacity:0.4; cursor:not-allowed; }
+  /* ── lot-bridge panel ── */
+  #lot-bridge-panel { position:absolute; right:0; top:36px; bottom:0; width:480px; max-width:60vw; display:flex; flex-direction:column; background:#0b0d10; border-left:1px solid #2a2f36; z-index:50; box-shadow:-4px 0 12px rgba(0,0,0,0.5); }
+  #lot-bridge-panel[hidden] { display:none; }
+  #lb-hdr { display:flex; gap:8px; align-items:center; padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; }
+  #lb-hdr button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
+  #lb-hdr button:hover:not(:disabled) { background:#2d343d; }
+  #lb-hdr button:disabled { opacity:0.4; cursor:not-allowed; }
+  #lb-body { flex:1; min-height:0; overflow:auto; padding:12px 14px; display:flex; flex-direction:column; gap:10px; font-size:12px; }
+  #lb-body label { display:flex; flex-direction:column; gap:3px; }
+  #lb-body label span { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:#7a8392; }
+  #lb-ports { background:#161a1f; color:#ddd; border:1px solid #2a2f36; border-radius:4px; padding:5px 8px; font:inherit; width:100%; box-sizing:border-box; }
+  #lb-ports:focus { outline:none; border-color:#3a424d; }
+  #lb-relay { background:#161a1f; color:#ddd; border:1px solid #2a2f36; border-radius:4px; padding:5px 8px; font:inherit; width:100%; box-sizing:border-box; font-size:11px; }
+  #lb-relay:focus { outline:none; border-color:#3a424d; }
+  #lb-actions { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  #lb-actions button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:4px 12px; font:inherit; cursor:pointer; }
+  #lb-actions button:hover:not(:disabled) { background:#2d343d; }
+  #lb-actions button:disabled { opacity:0.4; cursor:not-allowed; }
+  #lb-actions #lb-start { background:#14532d; border-color:#166534; color:#d1fae5; }
+  #lb-actions #lb-start:hover:not(:disabled) { background:#166534; }
+  #lb-actions #lb-stop { background:#450a0a; border-color:#7f1d1d; color:#fecaca; }
+  #lb-actions #lb-stop:hover:not(:disabled) { background:#7f1d1d; }
+  #lb-status-row { display:flex; align-items:center; gap:8px; font-size:12px; padding:6px 8px; background:#161a1f; border:1px solid #2a2f36; border-radius:4px; }
+  #lb-dot { width:9px; height:9px; border-radius:50%; background:#6b7380; flex-shrink:0; }
+  #lb-dot.ok  { background:#4ade80; }
+  #lb-dot.err { background:#f87171; }
+  #lb-code-val { color:#7ab8f5; font-weight:600; letter-spacing:.06em; font-size:13px; }
+  #lb-pool-info { color:#aab2bc; font-size:11px; margin-left:auto; }
+  #lb-log { flex:1; min-height:120px; max-height:340px; overflow:auto; background:#0b0d10; border:1px solid #2a2f36; border-radius:4px; padding:8px; font-family:'Menlo','Monaco','Consolas',monospace; font-size:11px; line-height:1.45; white-space:pre-wrap; word-break:break-all; color:#7a8392; }
+  #lb-log .lb-ok  { color:#4ade80; }
+  #lb-log .lb-err { color:#f87171; }
+  #lb-log .lb-info { color:#7ab8f5; }
   /* ── profile modal ── */
   #profile-modal { position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center; }
   #profile-modal[hidden] { display:none; }
@@ -344,6 +376,7 @@
     <button id="follow" disabled title="social — bootstraps social CLI, shows your npub, follow/sync/publish via guest CLI">social</button>
     <button id="tunnels" disabled title="manage running tunnels (ports, codes, lifecycle, edit CLI)">tunnels</button>
     <button id="claw" disabled title="claw — AI chatbot via clawlite in the guest">claw</button>
+    <button id="lot-bridge" disabled title="lot-bridge — Rust WS↔TCP bridge pool (parallel to tunnels, separate)">lot-bridge</button>
     <button id="terminal" disabled title="switch the tmux active window back to lot:shell (Ctrl-B 0) — useful after a panel switched you to lot:tunnel/social/viewer">terminal</button>
     <span id="status" class="hint">idle</span>
     <span class="stat" id="stats"></span>
@@ -459,6 +492,37 @@
     <div id="claw-input-row">
       <textarea id="claw-input" rows="1" placeholder="message… (Enter to send, Shift+Enter for newline)" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
       <button id="claw-send">send</button>
+    </div>
+  </div>
+
+  <div id="lot-bridge-panel" hidden>
+    <div id="lb-hdr">
+      <b>lot-bridge</b>
+      <span class="hint" style="margin-left:6px;font-size:11px">Rust WS↔TCP bridge pool — parallel to tunnels</span>
+      <button id="lb-refresh" title="re-read /tmp/lot-bridge.status.json from guest">refresh</button>
+      <button id="lb-close" style="margin-left:auto">close</button>
+    </div>
+    <div id="lb-body">
+      <label>
+        <span>relay base URL</span>
+        <input id="lb-relay" type="text" value="https://linuxontab-tunnel.fly.dev" spellcheck="false" autocomplete="off" />
+      </label>
+      <label>
+        <span>ports (space-separated)</span>
+        <input id="lb-ports" type="text" value="22 8080" spellcheck="false" autocomplete="off" />
+      </label>
+      <div id="lb-actions">
+        <button id="lb-start">start</button>
+        <button id="lb-stop">stop</button>
+        <button id="lb-status-btn">status</button>
+      </div>
+      <div id="lb-status-row">
+        <span id="lb-dot"></span>
+        <span id="lb-state-label">not running</span>
+        <span id="lb-code-val"></span>
+        <span id="lb-pool-info"></span>
+      </div>
+      <div id="lb-log"></div>
     </div>
   </div>
 
@@ -7213,6 +7277,172 @@
   });
 
   setInterval(() => { clawBtn.disabled = !emulator; }, 800);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // lot-bridge panel — Rust WS↔TCP bridge pool, completely separate from
+  // the existing websocat tunnel-up.sh infrastructure. Both can run at the
+  // same time; lot-bridge registers its own code and manages its own pool.
+  //
+  // The binary lives at https://linuxontab.com/local/lot-bridge (i686 musl)
+  // and is also uploaded to /usr/local/bin/lot-bridge in the guest.
+  //
+  // Guest files:
+  //   /tmp/lot-bridge.status.json  — pool status (written every 5 s by daemon)
+  //   /tmp/lot-bridge.code         — pairing code
+  //   /tmp/lot-bridge.pid          — daemon PID
+  //   /tmp/lot-bridge.log          — stdout/stderr if redirected there
+  // ─────────────────────────────────────────────────────────────────────────
+  (function () {
+    const lbBtn       = $('lot-bridge');
+    const lbPanel     = $('lot-bridge-panel');
+    const lbClose     = $('lb-close');
+    const lbStart     = $('lb-start');
+    const lbStop      = $('lb-stop');
+    const lbStatusBtn = $('lb-status-btn');
+    const lbRefresh   = $('lb-refresh');
+    const lbPorts     = $('lb-ports');
+    const lbRelay     = $('lb-relay');
+    const lbDot       = $('lb-dot');
+    const lbStateLabel = $('lb-state-label');
+    const lbCodeVal   = $('lb-code-val');
+    const lbPoolInfo  = $('lb-pool-info');
+    const lbLog       = $('lb-log');
+
+    function lbAppend(text, cls) {
+      const line = document.createElement('div');
+      if (cls) line.className = cls;
+      line.textContent = text;
+      lbLog.appendChild(line);
+      lbLog.scrollTop = lbLog.scrollHeight;
+    }
+
+    function lbSetRunning(running, code) {
+      lbDot.className = running ? 'ok' : '';
+      lbStateLabel.textContent = running ? 'running' : 'not running';
+      lbCodeVal.textContent = (running && code) ? 'code: ' + code : '';
+    }
+
+    async function lbExec(cmd) {
+      return tnExec(cmd, { timeout: 10000 });
+    }
+
+    async function lbReadStatus() {
+      const r = await lbExec(
+        'cat /tmp/lot-bridge.status.json 2>/dev/null || echo __LB_NOFILE__'
+      );
+      const out = (r.stdout || '').replace(/\r/g, '').trim();
+      if (out.includes('__LB_NOFILE__') || !out) return null;
+      try { return JSON.parse(out); } catch (_) { return null; }
+    }
+
+    async function lbRefreshUI() {
+      const st = await lbReadStatus();
+      if (!st) {
+        lbSetRunning(false, null);
+        lbPoolInfo.textContent = '';
+        return;
+      }
+      lbSetRunning(true, st.code);
+      // Pool summary: port → connected count
+      const parts = Object.entries(st.pool || {}).map(([p, s]) =>
+        `port ${p}: ${s.connected} WS`
+      );
+      lbPoolInfo.textContent = parts.join('  ') + `  uptime ${st.uptime_s}s`;
+    }
+
+    async function lbDoStart() {
+      const ports = (lbPorts.value || '22 8080').trim().split(/\s+/).filter(Boolean);
+      const relay = (lbRelay.value || 'https://linuxontab-tunnel.fly.dev').trim();
+      if (!ports.length) { lbAppend('no ports specified', 'lb-err'); return; }
+
+      lbAppend('checking for lot-bridge binary…', 'lb-info');
+      const check = await lbExec('command -v lot-bridge 2>/dev/null || echo __MISSING__');
+      const missing = (check.stdout || '').includes('__MISSING__');
+
+      if (missing) {
+        lbAppend('binary not found — downloading from linuxontab.com/local/lot-bridge…', 'lb-info');
+        const dl = await lbExec(
+          'wget -qO /usr/local/bin/lot-bridge https://linuxontab.com/local/lot-bridge && ' +
+          'chmod +x /usr/local/bin/lot-bridge && echo __DL_OK__ || echo __DL_FAIL__'
+        );
+        if ((dl.stdout || '').includes('__DL_OK__')) {
+          lbAppend('downloaded ok', 'lb-ok');
+        } else {
+          lbAppend('download failed — upload the binary manually to /usr/local/bin/lot-bridge', 'lb-err');
+          return;
+        }
+      }
+
+      // Stop any existing instance first (idempotent)
+      await lbExec('lot-bridge down 2>/dev/null; sleep 0.3; true');
+
+      const cmd =
+        `LOT_BRIDGE_RELAY='${relay}' lot-bridge up ${ports.join(' ')} ` +
+        `> /tmp/lot-bridge.log 2>&1 &`;
+      lbAppend('starting: ' + cmd, 'lb-info');
+      await lbExec(cmd);
+      // Wait a moment then read status
+      await new Promise(r => setTimeout(r, 2000));
+      await lbRefreshUI();
+      // Show code in log
+      const codeR = await lbExec('cat /tmp/lot-bridge.code 2>/dev/null || echo "(no code yet)"');
+      lbAppend('code: ' + (codeR.stdout || '').trim(), 'lb-ok');
+    }
+
+    async function lbDoStop() {
+      lbAppend('stopping lot-bridge…', 'lb-info');
+      await lbExec('lot-bridge down 2>/dev/null || true');
+      await new Promise(r => setTimeout(r, 800));
+      lbSetRunning(false, null);
+      lbPoolInfo.textContent = '';
+      lbAppend('stopped', 'lb-ok');
+    }
+
+    lbStart.onclick = async () => {
+      lbStart.disabled = true;
+      try { await lbDoStart(); }
+      catch (e) { lbAppend('error: ' + e.message, 'lb-err'); }
+      finally { lbStart.disabled = false; }
+    };
+
+    lbStop.onclick = async () => {
+      lbStop.disabled = true;
+      try { await lbDoStop(); }
+      catch (e) { lbAppend('error: ' + e.message, 'lb-err'); }
+      finally { lbStop.disabled = false; }
+    };
+
+    lbStatusBtn.onclick = async () => {
+      lbStatusBtn.disabled = true;
+      try {
+        await lbRefreshUI();
+        const r = await lbExec('cat /tmp/lot-bridge.status.json 2>/dev/null || echo "(not running)"');
+        lbAppend((r.stdout || '').trim(), 'lb-info');
+      } catch (e) { lbAppend('error: ' + e.message, 'lb-err'); }
+      finally { lbStatusBtn.disabled = false; }
+    };
+
+    lbRefresh.onclick = () => lbRefreshUI();
+
+    lbClose.onclick = () => { lbPanel.hidden = true; term.focus(); };
+
+    lbBtn.onclick = () => {
+      if (!emulator) { setStatus('boot v86 first', 'err'); return; }
+      if (!lbPanel.hidden) {
+        lbPanel.hidden = true;
+        term.focus();
+        return;
+      }
+      // mutually exclusive with other side panels
+      if (followPanel  && !followPanel.hidden)  { followPanel.hidden = true;  panelTmuxBack(); }
+      if (tunnelsPanel && !tunnelsPanel.hidden) { tunnelsPanel.hidden = true; panelTmuxBack(); }
+      if (typeof clawPanel !== 'undefined' && clawPanel && !clawPanel.hidden) { clawPanel.hidden = true; }
+      lbPanel.hidden = false;
+      lbRefreshUI();
+    };
+
+    setInterval(() => { lbBtn.disabled = !emulator; }, 800);
+  })();
 
   // ─────────────────────────────────────────────────────────────────────────
   // "terminal" toolbar button — switch the user's tmux active window back
