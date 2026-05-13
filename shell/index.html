@@ -1154,6 +1154,119 @@
     await idbPut(dstKey, v);
   }
 
+  // ---- ~/public IndexedDB persistence ----
+  // Files under /mnt/host/public/ (= ~/public) are stored in the same IDB
+  // store under keys "pub:<relative-path>" (e.g. "pub:public/index.html").
+  // This lets them survive v86 snapshot restores: fs9p (the host-side 9P
+  // virtio object) is NOT included in save_state(), so the share appears
+  // empty after every restore. We repopulate it from IDB before the guest
+  // mounts /mnt/host, so files are visible as soon as the mount completes.
+  const PUB_PREFIX = 'pub:';
+
+  // Save a file to IDB (and to live fs9p if emulator is running).
+  // path is relative to /mnt/host  (e.g. "public/index.html").
+  // content may be a string (UTF-8 encoded) or Uint8Array / ArrayBuffer.
+  async function pubFsSave(path, content) {
+    let u8;
+    if (typeof content === 'string') {
+      u8 = new TextEncoder().encode(content);
+    } else if (content instanceof Uint8Array) {
+      u8 = content;
+    } else if (content instanceof ArrayBuffer) {
+      u8 = new Uint8Array(content);
+    } else {
+      u8 = new Uint8Array(content);
+    }
+    await idbPut(PUB_PREFIX + path, u8);
+    // Write to live fs9p immediately if emulator exists.
+    if (typeof emulator !== 'undefined' && emulator && emulator.fs9p) {
+      try { await emulator.create_file('/' + path, u8); } catch (e) {
+        console.warn('[pubFs] live write failed for', path, e);
+      }
+    }
+    console.log('[pubFs] saved', path, '(' + u8.length + ' bytes)');
+  }
+
+  // Delete a persisted file from IDB (does not remove from live fs9p).
+  async function pubFsDel(path) {
+    await idbDel(PUB_PREFIX + path);
+  }
+
+  // Restore all pub:* files from IDB into fs9p.
+  // Called right after emulator is created so files are present before the
+  // guest mounts /mnt/host. Safe to call multiple times.
+  async function pubFsRestoreAll() {
+    if (typeof emulator === 'undefined' || !emulator || !emulator.fs9p) return 0;
+    const keys = await idbGetAllKeys();
+    const pubKeys = keys.filter(k => k.startsWith(PUB_PREFIX));
+    if (!pubKeys.length) { console.log('[pubFs] no persisted files in IDB'); return 0; }
+    let ok = 0, fail = 0;
+    for (const key of pubKeys) {
+      const path = key.slice(PUB_PREFIX.length);
+      const u8 = await idbGet(key);
+      if (!u8) continue;
+      try {
+        await emulator.create_file('/' + path, u8);
+        ok++;
+      } catch (e) {
+        console.warn('[pubFs] restore failed for', path, e);
+        fail++;
+      }
+    }
+    console.log('[pubFs] restored', ok, 'files from IDB' + (fail ? ' (' + fail + ' failed)' : ''));
+    return ok;
+  }
+
+  // Read all HTML/text files under ~/public from the running guest via
+  // serialVfs and save them to IDB. Call once from the browser console
+  // after deploying files, or whenever you want to checkpoint ~/public.
+  async function pubFsSnapshotNow() {
+    if (!serialVfs || typeof serialVfs.exec !== 'function') {
+      throw new Error('serialVfs not ready');
+    }
+    // Find all regular files under ~/public
+    const findResult = await serialVfs.exec(
+      'find /mnt/host/public -type f 2>/dev/null | sort',
+      { timeout: 10000 }
+    );
+    const files = (findResult.stdout || '').split('\n').map(s => s.trim()).filter(Boolean);
+    if (!files.length) { console.warn('[pubFs] no files found under /mnt/host/public'); return 0; }
+    let saved = 0;
+    for (const guestPath of files) {
+      // guestPath is like /mnt/host/public/index.html
+      // IDB key: pub:public/index.html  (relative to /mnt/host/)
+      const relPath = guestPath.startsWith('/mnt/host/') ? guestPath.slice('/mnt/host/'.length) : guestPath;
+      try {
+        const r = await serialVfs.exec('base64 < ' + JSON.stringify(guestPath), { timeout: 15000 });
+        const b64 = (r.stdout || '').trim();
+        if (!b64) { console.warn('[pubFs] empty read for', guestPath); continue; }
+        // Decode base64 → Uint8Array
+        const bin = atob(b64.replace(/\s+/g, ''));
+        const u8 = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+        await idbPut(PUB_PREFIX + relPath, u8);
+        saved++;
+        console.log('[pubFs] snapshotted', relPath, '(' + u8.length + ' bytes)');
+      } catch (e) {
+        console.warn('[pubFs] snapshot failed for', guestPath, e);
+      }
+    }
+    console.log('[pubFs] snapshot done:', saved, 'files saved to IDB');
+    return saved;
+  }
+
+  // List all pub:* IDB keys.
+  async function pubFsList() {
+    const keys = await idbGetAllKeys();
+    return keys.filter(k => k.startsWith(PUB_PREFIX)).map(k => k.slice(PUB_PREFIX.length));
+  }
+
+  window.pubFsSave       = pubFsSave;
+  window.pubFsDel        = pubFsDel;
+  window.pubFsRestoreAll = pubFsRestoreAll;
+  window.pubFsSnapshotNow = pubFsSnapshotNow;
+  window.pubFsList       = pubFsList;
+
   // ---- Snapshot dropdown state ----
   // Selection model: each <option> value is a snapshot IDB key
   // (`snap:<iso>:v2:<name>`) or a fresh-boot pseudo-key (`fresh:<iso>`).
@@ -2526,6 +2639,11 @@
     window.emulator = emulator;
     currentMemMB = memMB;
     serialVfs._attach(emulator);
+
+    // Restore persisted ~/public files into fs9p before the guest boots.
+    // fs9p is populated immediately after V86() constructs it, so the
+    // files will be visible as soon as the guest runs `mount -t 9p ...`.
+    pubFsRestoreAll().catch(e => console.warn('[pubFs] restore error', e));
 
     // ISOLINUX `boot:` autopilot. On fresh ISO boot v86 occasionally
     // lands at the ISOLINUX prompt without auto-booting (the syslinux
