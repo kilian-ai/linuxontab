@@ -7355,38 +7355,57 @@
       const relay = (lbRelay.value || 'https://linuxontab-tunnel.fly.dev').trim();
       if (!ports.length) { lbAppend('no ports specified', 'lb-err'); return; }
 
+      // Check if binary exists AND is executable (runs without permission error)
       lbAppend('checking for lot-bridge binary…', 'lb-info');
-      const check = await lbExec('command -v lot-bridge 2>/dev/null || echo __MISSING__');
-      const missing = (check.stdout || '').includes('__MISSING__');
+      const verR = await lbExec('/usr/local/bin/lot-bridge --version 2>&1 || echo __LB_NOGO__');
+      const needDownload = (verR.stdout || '').includes('__LB_NOGO__') ||
+                           (verR.stdout || '').includes('Permission denied') ||
+                           (verR.stdout || '').includes('not found');
 
-      if (missing) {
-        lbAppend('binary not found — downloading from linuxontab.com/local/lot-bridge…', 'lb-info');
+      if (needDownload) {
+        lbAppend('downloading lot-bridge from linuxontab.com…', 'lb-info');
         const dl = await lbExec(
-          'wget -qO /usr/local/bin/lot-bridge https://linuxontab.com/local/lot-bridge && ' +
-          'chmod +x /usr/local/bin/lot-bridge && echo __DL_OK__ || echo __DL_FAIL__'
+          'rm -f /usr/local/bin/lot-bridge; ' +
+          'wget -qO /usr/local/bin/lot-bridge https://linuxontab.com/local/lot-bridge; ' +
+          'chmod +x /usr/local/bin/lot-bridge; ' +
+          '/usr/local/bin/lot-bridge --version 2>&1 || echo __DL_FAIL__'
         );
-        if ((dl.stdout || '').includes('__DL_OK__')) {
-          lbAppend('downloaded ok', 'lb-ok');
-        } else {
-          lbAppend('download failed — upload the binary manually to /usr/local/bin/lot-bridge', 'lb-err');
+        if ((dl.stdout || '').includes('__DL_FAIL__') || (dl.stdout || '').trim() === '') {
+          lbAppend('download or exec failed: ' + (dl.stdout || '(no output)'), 'lb-err');
+          lbAppend('check DNS / network, then try again', 'lb-err');
           return;
         }
+        lbAppend('binary ok: ' + (dl.stdout || '').trim(), 'lb-ok');
       }
 
       // Stop any existing instance first (idempotent)
       await lbExec('lot-bridge down 2>/dev/null; sleep 0.3; true');
+      await lbExec('rm -f /tmp/lot-bridge.code /tmp/lot-bridge.status.json');
 
       const cmd =
         `LOT_BRIDGE_RELAY='${relay}' lot-bridge up ${ports.join(' ')} ` +
         `> /tmp/lot-bridge.log 2>&1 &`;
       lbAppend('starting: ' + cmd, 'lb-info');
       await lbExec(cmd);
-      // Wait a moment then read status
-      await new Promise(r => setTimeout(r, 2000));
+
+      // Poll for code file up to 12s
+      let code = '';
+      for (let i = 0; i < 12; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        const cr = await lbExec('cat /tmp/lot-bridge.code 2>/dev/null | tr -d "\\n"');
+        code = (cr.stdout || '').trim();
+        if (code.length >= 3) break;
+      }
+
       await lbRefreshUI();
-      // Show code in log
-      const codeR = await lbExec('cat /tmp/lot-bridge.code 2>/dev/null || echo "(no code yet)"');
-      lbAppend('code: ' + (codeR.stdout || '').trim(), 'lb-ok');
+
+      if (code.length >= 3) {
+        lbAppend('code: ' + code, 'lb-ok');
+      } else {
+        lbAppend('lot-bridge did not produce a code — checking log…', 'lb-err');
+        const logR = await lbExec('tail -30 /tmp/lot-bridge.log 2>/dev/null || echo "(no log)"');
+        lbAppend((logR.stdout || '(no log)').trim(), 'lb-err');
+      }
     }
 
     async function lbDoStop() {
