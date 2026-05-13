@@ -65,10 +65,11 @@ cmd_up() {
             I=$((I + 1))
             ( trap '' HUP
               while :; do
-                  websocat --binary -t "tcp:127.0.0.1:${PORT}" \
+                  websocat --binary --ping-interval 25 \
                       "${WS}/port/guest?code=${CODE}&port=${PORT}" \
+                      "tcp:127.0.0.1:${PORT}" \
                       >> /tmp/lot-bridge.log 2>&1
-                  sleep 0.5 2>/dev/null || sleep 1
+                  sleep 0.1 2>/dev/null || sleep 1
               done ) &
             track_pid $!
         done
