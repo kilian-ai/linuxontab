@@ -1521,8 +1521,11 @@
         if (!GH_REPO_RE.test(normalized)) { console.warn('[gh] invalid repo name, skipping', repo); continue; }
         // Do not encode the repository path separators — GitHub API expects owner/repo
         const apiUrl = 'https://api.github.com/repos/' + normalized + '/releases';
-        const proxy = 'https://relay.linuxontab.com/cors?url=' + encodeURIComponent(apiUrl);
-        const r = await fetch(proxy, { credentials: 'omit' });
+        const proxy = 'https://relay.linuxontab.com/secret-proxy/' + encodeURIComponent(apiUrl);
+        const r = await fetch(proxy, {
+          credentials: 'omit',
+          headers: { 'Authorization': 'Bearer LOT_SECRET_GITHUB', 'Accept': 'application/vnd.github+json' },
+        });
         if (!r.ok) { console.warn('[gh] releases fetch failed', normalized, r.status); continue; }
         const rels = await r.json();
         for (const rel of rels || []) {
