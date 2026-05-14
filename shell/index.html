@@ -1601,12 +1601,13 @@
       if (!GH_REPO_RE.test(repo)) {
         throw new Error('invalid repo: use owner/repo (or a github.com URL)');
       }
-      const tag = (await uiPrompt('Release tag (e.g. v1.0-snap)', 'v86-snap-' + Date.now().toString(36))) || '';
-      if (!tag) { setStatus('upload cancelled'); return; }
-      // Default filename: <snapshot-name>-<iso-base>.bin.gz, e.g. "default-alpine.bin.gz"
       const isoBase = (sel && sel.iso ? sel.iso.replace(/\.iso$/i, '') : 'v86');
       const snapBase = (sel && sel.name ? sel.name : 'snap');
-      const defaultFileName = snapBase + '-' + isoBase + '.bin.gz';
+      const defaultTag = snapBase + '-' + isoBase;
+      const tag = (await uiPrompt('Release tag (e.g. v1.0-snap)', defaultTag)) || '';
+      if (!tag) { setStatus('upload cancelled'); return; }
+      // Default filename derives from the tag so they stay in sync.
+      const defaultFileName = tag + '.bin.gz';
       const fileName = (await uiPrompt('Asset filename (.bin.gz will be gzip-compressed)', defaultFileName)) || defaultFileName;
 
       // ── Step 2: verify credentials & repo access before loading bytes ──
