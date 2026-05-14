@@ -3099,9 +3099,21 @@
         // Fly WISP dropping UDP/53), tmux, libgcc (needed by websocat .so).
         // mkdir /usr/lib/ssh first — Alpine 3.21 openssh-server.apk fails to
         // create sshd-session with "I/O error" if the parent dir is absent.
+        // NOTE: "I/O error" on apk package files is a WISP transport issue —
+        // the Fly.io WS gets recycled or the NE2K receive buffer overflows
+        // mid-download for large packages (libstdc++, openssh-server, binutils).
+        // The packages themselves are fine; retrying usually succeeds.
+        // We use `| tail -5` would hide errors and mask the apk exit code
+        // (pipe returns tail's exit 0). Instead, show progress + errors and
+        // retry each failed package individually.
         'echo "[setup] apk add curl jq openssh-server unbound tmux libgcc…"\n' +
         'mkdir -p /usr/lib/ssh\n' +
-        'apk add --no-cache curl jq openssh-server unbound tmux libgcc 2>&1 | tail -5\n' +
+        'apk add --no-cache curl jq openssh-server unbound tmux libgcc 2>&1 | grep -E "^\\(|ERROR|error" | head -40\n' +
+        // Retry any packages that failed (WISP drop causes I/O error mid-download;
+        // a fresh connection attempt usually succeeds).
+        'for _pkg in openssh-server unbound libgcc; do\n' +
+        '  apk info "$_pkg" >/dev/null 2>&1 || { echo "[setup] retry: $_pkg"; mkdir -p /usr/lib/ssh; apk add --no-cache "$_pkg" 2>&1 | grep -E "^\\(|ERROR|error" | head -10; }\n' +
+        'done\n' +
         // websocat lives in community; download its .apk directly via HTTP
         // (avoids the 1.8 MB community APKINDEX that times out through WISP).
         // libgcc installed above satisfies websocat\'s so:libgcc_s.so.1 dep.
