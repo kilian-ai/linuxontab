@@ -1608,9 +1608,17 @@
       }
       const isoBase = (sel && sel.iso ? sel.iso.replace(/\.iso$/i, '') : 'v86');
       const snapBase = (sel && sel.name ? sel.name : 'snap');
-      const defaultTag = snapBase + '-' + isoBase;
-      const tag = (await uiPrompt('Release tag (e.g. v1.0-snap)', defaultTag)) || '';
-      if (!tag) { setStatus('upload cancelled'); return; }
+      // GitHub tag names must not contain spaces, ~, ^, :, ?, *, [, \, or ..
+      // Sanitize: replace any run of invalid chars with a hyphen, strip leading/trailing hyphens.
+      const sanitizeTag = (s) => s
+        .replace(/[^A-Za-z0-9._\-\/]/g, '-')   // replace invalid chars with -
+        .replace(/-{2,}/g, '-')                  // collapse multiple hyphens
+        .replace(/^[-.]|[-.]$/g, '');            // strip leading/trailing - or .
+      const defaultTag = sanitizeTag(snapBase + '-' + isoBase);
+      const rawTag = (await uiPrompt('Release tag (e.g. v1.0-snap)', defaultTag)) || '';
+      if (!rawTag) { setStatus('upload cancelled'); return; }
+      const tag = sanitizeTag(rawTag);
+      if (!tag) { setStatus('upload cancelled — tag became empty after sanitization'); return; }
       // Default filename derives from the tag so they stay in sync.
       const defaultFileName = tag + '.bin.gz';
       const fileName = (await uiPrompt('Asset filename (.bin.gz will be gzip-compressed)', defaultFileName)) || defaultFileName;
