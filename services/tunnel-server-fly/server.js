@@ -27,6 +27,14 @@ import { WebSocketServer } from 'ws';
 import { URL } from 'node:url';
 
 const PORT = parseInt(process.env.PORT || '8787', 10);
+// RAW_PORT is a second listener exposed via [[services]] TCP proxy so guest
+// websocat bridges bypass Fly's http_service write-timeout (~30s) during
+// large uploads.  The CRITICAL detail: for same-org Fly connections (WISP
+// server on linuxontab-net → linuxontab-tunnel), Fly routes via 6PN to the
+// machine's IP at the EXTERNAL port number (not internal_port).  So RAW_PORT
+// MUST equal the public port in fly.toml [[services.ports]] port=4344.  Using
+// internal_port=8788≠4344 caused Node not to listen on the reached port.
+const RAW_PORT = parseInt(process.env.RAW_PORT || '4344', 10);
 const TUNNEL_SECRET = process.env.TUNNEL_SECRET || '';
 const TUNNEL_PUBLIC_URL = process.env.TUNNEL_PUBLIC_URL || ''; // e.g. wss://tunnel.linuxontab.com
 
@@ -882,7 +890,37 @@ function tcpAssignSlot(code, internalPort, preferPort, ttlMs) {
 }
 
 function bridgeTcpToWs(sock, ws, pairId) {
+  // ── Time-based upload throttle ────────────────────────────────────────
+  // The Fly HTTP proxy (port 443, wss://) stalls when upload data accumulates
+  // faster than v86/websocat drains it (~200 KB/s).  The WISP output queue
+  // (cap 2048 frames × 16 KB = 32 MB) absorbs data silently — ws.send()
+  // returns immediately, giving Node zero backpressure signal.  Ping/pong
+  // end-to-end confirmation doesn't work because the ping gets stuck in the
+  // same deep queue and the pong never emerges within 30 s.
+  //
+  // Fix: after BURST_BYTES are sent, pause the Mac TCP sock for a scaled
+  // PAUSE_MS so the pipeline drains before the next burst.
+  // scaledPause = BURST_MS × (burstPending / BURST_BYTES) keeps throughput
+  // constant (= BURST_BYTES/BURST_MS) regardless of SSH chunk size.
+  //
+  //   BURST_BYTES=32 KB, BURST_MS=500 ms → ~64 KB/s (below v86's ~100 KB/s drain rate)
+  //
+  // How we know drain rate ≈ 100 KB/s: at 128 KB/s we saw close at t=39s
+  // (t_fill=9s, 30s Fly proxy write timeout, buffer≈256KB: 256/(128-100)=9s).
+  // At 64 KB/s: t_fill = 256/(64-100) = negative → buffer never fills. ✓
+  const BURST_BYTES = 32 * 1024;
+  const BURST_MS    = 500;
+
+  let _burstPending = 0;
+  let _burstTimer   = null;
+  // ────────────────────────────────────────────────────────────────────────
+
   // tcp → ws  (client bytes to guest)
+  let _totalSent = 0;
+  let _statsTimer = setInterval(() => {
+    if (closed) { clearInterval(_statsTimer); return; }
+    console.log(`[tcp-bridge ${pairId}] stats: totalSent=${_totalSent} wsBuffered=${wsBuffered(ws)} sockPaused=${sock.isPaused?.()} burstTimer=${_burstTimer != null}`);
+  }, 5000);
   sock.on('data', (chunk) => {
     if (ws.readyState !== 1) return;
     try { ws.send(chunk, { binary: true }); } catch (e) {
@@ -890,24 +928,33 @@ function bridgeTcpToWs(sock, ws, pairId) {
       try { sock.destroy(); } catch (_) {}
       return;
     }
-    // Do NOT pause sock here. v86 receives at ~200 KB/s; if we pause sock
-    // while the 4 MB OS kernel TCP send-buffer drains, the Mac→Fly TCP
-    // connection goes idle for ~20 s and Fly's proxy drops it.  Instead,
-    // let Node.js buffer upload bytes in heap (SSH channel-window limits
-    // what the Mac sends anyway — typically ≤2 MB at a time).  Only pause
-    // as a last-resort OOM guard for gigabyte-scale transfers.
+    _totalSent += chunk.length;
+    // Time-based upload throttle: accumulate burstPending and pause for a
+    // scaled interval so effective throughput ≈ BURST_BYTES/BURST_MS.
+    _burstPending += chunk.length;
+    if (_burstPending >= BURST_BYTES && !_burstTimer && !sock.__bpPaused) {
+      try { sock.pause(); } catch (_) {}
+      const scaledPause = Math.round(BURST_MS * _burstPending / BURST_BYTES);
+      console.log(`[tcp-bridge ${pairId}] burst-pause: sent=${_burstPending} wsBuffered=${wsBuffered(ws)} pause=${scaledPause}ms`);
+      _burstTimer = setTimeout(() => {
+        _burstTimer = null;
+        _burstPending = 0;
+        if (!sock.__bpPaused) try { sock.resume(); } catch (_) {}
+      }, scaledPause);
+    }
+    // OOM guard: absolute last-resort for multi-GB transfers.
     if (wsBuffered(ws) > 16 * 1024 * 1024 && !sock.__bpPaused) {
       sock.__bpPaused = true;
       try { sock.pause(); } catch (_) {}
       const tick = setInterval(() => {
         if (sock.destroyed || ws.readyState !== 1) {
           clearInterval(tick); sock.__bpPaused = false;
-          try { sock.resume(); } catch (_) {}
+          if (!_burstTimer) { try { sock.resume(); } catch (_) {} }
           return;
         }
         if (wsBuffered(ws) <= 8 * 1024 * 1024) {
           clearInterval(tick); sock.__bpPaused = false;
-          try { sock.resume(); } catch (_) {}
+          if (!_burstTimer) { try { sock.resume(); } catch (_) {} }
         }
       }, 50);
     }
@@ -940,6 +987,8 @@ function bridgeTcpToWs(sock, ws, pairId) {
   const closePair = (origin, info) => {
     if (closed) return;
     closed = true;
+    clearTimeout(_burstTimer);
+    clearInterval(_statsTimer);
     console.log(`[tcp-bridge ${pairId}] ${origin} closed${info ? ': ' + info : ''}`);
     try { sock.destroy(); } catch (_) {}
     // Always close the guest WS when either side closes. This ensures the nc
@@ -1270,4 +1319,13 @@ server.listen(PORT, () => {
   console.log(`[tunnel-server] listening on :${PORT}`);
   if (TUNNEL_PUBLIC_URL) console.log(`[tunnel-server] public URL: ${TUNNEL_PUBLIC_URL}`);
   startTcpPool();
+});
+
+// Second server on RAW_PORT: same handler, but exposed via Fly [[services]] TCP
+// proxy (not http_service) so there is no Fly HTTP-proxy write timeout for
+// guest WebSocket bridges during large uploads.
+const serverRaw = http.createServer((req, res) => server.emit('request', req, res));
+serverRaw.on('upgrade', (req, socket, head) => server.emit('upgrade', req, socket, head));
+serverRaw.listen(RAW_PORT, () => {
+  console.log(`[tunnel-server] raw WS listener on :${RAW_PORT}`);
 });

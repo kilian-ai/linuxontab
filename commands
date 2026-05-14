@@ -113,6 +113,7 @@ apk add --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main <package>
 
 #INIT
 printf 'lot-tb-61216!\nlot-tb-61216!\n' | passwd root
+printf 'root\nroot\n' | passwd root
 apk add websocat curl jq openssh-server unbound
 # 1GB zram swap — needed for rust/llvm installs (file-backed swap fails on Alpine tmpfs)
 modprobe zram num_devices=1 2>/dev/null || true

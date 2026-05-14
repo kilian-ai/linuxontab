@@ -15,6 +15,10 @@ primary_region = "sjc"
   TCP_PUBLIC_HOST = "linuxontab-tunnel.fly.dev"
   # Public wss URL announced to clients — set to the custom domain once mapped:
   # TUNNEL_PUBLIC_URL = "wss://tunnel.linuxontab.com"
+  # Second listener that [[services]] TCP proxy hits directly (no http_service proxy).
+  # MUST match the [[services.ports]] port=4344 below so Fly's 6PN routing
+  # from linuxontab-net reaches the correct Node listener (ext port == machine port).
+  RAW_PORT = "4344"
 
 [http_service]
   internal_port = 8787
@@ -185,15 +189,17 @@ primary_region = "sjc"
   [[services.ports]]
     port = 6669
 
-# Raw TCP proxy to the WebSocket server (port 8787). websocat uses
-# ws://...:4343/port/guest instead of wss://:443 to bypass Fly's HTTP
-# proxy write-timeout (~30s), which kills the guest WS when v86 is slow
-# to drain a large upload buffer.
+# Raw TCP proxy to the second Node WS listener (port 4344, not 8787).
+# websocat uses ws://...:4344/port/guest to bypass Fly's HTTP-proxy
+# write-timeout (~30s) that fires when v86 drains uploads slowly.
+# internal_port=4344 MUST equal the public port=4344: for same-org Fly apps
+# (linuxontab-net WISP server), Fly routes via 6PN to the machine's IP at
+# the external port number, so ext-port == int-port is required for it to work.
 [[services]]
   protocol = "tcp"
-  internal_port = 8787
+  internal_port = 4344
   [[services.ports]]
-    port = 4343
+    port = 4344
 
 [[vm]]
   size = "shared-cpu-1x"
