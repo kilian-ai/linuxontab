@@ -1726,7 +1726,10 @@
       const url = asset.browser_download_url || asset.url || null;
       if (!url) throw new Error('upload succeeded but no browser_download_url returned');
       setStatus('uploaded snapshot to GitHub: ' + url, 'ok');
-      // Add to GH repos and refresh list (so the new asset appears in the dropdown)
+      // Persist repo so it appears in the dropdown on every future load
+      const repoList = getGhRepos();
+      if (!repoList.includes(repo)) { repoList.unshift(repo); saveGhRepos(repoList); }
+      // Refresh dropdown and select the newly uploaded asset
       await populateSnapSelect('hosted:' + (sel ? sel.iso : DEFAULT_ISO) + ':' + encodeURIComponent(url));
     } catch (e) {
       setStatus('upload failed: ' + (e && e.message || e), 'err');
