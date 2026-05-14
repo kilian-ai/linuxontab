@@ -26,6 +26,8 @@
   aside li a.active { background: #1f6feb22; color: #4ade80; border-left: 2px solid #4ade80; padding-left: 12px; }
   aside li a.dir::before { content: "▸ "; color: #8b949e; }
   aside li a.up::before { content: "↑ "; color: #8b949e; }
+  aside li .run-btn { margin-left: 6px; background: none; border: 1px solid #2a4a2a; color: #4ade80; border-radius: 3px; padding: 1px 5px; font-size: 11px; cursor: pointer; line-height: 1.4; vertical-align: middle; }
+  aside li .run-btn:hover { background: #1a3a1a; border-color: #4ade80; }
   section { position: relative; background: #0b0d10; }
   section iframe { width: 100%; height: 100%; border: 0; background: #fff; }
   section .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: #8b949e; padding: 24px; text-align: center; }
@@ -139,6 +141,7 @@ async function loadDir(dir) {
             name: e.name,
             isDir: e.type === "dir",
             href: e.name + (e.type === "dir" ? "/" : ""),
+            executable: !!e.x,
           }));
           entries.sort((a, b) => (b.isDir - a.isDir) || a.name.localeCompare(b.name));
           cgiOk = true;
@@ -230,6 +233,29 @@ async function loadDir(dir) {
       }
     };
     li.appendChild(a);
+    if (!ent.isDir && ent.executable) {
+      const runBtn = document.createElement("button");
+      runBtn.className = "run-btn";
+      runBtn.textContent = "▶ run";
+      runBtn.title = "Run in shell: ~/public" + fullPath;
+      runBtn.onclick = (ev) => {
+        ev.stopPropagation();
+        const dir = fullPath.replace(/\/[^\/]+$/, "") || "/";
+        const fname = fullPath.split("/").pop();
+        const guestDir = "~/public" + (dir === "/" ? "" : dir);
+        const cmd = "cd " + guestDir + " && ./" + fname;
+        try {
+          const bc = new BroadcastChannel("linuxontab-shell");
+          bc.postMessage({ type: "lot-run", cmd });
+          bc.close();
+          runBtn.textContent = "✓ sent";
+          setTimeout(() => { runBtn.textContent = "▶ run"; }, 2000);
+        } catch (e) {
+          alert("BroadcastChannel failed: " + e.message);
+        }
+      };
+      li.appendChild(runBtn);
+    }
     listEl.appendChild(li);
   }
   setStatus("ok (" + entries.length + " items)", "ok");

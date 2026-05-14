@@ -2346,6 +2346,22 @@
     return true;
   }
 
+  // ── Viewer → Shell run bridge (BroadcastChannel) ─────────────────────────
+  // viewer/index.html broadcasts {type:'lot-run', cmd:'...'} on this channel.
+  // We forward the command to the guest terminal via dispatchGuestCommand.
+  (function () {
+    let bc;
+    try { bc = new BroadcastChannel('linuxontab-shell'); } catch (_) { return; }
+    bc.onmessage = (ev) => {
+      const msg = ev.data || {};
+      if (msg.type === 'lot-run' && typeof msg.cmd === 'string') {
+        const cmd = msg.cmd.trim();
+        if (!cmd) return;
+        dispatchGuestCommand(cmd, 'viewer: ' + cmd);
+      }
+    };
+  })();
+
   // ── DNS interceptor (pure-JS UDP/53 → DoH via relay) ──────────────────────
   // v86's built-in DoH reply injection is broken for us. We hook the emulator
   // bus before WISP sees the packet, answer DNS ourselves via /dns-query on

@@ -568,14 +568,16 @@ for f in "$full"/.[!.]* "$full"/..?* "$full"/*; do
     if [ -d "$f" ]; then
         t=dir
         sz=0
+        xb=0
     else
         t=file
         sz=$(wc -c < "$f" 2>/dev/null | tr -d ' ' || echo 0)
+        [ -x "$f" ] && xb=1 || xb=0
     fi
     nj=$(printf '%s' "$name" | sed 's/\\/\\\\/g; s/"/\\"/g')
     [ $first -eq 1 ] || printf ','
     first=0
-    printf '{"name":"%s","type":"%s","size":%s}' "$nj" "$t" "$sz"
+    printf '{"name":"%s","type":"%s","size":%s,"x":%s}' "$nj" "$t" "$sz" "$xb"
 done
 printf ']}'
 CGI
