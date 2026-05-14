@@ -7548,34 +7548,31 @@
       const relay = (lbRelay.value || 'https://linuxontab-tunnel.fly.dev').trim();
       if (!ports.length) { lbAppend('no ports specified', 'lb-err'); return; }
 
-      // Check if binary exists AND is executable (runs without permission error)
-      lbAppend('checking for lot-bridge binary…', 'lb-info');
-      const verR = await lbExec('/usr/local/bin/lot-bridge --version 2>&1 || echo __LB_NOGO__');
-      const needDownload = (verR.stdout || '').includes('__LB_NOGO__') ||
-                           (verR.stdout || '').includes('Permission denied') ||
-                           (verR.stdout || '').includes('not found');
-
-      if (needDownload) {
-        lbAppend('downloading lot-bridge from linuxontab.com…', 'lb-info');
-        const dl = await lbExec(
-          'rm -f /usr/local/bin/lot-bridge; ' +
-          'wget -qO /usr/local/bin/lot-bridge https://raw.githubusercontent.com/kilian-ai/linuxontab/main/local/lot-bridge ' +
-          '|| wget -qO /usr/local/bin/lot-bridge https://linuxontab.com/local/lot-bridge; ' +
-          'chmod +x /usr/local/bin/lot-bridge; ' +
-          '/usr/local/bin/lot-bridge --version 2>&1 || echo __DL_FAIL__',
-          { timeout: 30000 }
-        );
-        if ((dl.stdout || '').includes('__DL_FAIL__') || (dl.stdout || '').trim() === '') {
-          lbAppend('download or exec failed: ' + (dl.stdout || '(no output)'), 'lb-err');
-          lbAppend('check DNS / network, then try again', 'lb-err');
-          return;
-        }
-        lbAppend('binary ok: ' + (dl.stdout || '').trim(), 'lb-ok');
+      // Always re-download so snapshot restores never get a stale version
+      // (the old ws://:4344 bug was baked into saved snapshots; a fresh
+      // download guarantees the fixed wss:// relay_ws function).
+      lbAppend('downloading lot-bridge from linuxontab.com…', 'lb-info');
+      const dl = await lbExec(
+        'rm -f /usr/local/bin/lot-bridge; ' +
+        'wget -qO /usr/local/bin/lot-bridge https://raw.githubusercontent.com/kilian-ai/linuxontab/main/local/lot-bridge ' +
+        '|| wget -qO /usr/local/bin/lot-bridge https://linuxontab.com/local/lot-bridge; ' +
+        'chmod +x /usr/local/bin/lot-bridge; ' +
+        '/usr/local/bin/lot-bridge --version 2>&1 || echo __DL_FAIL__',
+        { timeout: 30000 }
+      );
+      if ((dl.stdout || '').includes('__DL_FAIL__') || (dl.stdout || '').trim() === '') {
+        lbAppend('download or exec failed: ' + (dl.stdout || '(no output)'), 'lb-err');
+        lbAppend('check DNS / network, then try again', 'lb-err');
+        return;
       }
+      lbAppend('binary ok: ' + (dl.stdout || '').trim(), 'lb-ok');
 
-      // Stop any existing instance first (idempotent)
+      // Stop any existing instance first (idempotent).
+      // Also kill stale websocat processes that survived a snapshot restore —
+      // lot-bridge down only kills the PID-file process, not orphaned websocat.
       await lbExec('lot-bridge down 2>/dev/null; sleep 0.3; true');
-      await lbExec('rm -f /tmp/lot-bridge.code /tmp/lot-bridge.status.json');
+      await lbExec('killall -q websocat 2>/dev/null; killall -q lot-bridge 2>/dev/null; sleep 0.3; true');
+      await lbExec('rm -f /tmp/lot-bridge.code /tmp/lot-bridge.status.json /tmp/lot-bridge.pid');
 
       const cmd =
         `LOT_BRIDGE_RELAY='${relay}' lot-bridge up ${ports.join(' ')} ` +
@@ -7606,6 +7603,7 @@
     async function lbDoStop() {
       lbAppend('stopping lot-bridge…', 'lb-info');
       await lbExec('lot-bridge down 2>/dev/null || true');
+      await lbExec('killall -q websocat 2>/dev/null; killall -q lot-bridge 2>/dev/null; true');
       await new Promise(r => setTimeout(r, 800));
       lbSetRunning(false, null);
       lbPoolInfo.textContent = '';
