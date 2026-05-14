@@ -7473,24 +7473,74 @@
       }
       lbSetRunning(true, st.code);
 
-      // Construct WS base from relay URL
+      // Fetch relay-confirmed idle bridge counts directly from the browser
+      // (guest_queue_depth = # idle WS bridges per port as seen by the server).
+      const relaySt = await tnFetchRelayStatus(st.code).catch(() => null);
+      const gqd = (relaySt && relaySt.guest_queue_depth) ? relaySt.guest_queue_depth : null;
+
       const wsBase = (st.relay || '')
         .replace(/^https:\/\//, 'wss://')
         .replace(/^http:\/\//, 'ws://')
         .replace(/\/$/, '');
 
-      // Per-port bridge URLs + direct TCP expose addresses
       const ports = Array.isArray(st.ports) ? st.ports : [];
       const expose = (typeof st.expose === 'object' && st.expose) ? st.expose : {};
-      const urlLines = ports.map(p => {
-        const wsUrl = `${wsBase}/port/client?code=${st.code}&port=${p}`;
+
+      // Relay-confirmed total idle bridges (fallback to local live ps count)
+      const totalLive = gqd
+        ? Object.values(gqd).reduce((s, n) => s + n, 0)
+        : (st.bridges ?? 0);
+      const bridgeColor = totalLive > 0 ? '#7ec87a' : '#e07a7a';
+
+      // Index → text map for onclick copy (avoids HTML-quoting shell commands)
+      const copyItems = [];
+      const ci = (s) => { copyItems.push(s); return copyItems.length - 1; };
+
+      const portRows = ports.map(p => {
         const exp = expose[String(p)];
-        const direct = exp ? `<span class="lb-url-text" style="color:#7ec87a"> ${exp.host}:${exp.publicPort}</span>` : '';
-        return `<div class="lb-bridge-url"><span class="lb-port-tag">:${p}</span>${direct}<span class="lb-url-text" style="opacity:0.5"> ${wsUrl}</span></div>`;
+        const wsUrl = `${wsBase}/port/client?code=${st.code}&port=${p}`;
+        const ready = gqd ? (gqd[String(p)] ?? 0) : null;
+        const readyBadge = ready !== null
+          ? `<span style="color:${ready > 0 ? '#7ec87a' : '#e07a7a'};font-size:10px">(${ready} ready)</span>`
+          : '';
+        if (exp) {
+          const addr = `${exp.host}:${exp.publicPort}`;
+          const idx = ci(addr);
+          return `<div class="lb-bridge-url">` +
+            `<span class="lb-port-tag">:${p}</span>` +
+            `<span class="lb-url-text" style="color:#7ec87a;cursor:pointer" ` +
+              `title="Click to copy — use this address in FileZilla / ssh" onclick="_lbCopy(${idx})">` +
+              `${addr}` +
+            `</span>` +
+            `${readyBadge}` +
+            `<span class="lb-url-text" style="opacity:0.4;font-size:10px">← direct TCP (click to copy)</span>` +
+          `</div>`;
+        }
+        return `<div class="lb-bridge-url">` +
+          `<span class="lb-port-tag">:${p}</span>` +
+          `<span class="lb-url-text" style="opacity:0.5">${wsUrl}</span>` +
+          `${readyBadge}` +
+        `</div>`;
       });
 
-      const summary = `bridges: ${st.bridges ?? '?'}  pool: ${st.pool ?? '?'}  uptime: ${st.uptime ?? 0}s`;
-      lbPoolInfo.innerHTML = `<div class="lb-summary">${summary}</div>` + urlLines.join('');
+      const macCmd = `sh <(curl -sS https://linuxontab.com/local/lot-bridge) listen ${st.code}`;
+      const macIdx = ci(macCmd);
+      const macRow = `<div class="lb-bridge-url" style="margin-top:6px">` +
+        `<span class="lb-url-text" style="opacity:0.55;white-space:nowrap;flex-shrink:0">Mac localhost:</span>` +
+        `<span class="lb-url-text" style="cursor:pointer" ` +
+          `title="Run in a Mac terminal — opens localhost:PORT listeners via the relay. Needs: brew install websocat. Click to copy." ` +
+          `onclick="_lbCopy(${macIdx})">` +
+          `${macCmd}` +
+        `</span>` +
+      `</div>`;
+
+      // Register global copy handler for this render
+      window._lbCopy = (i) => navigator.clipboard.writeText(copyItems[i] ?? '').catch(() => {});
+
+      const bridgeHint = totalLive === 0 && gqd !== null ? ' — start sshd in guest?' : '';
+      const bridgeLabel = `<span style="color:${bridgeColor}">${totalLive} live${bridgeHint}</span>`;
+      const summary = `bridges: ${bridgeLabel}  pool: ${st.pool ?? '?'}  uptime: ${st.uptime ?? 0}s`;
+      lbPoolInfo.innerHTML = `<div class="lb-summary">${summary}</div>` + portRows.join('') + macRow;
     }
 
     async function lbDoStart() {

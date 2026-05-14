@@ -370,3 +370,8 @@ sleep 3; curl -s "https://linuxontab-tunnel.fly.dev/port/status?code=$CODE" | gr
 
 
 https://linuxontab.com/shell/?pip=1&pipx=20&pipy=50&pipw=600&piph=400&browser=https://linuxontab.com&snapshot=https://github.com/kilian-ai/linuxontab/releases/download/snap-v1/alpine-base.bin.gz
+
+# trust download
+curl -sL https://github.com/kilian-ai/linuxontab/releases/download/snap-v1/trust \
+  -o /usr/local/bin/trust && chmod +x /usr/local/bin/trust
+trust /root
