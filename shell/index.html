@@ -2670,8 +2670,9 @@
         const compressed = new Blob(chunks);
         // Detect gzip by magic bytes (1F 8B) rather than URL extension —
         // GitHub asset API URLs have no .gz suffix even for compressed uploads.
-        const headerBytes = new Uint8Array(await chunks[0].slice(0, 2).arrayBuffer());
-        const isGz = (headerBytes[0] === 0x1F && headerBytes[1] === 0x8B)
+        // chunks[] are Uint8Arrays from the ReadableStream reader.
+        const firstChunk = chunks[0];
+        const isGz = (firstChunk && firstChunk[0] === 0x1F && firstChunk[1] === 0x8B)
           || /\.gz(\?|#|$)/i.test(opts.snapshotUrl);
         if (isGz && typeof DecompressionStream === 'function') {
           const ds = new DecompressionStream('gzip');
