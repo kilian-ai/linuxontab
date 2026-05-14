@@ -3082,31 +3082,25 @@
       const setupParam = (new URLSearchParams(location.search).get('setup') || '').trim();
       const skipSetup = setupParam === '0';
       const setupCmd = skipSetup ? '' :
-        // Pin repos to v3.21 to match the Alpine ISO base.
-        // NEVER run "apk upgrade --available" here — it replaces libssl.so.3
-        // (3.3.7-r0 from the ISO) with a 3.4+ version that is incompatible
-        // with the ISO's libcrypto.so.3 (also 3.3.7-r0), causing apk to abort
-        // at startup with "Error relocating /usr/lib/libssl.so.3: symbol not
-        // found" for every subsequent invocation.
-        // Community APKINDEX consistently hits IO ERROR over WISP even at
-        // 1.8 MB — websocat.apk is fetched directly via plain HTTP instead.
+        // Use latest-stable repos and rebase libc/libcrypto with `apk upgrade`
+        // so subsequent `apk add nodejs` etc. work (otherwise newer packages
+        // hit a symbol mismatch against the ISO's old libcrypto).
         'echo "[setup] configuring apk repositories…"\n' +
-        'printf "%s\\n" "https://dl-cdn.alpinelinux.org/alpine/v3.21/main" > /etc/apk/repositories\n' +
+        'printf "%s\\n" "https://dl-cdn.alpinelinux.org/alpine/latest-stable/main" > /etc/apk/repositories\n' +
         'echo "[setup] apk update…"\n' +
         'apk update 2>&1 | tail -3\n' +
-        // Install staple toolset from main: curl/jq (scripts + social.sh),
-        // openssh-server (ssh tunnels), unbound (DNS-over-TCP workaround for
-        // Fly WISP dropping UDP/53), tmux, libgcc (needed by websocat .so).
-        // mkdir /usr/lib/ssh first — Alpine 3.21 openssh-server.apk fails to
-        // create sshd-session with "I/O error" if the parent dir is absent.
-        'echo "[setup] apk add curl jq openssh-server unbound tmux libgcc…"\n' +
-        'mkdir -p /usr/lib/ssh\n' +
-        'apk add --no-cache curl jq openssh-server unbound tmux libgcc 2>&1 | tail -5\n' +
-        // websocat lives in community; download its .apk directly via HTTP
-        // (avoids the 1.8 MB community APKINDEX that times out through WISP).
-        // libgcc installed above satisfies websocat\'s so:libgcc_s.so.1 dep.
-        'echo "[setup] installing websocat…"\n' +
-        'wget -qO /tmp/ws.apk http://dl-cdn.alpinelinux.org/alpine/v3.21/community/x86/websocat-1.13.0-r0.apk && apk add --force-non-repository --allow-untrusted /tmp/ws.apk && echo "[setup] websocat ok" || echo "[setup] websocat install failed"\n' +
+        'echo "[setup] apk upgrade (rebasing libc/libcrypto)…"\n' +
+        'apk upgrade --available 2>&1 | tail -3\n' +
+        // Pre-install the staple toolset from main: curl/jq (scripts +
+        // social.sh), openssh-server (ssh tunnels), unbound (DNS-over-TCP
+        // workaround for Fly WISP dropping UDP/53), tmux (persistent
+        // shell windows).
+        'echo "[setup] apk add curl jq openssh-server unbound tmux…"\n' +
+        'apk add --no-cache curl jq openssh-server unbound tmux 2>&1 | tail -5\n' +
+        // websocat is community-only; install the upstream static musl binary
+        // directly (i686, works on Alpine x86) — avoids the 50 MB APKINDEX.
+        'echo "[setup] fetching websocat…"\n' +
+        'wget -q -O /usr/local/bin/websocat https://github.com/vi/websocat/releases/download/v1.13.0/websocat.i686-unknown-linux-musl && chmod +x /usr/local/bin/websocat && echo "[setup] websocat ok" || echo "[setup] websocat fetch failed (tunnels need websocat)"\n' +
         'echo "[setup] ready — apk add <pkg> works now. snapshot to skip on next boot."\n';
       // Snapshot restore: WISP WebSocket is freshly reconnected (JS adapter
       // is not in the x86 snapshot), and the Wisp router config is known
