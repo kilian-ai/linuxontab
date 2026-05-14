@@ -2724,7 +2724,13 @@
     bootBtn.disabled = true;
 
     byteCount = 0;
-    term.reset();
+    // Skip term.reset() for remote snapshot restores — the guest may have been
+    // in alternate-screen mode (e.g. a TUI like trust). term.reset() forces
+    // xterm back to the main buffer, so the restored guest's output (which
+    // still targets the alternate buffer it was on) becomes invisible. On a
+    // fresh page load the terminal is already empty; for repeat boots we want
+    // to see the old output anyway so the user can scroll back.
+    if (!remoteSnapBuffer) term.reset();
 
     // Alpine runs diskless from the ISO — rootfs is tmpfs sized at 50% of RAM
     // by default. 512 MB was tight (rootfs capped at 244 MB, ENOSPC during
@@ -3832,9 +3838,13 @@
         const tryKick = () => {
           if (netInited) return;
           attempts++;
-          try { sendGuestText('\n'); } catch (_) {}
+          // Send both \r (raw-mode Enter, e.g. for TUI apps like trust) and
+          // \n (cooked-mode newline for a normal shell). Raw-mode apps like
+          // crossterm/ratatui don't echo \n at all, so we also try \r which
+          // they treat as Enter and respond to by redrawing the UI.
+          try { sendGuestText('\r\n'); } catch (_) {}
           // Wait 1.2s for the kernel to echo a prompt. If we see ANY
-          // serial activity after our \n, the CPU is alive — schedule
+          // serial activity after our \r\n, the CPU is alive — schedule
           // runNetInit. Otherwise retry up to 15× (= ~18s extra grace).
           setTimeout(() => {
             if (netInited) return;
@@ -3847,8 +3857,13 @@
             if (attempts < 15) {
               tryKick();
             } else {
-              console.warn('[boot] restore kicker: no serial activity after', attempts, 'attempts — forcing runNetInit anyway');
-              runNetInit();
+              // No serial activity after 15 attempts. The foreground process
+              // is likely a TUI app (e.g. trust) in raw mode that doesn't
+              // echo input. Send Ctrl+C to kill it and return to the shell,
+              // then wait 1.5s for the prompt before running runNetInit.
+              console.warn('[boot] restore kicker: no serial activity after', attempts, 'attempts — sending Ctrl+C to kill foreground TUI, then runNetInit');
+              try { sendGuestText('\x03'); } catch (_) {}
+              setTimeout(() => { if (!netInited) runNetInit(); }, 1500);
             }
           }, 1200);
         };
