@@ -1590,21 +1590,45 @@
     uploadSnapBtn.disabled = true;
     try {
       const sel = parseSel(snapEl.value);
-      setStatus('preparing snapshot…');
-      const bytes = await getSnapshotBytesForUpload(sel);
-      setStatus(`snapshot ready (${(bytes.byteLength/1048576).toFixed(1)} MB)`);
+
+      // ── Step 1: collect all user inputs BEFORE loading snapshot bytes ──
+      // Loading the snapshot can allocate hundreds of MB; if user cancels we
+      // want to avoid that allocation entirely.
       const defaultRepo = getGhRepos()[0] || '';
       const repoInput = (await uiPrompt('Upload snapshot to GitHub repo (owner/repo)', defaultRepo)) || '';
+      if (!repoInput.trim()) { setStatus('upload cancelled'); return; }
       const repo = normalizeGhRepo(repoInput);
-      if (!repo) { setStatus('upload cancelled'); return; }
       if (!GH_REPO_RE.test(repo)) {
         throw new Error('invalid repo: use owner/repo (or a github.com URL)');
       }
-      // Save repo to list
-      const list = getGhRepos(); if (!list.includes(repo)) { list.unshift(repo); saveGhRepos(list); }
       const tag = (await uiPrompt('Release tag (e.g. v1.0-snap)', 'v86-snap-' + Date.now().toString(36))) || '';
       if (!tag) { setStatus('upload cancelled'); return; }
       const fileName = (await uiPrompt('Asset filename', `v86-snap-${Date.now().toString(36)}.bin`)) || `v86-snap-${Date.now().toString(36)}.bin`;
+
+      // ── Step 2: verify credentials & repo access before loading bytes ──
+      setStatus('checking GitHub credentials…');
+      const repoProbeUrl = 'https://api.github.com/repos/' + repo;
+      const probeResp = await fetch('https://relay.linuxontab.com/secret-proxy/' + encodeURIComponent(repoProbeUrl), {
+        method: 'GET',
+        headers: { 'Authorization': 'Bearer LOT_SECRET_GITHUB', 'Accept': 'application/vnd.github+json' }
+      });
+      if (probeResp.status === 401) throw new Error('LOT_SECRET_GITHUB token is missing or invalid — run: npx wrangler secret put LOT_SECRET_GITHUB -c services/relay/wrangler.toml');
+      if (probeResp.status === 403) throw new Error('LOT_SECRET_GITHUB lacks permission to access ' + repo + ' — token needs Contents:write');
+      if (probeResp.status === 404) throw new Error('repo not found: ' + repo + ' (create it on GitHub first, or check the name)');
+      if (!probeResp.ok) throw new Error('repo probe failed: HTTP ' + probeResp.status);
+
+      // Save repo to list
+      const list = getGhRepos(); if (!list.includes(repo)) { list.unshift(repo); saveGhRepos(list); }
+
+      // ── Step 3: load snapshot bytes (potentially large) ──
+      setStatus('preparing snapshot…');
+      const bytes = await getSnapshotBytesForUpload(sel);
+      const sizeMB = bytes.byteLength / 1048576;
+      setStatus(`snapshot ready (${sizeMB.toFixed(1)} MB)`);
+      if (sizeMB > 250) {
+        const ok = confirm(`Snapshot is ${sizeMB.toFixed(0)} MB. Uploading this may be slow and could fail if the tab runs out of memory.\n\nContinue?`);
+        if (!ok) { setStatus('upload cancelled'); return; }
+      }
 
       setStatus('creating GitHub release…');
       const createUrl = 'https://api.github.com/repos/' + repo + '/releases';
@@ -1623,39 +1647,16 @@
         id = release && release.id;
       } else {
         const txt = await createResp.text().catch(() => '');
-        // Tag exists already: reuse that release instead of hard failing.
+        // Tag exists already: look up the existing release and reuse it.
         if (createResp.status === 422 && /already_exists/i.test(txt)) {
           const byTagUrl = 'https://api.github.com/repos/' + repo + '/releases/tags/' + encodeURIComponent(tag);
           const byTagResp = await fetch('https://relay.linuxontab.com/secret-proxy/' + encodeURIComponent(byTagUrl), {
             method: 'GET',
-            headers: {
-              'Authorization': 'Bearer LOT_SECRET_GITHUB',
-              'Accept': 'application/vnd.github+json'
-            }
+            headers: { 'Authorization': 'Bearer LOT_SECRET_GITHUB', 'Accept': 'application/vnd.github+json' }
           });
-          if (byTagResp.ok) {
-            const rel = await byTagResp.json();
-            id = rel && rel.id;
-          }
+          if (byTagResp.ok) { const rel = await byTagResp.json(); id = rel && rel.id; }
         }
-        if (!id && createResp.status === 404) {
-          // 404 here is usually either bad repo path or token cannot see repo.
-          const repoProbeUrl = 'https://api.github.com/repos/' + repo;
-          const probeResp = await fetch('https://relay.linuxontab.com/secret-proxy/' + encodeURIComponent(repoProbeUrl), {
-            method: 'GET',
-            headers: {
-              'Authorization': 'Bearer LOT_SECRET_GITHUB',
-              'Accept': 'application/vnd.github+json'
-            }
-          });
-          if (probeResp.status === 404) {
-            throw new Error('repo not found or not accessible by LOT_SECRET_GITHUB: ' + repo + ' (needs access to this repo)');
-          }
-          if (probeResp.ok) {
-            throw new Error('cannot create release in ' + repo + ': LOT_SECRET_GITHUB needs release write permission (Contents:write)');
-          }
-        }
-        if (!id) throw new Error('create release failed: ' + createResp.status + ' ' + txt);
+        if (!id) throw new Error('create release failed: HTTP ' + createResp.status + ' — ' + txt.slice(0, 200));
       }
       if (!id) throw new Error('create release returned no id');
 
