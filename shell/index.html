@@ -1689,22 +1689,37 @@
       }
       if (!id) throw new Error('create release returned no id');
 
-      setStatus('uploading asset…');
+      // ── Step 5: upload asset via XHR for progress reporting ──
       const uploadUrl = 'https://uploads.github.com/repos/' + repo + '/releases/' + id + '/assets?name=' + encodeURIComponent(useName);
-      const upResp = await fetch('https://relay.linuxontab.com/secret-proxy/' + encodeURIComponent(uploadUrl), {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer LOT_SECRET_GITHUB',
-          'Content-Type': uploadContentType,
-          'Accept': 'application/vnd.github+json'
-        },
-        body: uploadBody
+      const proxyUploadUrl = 'https://relay.linuxontab.com/secret-proxy/' + encodeURIComponent(uploadUrl);
+      const totalBytes = uploadBody.size;
+      setStatus(`uploading 0% — 0 / ${(totalBytes/1048576).toFixed(1)} MB`);
+
+      const asset = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', proxyUploadUrl);
+        xhr.setRequestHeader('Authorization', 'Bearer LOT_SECRET_GITHUB');
+        xhr.setRequestHeader('Content-Type', uploadContentType);
+        xhr.setRequestHeader('Accept', 'application/vnd.github+json');
+        xhr.upload.onprogress = (e) => {
+          if (!e.lengthComputable) return;
+          const pct = Math.round((e.loaded / e.total) * 100);
+          const bar = renderProgressBar(pct);
+          setStatus(`uploading ${pct}% ${bar} — ${(e.loaded/1048576).toFixed(1)} / ${(e.total/1048576).toFixed(1)} MB`);
+        };
+        xhr.onload = () => {
+          if (xhr.status === 200 || xhr.status === 201) {
+            try { resolve(JSON.parse(xhr.responseText)); }
+            catch (e) { reject(new Error('upload response parse error: ' + xhr.responseText.slice(0, 200))); }
+          } else {
+            reject(new Error('upload failed: HTTP ' + xhr.status + ' — ' + xhr.responseText.slice(0, 200)));
+          }
+        };
+        xhr.onerror = () => reject(new Error('upload network error'));
+        xhr.onabort = () => reject(new Error('upload aborted'));
+        xhr.send(uploadBody);
       });
-      if (!(upResp.status === 200 || upResp.status === 201)) {
-        const txt = await upResp.text().catch(() => '');
-        throw new Error('upload failed: ' + upResp.status + ' ' + txt);
-      }
-      const asset = await upResp.json();
+
       const url = asset.browser_download_url || asset.url || null;
       if (!url) throw new Error('upload succeeded but no browser_download_url returned');
       setStatus('uploaded snapshot to GitHub: ' + url, 'ok');
