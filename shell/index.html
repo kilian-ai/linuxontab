@@ -1689,18 +1689,20 @@
       }
       if (!id) throw new Error('create release returned no id');
 
-      // ── Step 5: upload asset via XHR for progress reporting ──
-      const uploadUrl = 'https://uploads.github.com/repos/' + repo + '/releases/' + id + '/assets?name=' + encodeURIComponent(useName);
-      const proxyUploadUrl = 'https://relay.linuxontab.com/secret-proxy/' + encodeURIComponent(uploadUrl);
+      // ── Step 5: upload asset via XHR through Fly proxy (no 100 MB CF limit) ──
+      // The Fly tunnel server proxies directly to uploads.github.com using
+      // LOT_SECRET_GITHUB stored as a Fly secret — no body size limit.
+      const flyUploadUrl = 'https://linuxontab-tunnel.fly.dev/gh-asset-upload'
+        + '?repo=' + encodeURIComponent(repo)
+        + '&release_id=' + encodeURIComponent(id)
+        + '&name=' + encodeURIComponent(useName);
       const totalBytes = uploadBody.size;
       setStatus(`uploading 0% — 0 / ${(totalBytes/1048576).toFixed(1)} MB`);
 
       const asset = await new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
-        xhr.open('POST', proxyUploadUrl);
-        xhr.setRequestHeader('Authorization', 'Bearer LOT_SECRET_GITHUB');
+        xhr.open('POST', flyUploadUrl);
         xhr.setRequestHeader('Content-Type', uploadContentType);
-        xhr.setRequestHeader('Accept', 'application/vnd.github+json');
         xhr.upload.onprogress = (e) => {
           if (!e.lengthComputable) return;
           const pct = Math.round((e.loaded / e.total) * 100);

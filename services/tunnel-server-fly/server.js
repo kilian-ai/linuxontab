@@ -21,6 +21,7 @@
 //                     (default: wss://<host> derived from request Host header)
 
 import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
 import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
@@ -1254,6 +1255,50 @@ const server = http.createServer(async (req, res) => {
     const s = getSession(code);
     if (!s) { cors(res); res.writeHead(404); res.end('code not found'); return; }
     return httpProxy(req, res, s, port, guestPath, code);
+  }
+
+  // POST /gh-asset-upload?repo=OWNER/REPO&release_id=ID&name=FILENAME
+  // Proxies a GitHub release asset upload directly to uploads.github.com,
+  // bypassing the CF Worker (which has a 100 MB body limit). Requires
+  // LOT_SECRET_GITHUB to be set as a Fly secret.
+  if (url.pathname === '/gh-asset-upload' && req.method === 'POST') {
+    const GH_TOKEN = process.env.LOT_SECRET_GITHUB || '';
+    if (!GH_TOKEN) {
+      cors(res); res.writeHead(503, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'LOT_SECRET_GITHUB not configured on this server' }));
+    }
+    const repo = url.searchParams.get('repo');
+    const releaseId = url.searchParams.get('release_id');
+    const name = url.searchParams.get('name');
+    if (!repo || !releaseId || !name) {
+      cors(res); res.writeHead(400, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'missing repo, release_id, or name query params' }));
+    }
+    const contentType = req.headers['content-type'] || 'application/octet-stream';
+    const ghHeaders = {
+      'Authorization': `Bearer ${GH_TOKEN}`,
+      'Content-Type': contentType,
+      'Accept': 'application/vnd.github+json',
+      'User-Agent': 'linuxontab-tunnel/1.0',
+    };
+    if (req.headers['content-length']) ghHeaders['Content-Length'] = req.headers['content-length'];
+    const ghReq = https.request({
+      hostname: 'uploads.github.com',
+      path: `/repos/${repo}/releases/${releaseId}/assets?name=${encodeURIComponent(name)}`,
+      method: 'POST',
+      headers: ghHeaders,
+    }, (ghRes) => {
+      cors(res);
+      res.writeHead(ghRes.statusCode, { 'Content-Type': 'application/json' });
+      ghRes.pipe(res);
+    });
+    ghReq.on('error', (err) => {
+      console.error('[gh-asset-upload] upstream error:', err.message);
+      if (!res.headersSent) { cors(res); res.writeHead(502, { 'Content-Type': 'application/json' }); }
+      res.end(JSON.stringify({ error: err.message }));
+    });
+    req.pipe(ghReq);
+    return;
   }
 
   cors(res);
