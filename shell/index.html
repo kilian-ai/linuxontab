@@ -2668,7 +2668,11 @@
         // Concatenate chunks into a single buffer, then optionally
         // gunzip via DecompressionStream.
         const compressed = new Blob(chunks);
-        const isGz = /\.gz(\?|#|$)/i.test(opts.snapshotUrl);
+        // Detect gzip by magic bytes (1F 8B) rather than URL extension —
+        // GitHub asset API URLs have no .gz suffix even for compressed uploads.
+        const headerBytes = new Uint8Array(await chunks[0].slice(0, 2).arrayBuffer());
+        const isGz = (headerBytes[0] === 0x1F && headerBytes[1] === 0x8B)
+          || /\.gz(\?|#|$)/i.test(opts.snapshotUrl);
         if (isGz && typeof DecompressionStream === 'function') {
           const ds = new DecompressionStream('gzip');
           const decompressed = compressed.stream().pipeThrough(ds);
