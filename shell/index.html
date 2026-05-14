@@ -1603,7 +1603,11 @@
       }
       const tag = (await uiPrompt('Release tag (e.g. v1.0-snap)', 'v86-snap-' + Date.now().toString(36))) || '';
       if (!tag) { setStatus('upload cancelled'); return; }
-      const fileName = (await uiPrompt('Asset filename', `v86-snap-${Date.now().toString(36)}.bin`)) || `v86-snap-${Date.now().toString(36)}.bin`;
+      // Default filename: <snapshot-name>-<iso-base>.bin.gz, e.g. "default-alpine.bin.gz"
+      const isoBase = (sel && sel.iso ? sel.iso.replace(/\.iso$/i, '') : 'v86');
+      const snapBase = (sel && sel.name ? sel.name : 'snap');
+      const defaultFileName = snapBase + '-' + isoBase + '.bin.gz';
+      const fileName = (await uiPrompt('Asset filename (.bin.gz will be gzip-compressed)', defaultFileName)) || defaultFileName;
 
       // ── Step 2: verify credentials & repo access before loading bytes ──
       setStatus('checking GitHub credentials…');
@@ -1624,10 +1628,35 @@
       setStatus('preparing snapshot…');
       const bytes = await getSnapshotBytesForUpload(sel);
       const sizeMB = bytes.byteLength / 1048576;
-      setStatus(`snapshot ready (${sizeMB.toFixed(1)} MB)`);
-      if (sizeMB > 250) {
-        const ok = confirm(`Snapshot is ${sizeMB.toFixed(0)} MB. Uploading this may be slow and could fail if the tab runs out of memory.\n\nContinue?`);
-        if (!ok) { setStatus('upload cancelled'); return; }
+      setStatus(`snapshot ready (${sizeMB.toFixed(1)} MB) — compressing…`);
+
+      // ── Step 4: gzip via CompressionStream (streaming — avoids double-buffer crash) ──
+      // Passing a raw Uint8Array body to fetch() buffers a second copy; using a
+      // ReadableStream → CompressionStream → Blob pipeline lets the browser
+      // stream the data without duplicating it in the JS heap.
+      let uploadBody;
+      let uploadContentType = 'application/octet-stream';
+      const useName = fileName.endsWith('.gz') ? fileName : fileName + '.gz';
+      if (typeof CompressionStream !== 'undefined') {
+        const cs = new CompressionStream('gzip');
+        const writer = cs.writable.getWriter();
+        writer.write(bytes);
+        writer.close();
+        const chunks = [];
+        const reader = cs.readable.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          const compressed = chunks.reduce((n, c) => n + c.byteLength, 0);
+          setStatus(`compressing… ${(compressed / 1048576).toFixed(1)} MB`);
+        }
+        uploadBody = new Blob(chunks, { type: 'application/octet-stream' });
+        setStatus(`compressed to ${(uploadBody.size / 1048576).toFixed(1)} MB (from ${sizeMB.toFixed(1)} MB) — uploading…`);
+      } else {
+        // Fallback: wrap in Blob (avoids the Uint8Array double-copy in some engines)
+        uploadBody = new Blob([bytes], { type: 'application/octet-stream' });
+        setStatus(`uploading ${sizeMB.toFixed(1)} MB (no CompressionStream)…`);
       }
 
       setStatus('creating GitHub release…');
@@ -1661,15 +1690,15 @@
       if (!id) throw new Error('create release returned no id');
 
       setStatus('uploading asset…');
-      const uploadUrl = 'https://uploads.github.com/repos/' + repo + '/releases/' + id + '/assets?name=' + encodeURIComponent(fileName);
+      const uploadUrl = 'https://uploads.github.com/repos/' + repo + '/releases/' + id + '/assets?name=' + encodeURIComponent(useName);
       const upResp = await fetch('https://relay.linuxontab.com/secret-proxy/' + encodeURIComponent(uploadUrl), {
         method: 'POST',
         headers: {
           'Authorization': 'Bearer LOT_SECRET_GITHUB',
-          'Content-Type': 'application/octet-stream',
+          'Content-Type': uploadContentType,
           'Accept': 'application/vnd.github+json'
         },
-        body: bytes
+        body: uploadBody
       });
       if (!(upResp.status === 200 || upResp.status === 201)) {
         const txt = await upResp.text().catch(() => '');
