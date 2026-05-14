@@ -2604,6 +2604,7 @@
       try {
         const u = new URL(opts.snapshotUrl);
         const needsProxy = (
+          u.hostname === 'api.github.com' ||
           u.hostname === 'github.com' ||
           u.hostname.endsWith('.githubusercontent.com') ||
           u.hostname === 'uploads.github.com'
