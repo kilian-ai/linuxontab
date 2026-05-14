@@ -2682,7 +2682,31 @@
           remoteSnapBuffer = await compressed.arrayBuffer();
         }
         try {
-          term.writeln(`\x1b[36m[snapshot]\x1b[0m restoring ${(remoteSnapBuffer.byteLength/1048576).toFixed(1)} MB into VM RAM…`);
+          const _restoreMB = (remoteSnapBuffer.byteLength / 1048576).toFixed(1);
+          term.writeln(`\x1b[36m[snapshot]\x1b[0m restoring ${_restoreMB} MB into VM RAM…`);
+          // Animated progress bar — filled by elapsed time vs estimate, snapped
+          // to 100% when emulator-ready fires. Empirical restore rate ~7 MB/s.
+          const _BAR_W = 24;
+          const _estMs = Math.max(8000, remoteSnapBuffer.byteLength / (7 * 1024 * 1024) * 1000);
+          const _t0 = Date.now();
+          let _restoreDone = false;
+          const _drawBar = (frac) => {
+            const pct = Math.min(100, Math.round(frac * 100));
+            const filled = Math.round(Math.min(1, frac) * _BAR_W);
+            const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(_BAR_W - filled);
+            try { term.write(`\r\x1b[36m[snapshot]\x1b[0m loading  [${bar}] ${String(pct).padStart(3)}%  `); } catch(_){}
+          };
+          _drawBar(0);
+          window._restoreBarTimer = setInterval(() => {
+            if (_restoreDone) { clearInterval(window._restoreBarTimer); return; }
+            _drawBar(Math.min(0.95, (Date.now() - _t0) / _estMs));
+          }, 150);
+          window._restoreBarDone = () => {
+            _restoreDone = true;
+            clearInterval(window._restoreBarTimer);
+            _drawBar(1);
+            try { term.write('\r\n'); } catch(_){}
+          };
         } catch (_) {}
         doRestore = true;
         console.log('[boot] fetched hosted snapshot:',
@@ -2910,7 +2934,7 @@
     // appear to leave the kernel 9P client in a state where guest-issued
     // mkdir/touch on /mnt/host hangs after restore. The plain mount via
     // restoreNetCmd works without them.
-    emulator.add_listener('emulator-ready',   () => { setStatus('ready'); });
+    emulator.add_listener('emulator-ready',   () => { if (window._restoreBarDone) { window._restoreBarDone(); window._restoreBarDone = null; } setStatus('ready'); });
     emulator.add_listener('emulator-started', () => { setStatus(doRestore ? 'restored' : 'running', 'ok'); });
     emulator.add_listener('emulator-stopped', () => setStatus('stopped'));
 
