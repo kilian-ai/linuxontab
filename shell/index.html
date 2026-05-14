@@ -2594,23 +2594,28 @@
       // GitHub release assets don't include CORS headers on the redirect
       // chain (github.com → release-assets.githubusercontent.com →
       // Azure blob), so a direct browser fetch fails. Auto-route those
-      // through our existing CORS proxy on relay.linuxontab.com.
+      // through our existing secret-proxy on relay.linuxontab.com so the
+      // PAT is injected (required for private-repo assets).
       let fetchUrl = opts.snapshotUrl;
       try {
         const u = new URL(opts.snapshotUrl);
-        const needsCorsProxy = (
+        const needsProxy = (
           u.hostname === 'github.com' ||
-          u.hostname.endsWith('.githubusercontent.com')
+          u.hostname.endsWith('.githubusercontent.com') ||
+          u.hostname === 'uploads.github.com'
         );
-        if (needsCorsProxy) {
-          fetchUrl = 'https://relay.linuxontab.com/cors?url=' +
+        if (needsProxy) {
+          fetchUrl = 'https://relay.linuxontab.com/secret-proxy/' +
             encodeURIComponent(opts.snapshotUrl);
-          console.log('[boot] routing snapshot through CORS proxy');
+          console.log('[boot] routing snapshot through secret-proxy');
         }
       } catch (_) {}
+      const fetchHeaders = fetchUrl.includes('secret-proxy')
+        ? { 'Authorization': 'Bearer LOT_SECRET_GITHUB' }
+        : {};
       setStatus(`fetching snapshot ${opts.snapshotUrl}…`);
       try {
-        const r = await fetch(fetchUrl, { credentials: 'omit' });
+        const r = await fetch(fetchUrl, { credentials: 'omit', headers: fetchHeaders });
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const total = parseInt(r.headers.get('content-length') || '0', 10);
         const totalMB = total ? (total / 1048576).toFixed(1) : '?';
