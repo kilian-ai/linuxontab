@@ -16,14 +16,13 @@ STATUS_FILE=/tmp/lot-bridge.status.json
 EXPOSE_FILE=/tmp/lot-bridge.expose.json
 
 relay_ws() {
-    # Use ws://:4344 (Fly TCP proxy → Node port 4344) instead of wss://:443
-    # (Fly HTTP proxy → Node port 8787). The HTTP proxy has a ~30s write-timeout
-    # that kills the guest WS when v86 drains large uploads at ~200 KB/s.
-    # Port 4344 maps to a separate Node listener (RAW_PORT=4344) that is NOT
-    # under http_service. CRITICAL: internal_port=4344=external_port=4344 so
-    # same-org Fly 6PN routing from linuxontab-net reaches the right listener.
+    # Use wss:// (Fly HTTP proxy port 443). Port 4344 (TCP proxy, RAW_PORT) was
+    # intended to bypass the Fly HTTP proxy 30s write-timeout, but it is NOT
+    # reachable from same-org Fly 6PN (linuxontab-net WISP server uses 6PN which
+    # bypasses the [[services]] TCP proxy, so port 4344 is invisible internally).
+    # wss:// works from both public internet and Fly 6PN.
     case "$RELAY" in
-        https://*) echo "ws://${RELAY#https://}:4344" ;;
+        https://*) echo "wss://${RELAY#https://}" ;;
         http://*)  echo "ws://${RELAY#http://}" ;;
         *)         echo "$RELAY" ;;
     esac
