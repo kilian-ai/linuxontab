@@ -3082,15 +3082,25 @@
       const setupParam = (new URLSearchParams(location.search).get('setup') || '').trim();
       const skipSetup = setupParam === '0';
       const setupCmd = skipSetup ? '' :
-        // Use latest-stable repos and rebase libc/libcrypto with `apk upgrade`
-        // so subsequent `apk add nodejs` etc. work (otherwise newer packages
-        // hit a symbol mismatch against the ISO's old libcrypto).
+        // Use latest-stable repos. Do NOT run `apk upgrade --available` — a
+        // WISP drop mid-upgrade can leave libssl.so.3 from the new version
+        // and libcrypto.so.3 from the old ISO, which breaks every apk call
+        // afterwards ("OPENSSL_strtoul: symbol not found"). Instead, upgrade
+        // *only* the crypto/apk-tools pair atomically with `apk add --upgrade`
+        // so libssl/libcrypto are always in sync.
         'echo "[setup] configuring apk repositories…"\n' +
         'printf "%s\\n" "https://dl-cdn.alpinelinux.org/alpine/latest-stable/main" > /etc/apk/repositories\n' +
         'echo "[setup] apk update…"\n' +
         'apk update 2>&1 | tail -3\n' +
-        'echo "[setup] apk upgrade (rebasing libc/libcrypto)…"\n' +
-        'apk upgrade --available 2>&1 | tail -3\n' +
+        // Atomic crypto + apk-tools upgrade — keeps libssl.so.3 and
+        // libcrypto.so.3 versions in lockstep so apk keeps working even if
+        // a transfer is interrupted. Retry up to 3 times on WISP drops.
+        'echo "[setup] upgrading libcrypto/libssl/apk-tools (atomic)…"\n' +
+        'for _i in 1 2 3; do\n' +
+        '  apk add --no-cache --upgrade libcrypto3 libssl3 apk-tools ca-certificates musl 2>&1 | tail -5 && break\n' +
+        '  echo "[setup] retry $_i…"\n' +
+        '  sleep 2\n' +
+        'done\n' +
         // Pre-install the staple toolset from main: curl/jq (scripts +
         // social.sh), openssh-server (ssh tunnels), unbound (DNS-over-TCP
         // workaround for Fly WISP dropping UDP/53), tmux (persistent
