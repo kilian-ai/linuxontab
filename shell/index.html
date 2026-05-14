@@ -1531,16 +1531,18 @@
         for (const rel of rels || []) {
           const tag = rel.tag_name || rel.name || '';
           for (const asset of rel.assets || []) {
-            const url = asset.browser_download_url;
-            if (!url) continue;
-            const name = asset.name || url.split('/').pop();
+            // Use asset.url (api.github.com) — browser_download_url requires a
+            // browser session and 404s with a Bearer token on private repos.
+            const apiUrl = asset.url;
+            if (!apiUrl) continue;
+            const name = asset.name || apiUrl.split('/').pop();
             // Heuristic iso detection from asset name
             let iso = DEFAULT_ISO;
             const lname = String(name).toLowerCase();
             for (const cat of ISO_CATALOG) {
               if (lname.includes(cat.iso.split('.')[0])) { iso = cat.iso; break; }
             }
-            out.push({ value: 'hosted:' + iso + ':' + encodeURIComponent(url), label: `GH: ${normalized} · ${tag} · ${name}` });
+            out.push({ value: 'hosted:' + iso + ':' + encodeURIComponent(apiUrl), label: `GH: ${normalized} · ${tag} · ${name}` });
           }
         }
       } catch (e) { console.warn('[gh] fetch error', repo, e); }
@@ -1726,14 +1728,16 @@
         xhr.send(uploadBody);
       });
 
-      const url = asset.browser_download_url || asset.url || null;
-      if (!url) throw new Error('upload succeeded but no browser_download_url returned');
-      setStatus('uploaded snapshot to GitHub: ' + url, 'ok');
+      // Use asset.url (api.github.com) — matches what fetchGhSnapshots stores
+      const assetApiUrl = asset.url || null;
+      const displayUrl = asset.browser_download_url || assetApiUrl || null;
+      if (!assetApiUrl) throw new Error('upload succeeded but no asset url returned');
+      setStatus('uploaded snapshot to GitHub: ' + displayUrl, 'ok');
       // Persist repo so it appears in the dropdown on every future load
       const repoList = getGhRepos();
       if (!repoList.includes(repo)) { repoList.unshift(repo); saveGhRepos(repoList); }
       // Refresh dropdown and select the newly uploaded asset
-      await populateSnapSelect('hosted:' + (sel ? sel.iso : DEFAULT_ISO) + ':' + encodeURIComponent(url));
+      await populateSnapSelect('hosted:' + (sel ? sel.iso : DEFAULT_ISO) + ':' + encodeURIComponent(assetApiUrl));
     } catch (e) {
       setStatus('upload failed: ' + (e && e.message || e), 'err');
       console.warn('[upload]', e);
@@ -2611,7 +2615,7 @@
         }
       } catch (_) {}
       const fetchHeaders = fetchUrl.includes('secret-proxy')
-        ? { 'Authorization': 'Bearer LOT_SECRET_GITHUB' }
+        ? { 'Authorization': 'Bearer LOT_SECRET_GITHUB', 'Accept': 'application/octet-stream' }
         : {};
       setStatus(`fetching snapshot ${opts.snapshotUrl}…`);
       try {
