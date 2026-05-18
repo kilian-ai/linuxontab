@@ -24,10 +24,10 @@ export declare class Bytes {
     #private;
     length: number;
     get capacity(): number;
-    get array(): Uint8Array;
+    get array(): Uint8Array<ArrayBuffer>;
     constructor(capacity?: number);
     bump(length: number): number;
     append(bytes: Uint8Array): void;
-    get dv(): DataView;
+    get dv(): DataView<ArrayBufferLike>;
     alloc<T>(type: Type<T>): Allocated<T>;
 }

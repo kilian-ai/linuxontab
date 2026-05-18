@@ -8,5 +8,5 @@ export declare function generate_devicetree(tree: DeviceTreeNode, { memory_reser
         size: number;
     }>;
     boot_cpu_id?: number;
-}): Uint8Array;
+}): Uint8Array<ArrayBuffer>;
 export {};

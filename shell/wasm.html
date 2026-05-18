@@ -233,7 +233,334 @@
 // @tombl/linux Machine API
 // vmlinux-UHA6PIC5.wasm + worker-Q7XWPLKR.js must be in ./linux-dist/dist/
 // ─────────────────────────────────────────────────────────────────────────────
-import { Machine, ConsoleDevice, EntropyDevice } from './linux-dist/dist/index.js';
+import { Machine, ConsoleDevice, EntropyDevice, NetworkDevice } from './linux-dist/dist/index.js';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WispSlirp — Browser-side SLIRP + WISP networking for the WASM kernel
+// ─────────────────────────────────────────────────────────────────────────────
+// Network topology (static, matches kernel cmdline ip= parameter):
+//   Guest NIC:  192.168.86.100 / 24, gateway 192.168.86.1
+//   SLIRP side: 192.168.86.1 (this code, uses GW_MAC below)
+//   Guest MAC:  passed in from caller (randomized per boot)
+//   Gateway MAC: 52:54:00:01:02:03
+//
+// TCP:   Guest SYN → WISP CONNECT to dest host:port → bridge TCP ↔ WISP
+// UDP53: Guest DNS → DoH via relay.linuxontab.com → UDP response back
+// ARP:   Respond to "who has 192.168.86.1?" with gateway MAC
+// ─────────────────────────────────────────────────────────────────────────────
+class WispSlirp {
+  static GW_MAC  = new Uint8Array([0x52, 0x54, 0x00, 0x01, 0x02, 0x03]);
+  static GW_IP   = new Uint8Array([192, 168, 86, 1]);
+  static GUEST_IP = new Uint8Array([192, 168, 86, 100]);
+
+  #url;
+  #ws = null;
+  #wsReady = false;
+  #wsQueue = [];
+  #reconnectTimer = null;
+  #streamId = 1;
+  #streams = new Map();   // id → { onData, onClose }
+  #tcpConns = new Map();  // guestSrcPort → TcpConn
+  #guestMac = null;
+
+  backend = {
+    send: frame => this.#onGuestFrame(frame),
+    receive: null,  // set by NetworkDevice constructor
+  };
+
+  constructor(url = 'wss://linuxontab-net.fly.dev/wisp') {
+    this.#url = url;
+    this.#connectWisp();
+  }
+
+  // ── WISP connection ────────────────────────────────────────────────────────
+  #connectWisp() {
+    this.#ws = new WebSocket(this.#url);
+    this.#ws.binaryType = 'arraybuffer';
+    this.#ws.onopen = () => {
+      this.#wsReady = true;
+      for (const pkt of this.#wsQueue) this.#ws.send(pkt);
+      this.#wsQueue = [];
+    };
+    this.#ws.onmessage = ev => this.#onWispMsg(new Uint8Array(ev.data));
+    this.#ws.onclose = this.#ws.onerror = () => {
+      this.#wsReady = false;
+      this.#streams.clear();
+      this.#tcpConns.clear();
+      if (!this.#reconnectTimer)
+        this.#reconnectTimer = setTimeout(() => {
+          this.#reconnectTimer = null; this.#connectWisp();
+        }, 2000);
+    };
+  }
+
+  #wispSend(buf) {
+    if (this.#wsReady) this.#ws.send(buf); else this.#wsQueue.push(buf);
+  }
+
+  #wispConnect(host, port) {
+    const id = this.#streamId++;
+    const hostBytes = new TextEncoder().encode(host);
+    const pkt = new Uint8Array(1 + 4 + 1 + 2 + hostBytes.length);
+    const dv = new DataView(pkt.buffer);
+    pkt[0] = 0x01;                  // CONNECT
+    dv.setUint32(1, id, true);      // stream ID (LE)
+    pkt[5] = 0x01;                  // TCP
+    dv.setUint16(6, port, false);   // port (BE)
+    pkt.set(hostBytes, 8);
+    this.#streams.set(id, { onData: null, onClose: null });
+    this.#wispSend(pkt);
+    return id;
+  }
+
+  #wispData(id, data) {
+    const pkt = new Uint8Array(5 + data.length);
+    pkt[0] = 0x02;
+    new DataView(pkt.buffer).setUint32(1, id, true);
+    pkt.set(data, 5);
+    this.#wispSend(pkt);
+  }
+
+  #wispClose(id) {
+    const pkt = new Uint8Array(7);
+    pkt[0] = 0x04;
+    new DataView(pkt.buffer).setUint32(1, id, true);
+    pkt[5] = 0x01;  // reason: voluntary
+    this.#wispSend(pkt);
+    this.#streams.delete(id);
+  }
+
+  #onWispMsg(buf) {
+    if (buf.length < 5) return;
+    const type = buf[0];
+    const id = new DataView(buf.buffer, buf.byteOffset).getUint32(1, true);
+    const payload = buf.slice(5);
+    if (type === 0x02) {
+      const s = this.#streams.get(id);
+      if (s?.onData) s.onData(payload);
+    } else if (type === 0x04) {
+      const s = this.#streams.get(id);
+      if (s?.onClose) s.onClose();
+      this.#streams.delete(id);
+    }
+    // 0x03 CONTINUE (flow control): ignored — we rely on WS backpressure
+  }
+
+  // ── Guest frame dispatch ───────────────────────────────────────────────────
+  #onGuestFrame(frame) {
+    if (frame.length < 14) return;
+    if (!this.#guestMac) this.#guestMac = frame.slice(6, 12).slice(); // learn guest MAC
+    const ethertype = (frame[12] << 8) | frame[13];
+    if (ethertype === 0x0806) this.#handleArp(frame.slice(14));
+    else if (ethertype === 0x0800) this.#handleIpv4(frame.slice(14));
+  }
+
+  // ── ARP ───────────────────────────────────────────────────────────────────
+  #handleArp(arp) {
+    if (arp.length < 28) return;
+    const oper = (arp[6] << 8) | arp[7];
+    if (oper !== 1) return;  // only ARP requests
+    const tpa = arp.slice(24, 28);
+    if (!WispSlirp.#ipEq(tpa, WispSlirp.GW_IP)) return;  // not asking for us
+    const sha = arp.slice(8, 14);   // sender hardware (guest MAC)
+    const spa = arp.slice(14, 18);  // sender protocol (guest IP)
+    const reply = new Uint8Array(28);
+    const dv = new DataView(reply.buffer);
+    dv.setUint16(0, 1); dv.setUint16(2, 0x0800); reply[4]=6; reply[5]=4;
+    dv.setUint16(6, 2);  // REPLY
+    reply.set(WispSlirp.GW_MAC, 8);  reply.set(WispSlirp.GW_IP, 14);
+    reply.set(sha, 18); reply.set(spa, 24);
+    this.#sendEth(sha, WispSlirp.GW_MAC, 0x0806, reply);
+  }
+
+  // ── IPv4 ──────────────────────────────────────────────────────────────────
+  #handleIpv4(ip) {
+    if (ip.length < 20) return;
+    const ihl = (ip[0] & 0x0f) * 4;
+    const proto = ip[9];
+    const srcIp = ip.slice(12, 16);
+    const dstIp = ip.slice(16, 20);
+    const payload = ip.slice(ihl);
+    if (proto === 6) this.#handleTcp(srcIp, dstIp, payload);
+    else if (proto === 17) this.#handleUdp(srcIp, dstIp, payload);
+  }
+
+  // ── TCP ───────────────────────────────────────────────────────────────────
+  #handleTcp(srcIp, dstIp, tcp) {
+    if (tcp.length < 20) return;
+    const dv = new DataView(tcp.buffer, tcp.byteOffset);
+    const srcPort = dv.getUint16(0, false);
+    const dstPort = dv.getUint16(2, false);
+    const seq     = dv.getUint32(4, false);
+    const dataOff = ((tcp[12] >> 4) & 0xf) * 4;
+    const flags   = tcp[13];
+    const data    = tcp.slice(dataOff);
+    const [SYN, ACK, FIN, RST, PSH] = [0x02, 0x10, 0x01, 0x04, 0x08];
+
+    if (flags & RST) {
+      const conn = this.#tcpConns.get(srcPort);
+      if (conn?.wispId) this.#wispClose(conn.wispId);
+      this.#tcpConns.delete(srcPort);
+      return;
+    }
+
+    // New connection SYN
+    if ((flags & SYN) && !(flags & ACK)) {
+      const dstStr = Array.from(dstIp).join('.');
+      const wispId = this.#wispConnect(dstStr, dstPort);
+      const myIsn  = (Math.random() * 0x80000000 | 0) >>> 0;
+      const conn = {
+        wispId, mySeq: myIsn,
+        guestSeq: (seq + 1) >>> 0,
+        srcIp: [...srcIp], srcPort,
+        dstIp: [...dstIp], dstPort,
+      };
+      this.#tcpConns.set(srcPort, conn);
+      const s = this.#streams.get(wispId);
+      if (s) {
+        s.onData  = chunk => this.#tcpToGuest(conn, chunk);
+        s.onClose = () => { this.#tcpSendFin(conn); this.#tcpConns.delete(srcPort); };
+      }
+      this.#tcpSynAck(conn, seq);
+      return;
+    }
+
+    const conn = this.#tcpConns.get(srcPort);
+    if (!conn) return;
+
+    if (flags & FIN) {
+      if (conn.wispId) this.#wispClose(conn.wispId);
+      conn.guestSeq = (seq + 1) >>> 0;
+      this.#tcpSendFin(conn);
+      this.#tcpConns.delete(srcPort);
+      return;
+    }
+
+    if ((flags & ACK) && data.length > 0) {
+      conn.guestSeq = (seq + data.length) >>> 0;
+      if (conn.wispId) this.#wispData(conn.wispId, data);
+    }
+  }
+
+  #tcpSynAck(conn, guestIsn) {
+    const t = new Uint8Array(20);
+    const dv = new DataView(t.buffer);
+    dv.setUint16(0, conn.dstPort, false);
+    dv.setUint16(2, conn.srcPort, false);
+    dv.setUint32(4, conn.mySeq, false);
+    dv.setUint32(8, (guestIsn + 1) >>> 0, false);
+    t[12] = 0x50; t[13] = 0x12;  // data-offset=5, SYN+ACK
+    new DataView(t.buffer).setUint16(14, 65535, false);
+    conn.mySeq = (conn.mySeq + 1) >>> 0;
+    conn.guestSeq = (guestIsn + 1) >>> 0;
+    this.#tcpChecksum(t, new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp));
+    this.#sendIpv4(new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp), 6, t);
+  }
+
+  #tcpSendFin(conn) {
+    const t = new Uint8Array(20);
+    const dv = new DataView(t.buffer);
+    dv.setUint16(0, conn.dstPort, false);
+    dv.setUint16(2, conn.srcPort, false);
+    dv.setUint32(4, conn.mySeq, false);
+    dv.setUint32(8, conn.guestSeq, false);
+    t[12] = 0x50; t[13] = 0x11;  // FIN+ACK
+    new DataView(t.buffer).setUint16(14, 65535, false);
+    conn.mySeq = (conn.mySeq + 1) >>> 0;
+    this.#tcpChecksum(t, new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp));
+    this.#sendIpv4(new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp), 6, t);
+  }
+
+  #tcpToGuest(conn, data) {
+    const MSS = 1400;
+    for (let off = 0; off < data.length; off += MSS) {
+      const chunk = data.slice(off, Math.min(off + MSS, data.length));
+      const t = new Uint8Array(20 + chunk.length);
+      const dv = new DataView(t.buffer);
+      dv.setUint16(0, conn.dstPort, false);
+      dv.setUint16(2, conn.srcPort, false);
+      dv.setUint32(4, conn.mySeq, false);
+      dv.setUint32(8, conn.guestSeq, false);
+      t[12] = 0x50; t[13] = 0x18;  // PSH+ACK
+      dv.setUint16(14, 65535, false);
+      t.set(chunk, 20);
+      conn.mySeq = (conn.mySeq + chunk.length) >>> 0;
+      this.#tcpChecksum(t, new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp));
+      this.#sendIpv4(new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp), 6, t);
+    }
+  }
+
+  // ── UDP / DNS ─────────────────────────────────────────────────────────────
+  #handleUdp(srcIp, dstIp, udp) {
+    if (udp.length < 8) return;
+    const dv = new DataView(udp.buffer, udp.byteOffset);
+    const srcPort = dv.getUint16(0, false);
+    const dstPort = dv.getUint16(2, false);
+    const payload = udp.slice(8);
+    if (dstPort === 53) this.#forwardDns(srcIp, srcPort, payload).catch(() => {});
+  }
+
+  async #forwardDns(clientIp, clientPort, query) {
+    const resp = await fetch('https://relay.linuxontab.com/dns-query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/dns-message', 'Accept': 'application/dns-message' },
+      body: query,
+    });
+    if (!resp.ok) return;
+    const answer = new Uint8Array(await resp.arrayBuffer());
+    const udpResp = new Uint8Array(8 + answer.length);
+    const dv = new DataView(udpResp.buffer);
+    dv.setUint16(0, 53, false);
+    dv.setUint16(2, clientPort, false);
+    dv.setUint16(4, udpResp.length, false);
+    udpResp.set(answer, 8);
+    this.#sendIpv4(WispSlirp.GW_IP, new Uint8Array(clientIp), 17, udpResp);
+  }
+
+  // ── Frame construction ────────────────────────────────────────────────────
+  #sendEth(dstMac, srcMac, ethertype, payload) {
+    const frame = new Uint8Array(14 + payload.length);
+    frame.set(dstMac, 0); frame.set(srcMac, 6);
+    frame[12] = ethertype >> 8; frame[13] = ethertype & 0xff;
+    frame.set(payload, 14);
+    if (this.backend.receive) this.backend.receive(frame);
+  }
+
+  #sendIpv4(srcIp, dstIp, proto, payload) {
+    const ipLen = 20 + payload.length;
+    const ip = new Uint8Array(ipLen);
+    const dv = new DataView(ip.buffer);
+    ip[0] = 0x45;
+    dv.setUint16(2, ipLen, false);
+    dv.setUint16(4, (Math.random() * 0xffff | 0), false);
+    ip[8] = 64; ip[9] = proto;
+    ip.set(srcIp, 12); ip.set(dstIp, 16);
+    dv.setUint16(10, WispSlirp.#cksum(ip.slice(0, 20)), false);
+    ip.set(payload, 20);
+    const dst = this.#guestMac || new Uint8Array([0xff,0xff,0xff,0xff,0xff,0xff]);
+    this.#sendEth(dst, WispSlirp.GW_MAC, 0x0800, ip);
+  }
+
+  // ── Checksums ─────────────────────────────────────────────────────────────
+  static #cksum(data) {
+    let s = 0;
+    for (let i = 0; i < data.length - 1; i += 2) s += (data[i] << 8) | data[i+1];
+    if (data.length & 1) s += data[data.length-1] << 8;
+    while (s >> 16) s = (s & 0xffff) + (s >> 16);
+    return (~s) & 0xffff;
+  }
+
+  #tcpChecksum(tcp, srcIp, dstIp) {
+    const pseudo = new Uint8Array(12 + tcp.length);
+    pseudo.set(srcIp, 0); pseudo.set(dstIp, 4);
+    pseudo[9] = 6;
+    new DataView(pseudo.buffer).setUint16(10, tcp.length, false);
+    pseudo.set(tcp, 12);
+    new DataView(tcp.buffer).setUint16(16, WispSlirp.#cksum(pseudo), false);
+  }
+
+  static #ipEq(a, b) { return a[0]===b[0]&&a[1]===b[1]&&a[2]===b[2]&&a[3]===b[3]; }
+}
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -311,15 +638,24 @@ async function doBoat() {
   const consoleDev = new ConsoleDevice(inputTransform.readable, outputStream);
   const entropyDev = new EntropyDevice();
 
+  // VirtIO-net + SLIRP: guest gets a NIC with static IP 192.168.86.100/24.
+  // WispSlirp proxies TCP through wss://linuxontab-net.fly.dev/wisp and
+  // forwards DNS (UDP/53) via DoH at relay.linuxontab.com.
+  const guestMac = new Uint8Array([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
+  const slirp = new WispSlirp();
+  const netDev = new NetworkDevice(guestMac, slirp.backend);
+
   // Connect xterm keyboard → guest console input.
   term.onData(data => {
     guestWrite(new TextEncoder().encode(data));
   });
 
   machine = new Machine({
-    devices: [consoleDev, entropyDev],
+    devices: [netDev, consoleDev, entropyDev],
     memoryMib: 128,
-    cmdline: 'console=hvc0',
+    // Static IP: 192.168.86.100/24, gw 192.168.86.1, DNS 192.168.86.1
+    // SLIRP intercepts UDP/53 and forwards via DoH.
+    cmdline: 'console=hvc0 ip=192.168.86.100::192.168.86.1:255.255.255.0::eth0:off',
   });
 
   // Pipe the early boot console (pre-virtio kernel messages) to xterm.

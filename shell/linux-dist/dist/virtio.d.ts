@@ -21,7 +21,7 @@ declare class Chain {
     constructor(mem: DataView, queue: Virtqueue, id: number, skip: number, desc: VirtqDescriptor[]);
     release(written: number): void;
     [Symbol.iterator](): Generator<{
-        array: Uint8Array;
+        array: Uint8Array<ArrayBufferLike>;
         writable: boolean;
     }, void, unknown>;
 }
@@ -67,7 +67,7 @@ export interface BlockDeviceStorage {
 export declare class BlockDevice extends VirtioDevice<BlockDeviceConfig> {
     #private;
     ID: number;
-    config_bytes: Uint8Array;
+    config_bytes: Uint8Array<ArrayBuffer>;
     config: BlockDeviceConfig;
     constructor(storage: BlockDeviceStorage);
     notify(vq: number): Promise<void>;
@@ -75,14 +75,47 @@ export declare class BlockDevice extends VirtioDevice<BlockDeviceConfig> {
 export declare class ConsoleDevice extends VirtioDevice<EmptyStruct> {
     #private;
     ID: number;
-    config_bytes: Uint8Array;
+    config_bytes: Uint8Array<ArrayBuffer>;
     config: EmptyStruct;
     constructor(input: ReadableStream<Uint8Array>, output: WritableStream<Uint8Array>);
     notify(vq: number): Promise<void>;
 }
+declare const NetworkDeviceConfig_base: (new (view: ArrayBufferView) => {
+    mac0: number;
+    mac1: number;
+    mac2: number;
+    mac3: number;
+    mac4: number;
+    mac5: number;
+    status: number;
+}) & Type<{
+    mac0: number;
+    mac1: number;
+    mac2: number;
+    mac3: number;
+    mac4: number;
+    mac5: number;
+    status: number;
+}>;
+declare class NetworkDeviceConfig extends NetworkDeviceConfig_base {
+}
+export interface NetworkDeviceBackend {
+    /** Called with each outgoing Ethernet frame the guest sends (TX queue). */
+    send(frame: Uint8Array): void;
+    /** Set by NetworkDevice so the backend can inject frames into the guest (RX). */
+    receive: (frame: Uint8Array) => void;
+}
+export declare class NetworkDevice extends VirtioDevice<NetworkDeviceConfig> {
+    #private;
+    ID: number;
+    config_bytes: Uint8Array<ArrayBuffer>;
+    config: NetworkDeviceConfig;
+    constructor(mac: Uint8Array, backend: NetworkDeviceBackend);
+    notify(vq: number): void;
+}
 export declare class EntropyDevice extends VirtioDevice<EmptyStruct> {
     ID: number;
-    config_bytes: Uint8Array;
+    config_bytes: Uint8Array<ArrayBuffer>;
     config: EmptyStruct;
     notify(vq: number): void;
 }

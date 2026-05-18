@@ -1,7 +1,12 @@
 {
   "name": "@tombl/linux",
-  "version": "0.0.0",
+  "version": "0.0.0-net",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tombl/linux.git",
+    "directory": "tools/wasm"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -9,6 +14,7 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "vmlinux.wasm"
   ]
 }
