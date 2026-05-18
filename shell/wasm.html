@@ -589,6 +589,8 @@ window.addEventListener('resize', () => fitAddon.fit());
 let machine = null;
 let consoleInputWriter = null; // WritableStreamDefaultWriter<Uint8Array> — host → guest
 let booted = false;
+let onDataDisposable = null; // xterm onData handler — disposed on each boot to prevent accumulation
+let bootConsoleAbort = null; // AbortController for the bootConsole reader loop
 
 function setStatus(text, cls) {
   const el = $('status');
@@ -618,6 +620,10 @@ async function doBoat() {
     consoleInputWriter = null;
     booted = false;
   }
+  // Dispose previous onData handler so keystrokes aren't duplicated on reset.
+  if (onDataDisposable) { onDataDisposable.dispose(); onDataDisposable = null; }
+  // Abort previous bootConsole reader loop.
+  if (bootConsoleAbort) { bootConsoleAbort.abort(); bootConsoleAbort = null; }
 
   setStatus('booting…', 'hint');
   $('boot').disabled = true;
@@ -649,8 +655,8 @@ async function doBoat() {
   const initcpioResp = await fetch('./linux-dist/initramfs.cpio');
   const initcpio = new Uint8Array(await initcpioResp.arrayBuffer());
 
-  // Connect xterm keyboard → guest console input.
-  term.onData(data => {
+  // Connect xterm keyboard → guest console input (track disposable to avoid double-registration on reset).
+  onDataDisposable = term.onData(data => {
     guestWrite(new TextEncoder().encode(data));
   });
 
@@ -667,13 +673,19 @@ async function doBoat() {
   });
 
   // Pipe the early boot console (pre-virtio kernel messages) to xterm.
+  // Use an AbortController so we can cancel this loop on reset.
+  const _bca = new AbortController();
+  bootConsoleAbort = _bca;
   (async () => {
     const reader = machine.bootConsole.getReader();
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      term.write(value);
-    }
+    try {
+      for (;;) {
+        if (_bca.signal.aborted) { reader.cancel().catch(() => {}); break; }
+        const { value, done } = await reader.read();
+        if (done || _bca.signal.aborted) break;
+        term.write(value);
+      }
+    } catch (_) {}
   })();
 
   machine.on('error', ev => {
