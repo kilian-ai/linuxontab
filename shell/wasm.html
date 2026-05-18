@@ -682,6 +682,18 @@ async function doBoat() {
     $('boot').disabled = false;
   });
 
+  // DEBUG: Log device tree to console (stringify with replacer for BigInt)
+  try {
+    if (machine.devicetree) {
+      console.log('[WASM Boot] Device tree config:', JSON.stringify(machine.devicetree, (k, v) => typeof v === 'bigint' ? v.toString() : v, 2));
+    } else {
+      console.log('[WASM Boot] No devicetree property found');
+    }
+  } catch (e) {
+    console.log('[WASM Boot] Error logging device tree:', e.message);
+  }
+  console.log('[WASM Boot] NetworkDevice created with MAC:', [...guestMac].map(b => b.toString(16).padStart(2, '0')).join(':'));
+
   try {
     await machine.boot();
     booted = true;
