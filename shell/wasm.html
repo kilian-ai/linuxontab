@@ -306,7 +306,7 @@ class WispSlirp {
     pkt[0] = 0x01;                  // CONNECT
     dv.setUint32(1, id, true);      // stream ID (LE)
     pkt[5] = 0x01;                  // TCP
-    dv.setUint16(6, port, false);   // port (BE)
+    dv.setUint16(6, port, true);    // port (LE) — WISP v1 uses little-endian
     pkt.set(hostBytes, 8);
     this.#streams.set(id, { onData: null, onClose: null });
     this.#wispSend(pkt);
