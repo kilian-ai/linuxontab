@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LinuxOnTab WASM Shell — Linux kernel compiled to WebAssembly</title>
+<meta name="description" content="Linux kernel compiled to WebAssembly — boots in your browser with no emulation overhead. Powered by @tombl/linux.">
+<meta name="robots" content="noindex">
+<meta name="theme-color" content="#0b0d10">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%230b0d10'/%3E%3Ctext x='8' y='42' font-family='ui-monospace,Menlo,monospace' font-size='28' fill='%234ade80'%3E_%24%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="./xterm.css">
+<style>
+  :root { color-scheme: dark; }
+  html,body { margin:0; padding:0; background:#0b0d10; color:#d5d8dc; font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; height:100%; }
+  #wrap { display:flex; flex-direction:column; height:100vh; position:relative; }
+
+  /* ── top bar ── */
+  #bar { padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  #bar b { color:#fff; }
+  #bar select, #bar button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 8px; font:inherit; cursor:pointer; }
+  #bar button:hover:not(:disabled) { background:#2d343d; }
+  #bar button:disabled { opacity:0.4; cursor:not-allowed; }
+  #bar .stat { color:#888; margin-left:auto; font-size:11px; }
+  #bar .tag { font-size:10px; color:#7ab8f5; background:#1a2a3d; border:1px solid #2a3a50; border-radius:3px; padding:1px 6px; letter-spacing:.04em; }
+
+  /* ── terminal ── */
+  #term { flex:1; min-height:0; padding:6px 8px; background:#0b0d10; }
+  #term .xterm { height:100%; }
+  #term .xterm-viewport { background:#0b0d10 !important; overflow-y:scroll !important; }
+  #term .xterm-viewport::-webkit-scrollbar { width:10px; }
+  #term .xterm-viewport::-webkit-scrollbar-track { background:#0b0d10; }
+  #term .xterm-viewport::-webkit-scrollbar-thumb { background:#2a3240; border-radius:5px; }
+
+  /* ── lot-bridge panel ── */
+  #lot-bridge-panel { position:absolute; right:0; top:36px; bottom:0; width:480px; max-width:60vw; display:flex; flex-direction:column; background:#0b0d10; border-left:1px solid #2a2f36; z-index:50; box-shadow:-4px 0 12px rgba(0,0,0,0.5); }
+  #lot-bridge-panel[hidden] { display:none; }
+  .lb-bridge-url { display:flex; align-items:baseline; gap:6px; margin:2px 0; font-size:11px; font-family:monospace; }
+  .lb-port-tag   { color:#7ec8e3; flex-shrink:0; }
+  .lb-url-text   { color:#8b9bb4; word-break:break-all; }
+  .lb-summary    { font-size:11px; color:#6e7f94; margin-bottom:4px; }
+  #lb-hdr { display:flex; gap:8px; align-items:center; padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; }
+  #lb-hdr button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
+  #lb-hdr button:hover:not(:disabled) { background:#2d343d; }
+  #lb-hdr button:disabled { opacity:0.4; cursor:not-allowed; }
+  #lb-body { flex:1; min-height:0; overflow:auto; padding:12px 14px; display:flex; flex-direction:column; gap:10px; font-size:12px; }
+  #lb-body label { display:flex; flex-direction:column; gap:3px; }
+  #lb-body label span { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:#7a8392; }
+  #lb-ports { background:#161a1f; color:#ddd; border:1px solid #2a2f36; border-radius:4px; padding:5px 8px; font:inherit; width:100%; box-sizing:border-box; }
+  #lb-ports:focus { outline:none; border-color:#3a424d; }
+  #lb-relay { background:#161a1f; color:#ddd; border:1px solid #2a2f36; border-radius:4px; padding:5px 8px; font:inherit; width:100%; box-sizing:border-box; font-size:11px; }
+  #lb-relay:focus { outline:none; border-color:#3a424d; }
+  #lb-actions { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  #lb-actions button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:4px 12px; font:inherit; cursor:pointer; }
+  #lb-actions button:hover:not(:disabled) { background:#2d343d; }
+  #lb-actions button:disabled { opacity:0.4; cursor:not-allowed; }
+  #lb-actions #lb-start { background:#14532d; border-color:#166534; color:#d1fae5; }
+  #lb-actions #lb-start:hover:not(:disabled) { background:#166534; }
+  #lb-actions #lb-stop { background:#450a0a; border-color:#7f1d1d; color:#fecaca; }
+  #lb-actions #lb-stop:hover:not(:disabled) { background:#7f1d1d; }
+  #lb-status-row { display:flex; align-items:center; gap:8px; font-size:12px; padding:6px 8px; background:#161a1f; border:1px solid #2a2f36; border-radius:4px; }
+  #lb-dot { width:9px; height:9px; border-radius:50%; background:#6b7380; flex-shrink:0; }
+  #lb-dot.ok  { background:#4ade80; }
+  #lb-dot.err { background:#f87171; }
+  #lb-code-val { color:#7ab8f5; font-weight:600; letter-spacing:.06em; font-size:13px; }
+  #lb-pool-info { color:#aab2bc; font-size:11px; margin-left:auto; }
+  #lb-log { flex:1; min-height:120px; max-height:340px; overflow:auto; background:#0b0d10; border:1px solid #2a2f36; border-radius:4px; padding:8px; font-family:'Menlo','Monaco','Consolas',monospace; font-size:11px; line-height:1.45; white-space:pre-wrap; word-break:break-all; color:#7a8392; }
+  #lb-log .lb-ok  { color:#4ade80; }
+  #lb-log .lb-err { color:#f87171; }
+  #lb-log .lb-info { color:#7ab8f5; }
+
+  /* ── tunnels panel ── */
+  #tunnels-panel { position:absolute; right:0; top:36px; bottom:0; width:520px; max-width:60vw; display:flex; flex-direction:column; background:#0b0d10; border-left:1px solid #2a2f36; z-index:50; box-shadow:-4px 0 12px rgba(0,0,0,0.5); }
+  #tunnels-panel[hidden] { display:none; }
+  #tunnels-hdr { display:flex; gap:8px; align-items:center; padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; }
+  #tunnels-hdr button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
+  #tunnels-hdr button:hover:not(:disabled) { background:#2d343d; }
+  #tunnels-hdr button:disabled { opacity:0.4; cursor:not-allowed; }
+  #tunnels-body { flex:1; min-height:0; overflow:auto; padding:12px 14px; display:flex; flex-direction:column; gap:10px; font-size:12px; }
+  #tunnels-list { display:flex; flex-direction:column; gap:8px; }
+  #tunnels-list .tn-row { background:#161a1f; border:1px solid #2a2f36; border-radius:6px; padding:10px 12px; display:flex; flex-direction:column; gap:4px; }
+  #tunnels-list .tn-row.tn-empty { color:#7a8392; }
+  #tunnels-list .tn-code { color:#7ab8f5; font-weight:600; letter-spacing:0.04em; }
+  #tunnels-list .tn-meta { color:#aab2bc; word-break:break-all; }
+  #tunnels-list .tn-relay-ok { color:#4ade80; }
+  #tunnels-list .tn-relay-warn { color:#facc15; }
+  #tunnels-list .tn-relay-err { color:#f87171; }
+  #tunnels-list .tn-actions { display:flex; gap:6px; flex-wrap:wrap; margin-top:4px; }
+  #tunnels-list .tn-actions button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:2px 10px; font:inherit; cursor:pointer; }
+  #tunnels-list .tn-actions button:hover:not(:disabled) { background:#2d343d; }
+  #tunnels-list .tn-cmd { font-family:'Menlo','Monaco','Consolas',monospace; font-size:11px; color:#7a8392; word-break:break-all; }
+  #tunnels-log { font-size:11px; line-height:1.45; max-height:800px; overflow:auto; background:#0b0d10; border:1px solid #2a2f36; border-radius:4px; padding:8px; font-family:'Menlo','Monaco','Consolas',monospace; }
+  #tunnels-log .tl-cmd { color:#7ab8f5; white-space:pre-wrap; word-break:break-all; }
+  #tunnels-log .tl-out { color:#aab2bc; white-space:pre-wrap; word-break:break-all; padding-left:8px; }
+  #tn-ports-section { background:#161a1f; border:1px solid #2a2f36; border-radius:6px; padding:10px 12px; display:flex; flex-direction:column; gap:6px; }
+  .tn-section-hdr { display:flex; align-items:baseline; gap:8px; color:#ddd; }
+  #tn-ports-list { display:flex; flex-direction:column; gap:4px; }
+  #tn-ports-list .tn-port-row { display:flex; align-items:center; gap:8px; padding:3px 4px; border-radius:4px; }
+  #tn-ports-list .tn-port-row:hover { background:#1d2127; }
+  #tn-ports-list .tn-port-row input[type=checkbox] { accent-color:#7ab8f5; cursor:pointer; }
+  #tn-ports-list .tn-port-num { color:#7ab8f5; font-family:'Menlo','Monaco','Consolas',monospace; min-width:50px; }
+  #tn-ports-list .tn-port-label-input { background:#0b0d10; color:#ddd; border:1px solid #2a2f36; border-radius:3px; padding:1px 6px; font:inherit; flex:1; min-width:0; }
+  #tn-ports-list .tn-port-label-input:focus { outline:none; border-color:#3a424d; }
+  #tn-ports-list .tn-port-chan-input { background:#0b0d10; color:#7ab8f5; border:1px solid #2a2f36; border-radius:3px; padding:1px 4px; font:inherit; width:48px; text-align:right; }
+  #tn-ports-list .tn-port-chan-input:focus { outline:none; border-color:#3a424d; }
+  #tn-ports-list .tn-port-chan-input::-webkit-inner-spin-button, #tn-ports-list .tn-port-chan-input::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
+  #tn-ports-list .tn-port-expose { display:inline-flex; align-items:center; gap:3px; color:#7a8392; font-size:11px; cursor:pointer; user-select:none; }
+  #tn-ports-list .tn-port-expose input[type=checkbox] { accent-color:#facc15; cursor:pointer; }
+  #tn-ports-list .tn-port-expose.tn-expose-on { color:#facc15; }
+  #tn-ports-list .tn-port-del { background:transparent; color:#7a8392; border:none; cursor:pointer; padding:2px 6px; border-radius:3px; font:inherit; }
+  #tn-ports-list .tn-port-del:hover { background:#3a2225; color:#f87171; }
+  .tn-ports-add { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .tn-ports-add input { background:#0b0d10; color:#ddd; border:1px solid #2a2f36; border-radius:3px; padding:2px 6px; font:inherit; }
+  .tn-ports-add input[type=number] { width:70px; }
+  .tn-ports-add input[type=text] { flex:1; min-width:120px; }
+  .tn-ports-add button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:2px 10px; font:inherit; cursor:pointer; }
+  .tn-ports-add button:hover { background:#2d343d; }
+  #tunnels-log .tl-ok { color:#4ade80; }
+  #tunnels-log .tl-err { color:#f87171; }
+  #tunnels-log .tl-info { color:#7a8392; }
+
+  .hint { color:#6b7380; }
+  .ok { color:#4ade80; }
+  .err { color:#f87171; }
+</style>
+</head>
+<body>
+
+<!-- Cross-Origin Isolation: register ServiceWorker so SharedArrayBuffer is
+     available on GitHub Pages. On first load the SW registers + reloads the
+     page; subsequent loads go through the SW and get COOP/COEP headers. -->
+<script>
+(function () {
+  if (typeof SharedArrayBuffer !== 'undefined') return; // already isolated
+  if (!('serviceWorker' in navigator)) {
+    document.addEventListener('DOMContentLoaded', function () {
+      document.body.innerHTML = '<p style="color:#f87171;padding:1em">Your browser does not support ServiceWorkers.<br>SharedArrayBuffer is required for the WASM kernel.</p>';
+    });
+    return;
+  }
+  navigator.serviceWorker.register('./coi-serviceworker.js', { scope: './' }).then(function (reg) {
+    if (reg.active) {
+      // SW is active but page wasn't isolated — reload to pick up headers.
+      window.location.reload();
+    } else {
+      // SW just installed for the first time — wait for it to activate.
+      reg.addEventListener('updatefound', function () {
+        var worker = reg.installing;
+        if (!worker) return;
+        worker.addEventListener('statechange', function () {
+          if (worker.state === 'activated') window.location.reload();
+        });
+      });
+    }
+  }).catch(function (err) {
+    console.error('[coi-sw] registration failed:', err);
+  });
+})();
+</script>
+
+<div id="wrap">
+  <div id="bar">
+    <b>LinuxOnTab</b>
+    <span class="tag">wasm</span>
+    <button id="boot">boot</button>
+    <button id="reset" disabled>reset</button>
+    <span id="status" class="hint">not booted</span>
+    <span class="stat" style="margin-left:auto"></span>
+    <button id="tunnels" disabled>tunnels</button>
+    <button id="lot-bridge-btn" disabled>lot-bridge</button>
+  </div>
+  <div id="term"></div>
+
+  <!-- ── lot-bridge panel ── -->
+  <div id="lot-bridge-panel" hidden>
+    <div id="lb-hdr">
+      <b>lot-bridge</b>
+      <button id="lb-refresh" title="re-read /tmp/lot-bridge.status.json from guest">refresh</button>
+      <button id="lb-close" style="margin-left:auto">close</button>
+    </div>
+    <div id="lb-body">
+      <label><span>relay URL</span>
+        <input id="lb-relay" type="text" value="https://linuxontab-tunnel.fly.dev" spellcheck="false" autocomplete="off" />
+      </label>
+      <label><span>ports (space-separated)</span>
+        <input id="lb-ports" type="text" value="22 8080" spellcheck="false" autocomplete="off" />
+      </label>
+      <div id="lb-actions">
+        <button id="lb-start">start</button>
+        <button id="lb-stop">stop</button>
+        <button id="lb-status-btn">status</button>
+      </div>
+      <div id="lb-status-row">
+        <div id="lb-dot"></div>
+        <span id="lb-state-label">not running</span>
+        <span id="lb-code-val"></span>
+        <span id="lb-pool-info"></span>
+      </div>
+      <div id="lb-log"></div>
+    </div>
+  </div>
+
+  <!-- ── tunnels panel ── -->
+  <div id="tunnels-panel" hidden>
+    <div id="tunnels-hdr">
+      <b>tunnels</b>
+      <button id="tunnels-refresh" title="re-scan guest + relay">refresh</button>
+      <button id="tunnels-close" style="margin-left:auto">close</button>
+    </div>
+    <div id="tunnels-body">
+      <div id="tn-ports-section">
+        <div class="tn-section-hdr"><b>port config</b><span class="hint" style="font-size:10px">which ports to bridge</span></div>
+        <div id="tn-ports-list"></div>
+        <div class="tn-ports-add">
+          <input type="number" id="tn-add-port" placeholder="port" min="1" max="65535">
+          <input type="text" id="tn-add-label" placeholder="label (optional)">
+          <button id="tn-add-btn">add port</button>
+        </div>
+      </div>
+      <div id="tunnels-list"></div>
+      <div id="tunnels-log"></div>
+      <div style="padding:10px 0">
+        <button id="tn-run-btn" style="background:#14532d;border:1px solid #166534;color:#d1fae5;padding:5px 14px;border-radius:4px;cursor:pointer;font:inherit">run tunnel-up in guest</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="./xterm.js"></script>
+<script src="./xterm-addon-fit.js"></script>
+<script type="module">
+// ─────────────────────────────────────────────────────────────────────────────
+// @tombl/linux Machine API
+// vmlinux-UHA6PIC5.wasm + worker-Q7XWPLKR.js must be in ./linux-dist/dist/
+// ─────────────────────────────────────────────────────────────────────────────
+import { Machine, ConsoleDevice, EntropyDevice } from './linux-dist/dist/index.js';
+
+// ── helpers ──────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+// ── xterm.js setup ───────────────────────────────────────────────────────────
+const term = new Terminal({
+  cursorBlink: true,
+  fontFamily: "'Menlo','Monaco','Consolas','Courier New',monospace",
+  fontSize: 13,
+  theme: {
+    background: '#0b0d10',
+    foreground: '#d5d8dc',
+    cursor:     '#7ab8f5',
+    selectionBackground: '#2a3a50',
+  },
+  allowProposedApi: true,
+  scrollback: 5000,
+});
+const fitAddon = new FitAddon.FitAddon();
+term.loadAddon(fitAddon);
+term.open($('term'));
+fitAddon.fit();
+window.addEventListener('resize', () => fitAddon.fit());
+
+// ── state ─────────────────────────────────────────────────────────────────────
+let machine = null;
+let consoleInputWriter = null; // WritableStreamDefaultWriter<Uint8Array> — host → guest
+let booted = false;
+
+function setStatus(text, cls) {
+  const el = $('status');
+  el.textContent = text;
+  el.className = cls || 'hint';
+}
+
+// ── guest I/O ──────────────────────────────────────────────────────────────────
+// Send raw bytes to the guest console (host → guest keyboard input).
+function guestWrite(bytes) {
+  if (!consoleInputWriter) return;
+  consoleInputWriter.write(bytes).catch(() => {});
+}
+
+// Type a string into the guest terminal (useful for sending commands).
+// Appends \r to submit the command.
+function guestSend(text) {
+  const enc = new TextEncoder();
+  guestWrite(enc.encode(text + '\r'));
+}
+
+// ── boot ───────────────────────────────────────────────────────────────────────
+async function doBoat() {
+  if (booted) {
+    term.write('\r\n\x1b[33m[wasm-shell] resetting machine…\x1b[0m\r\n');
+    machine = null;
+    consoleInputWriter = null;
+    booted = false;
+  }
+
+  setStatus('booting…', 'hint');
+  $('boot').disabled = true;
+  $('reset').disabled = true;
+
+  // Pipe: host keyboard → guest console input.
+  const inputTransform = new TransformStream();
+  consoleInputWriter = inputTransform.writable.getWriter();
+
+  // Pipe: guest console output → xterm.
+  let outputController;
+  const outputStream = new WritableStream({
+    write(chunk) {
+      term.write(chunk);
+    },
+  });
+
+  const consoleDev = new ConsoleDevice(inputTransform.readable, outputStream);
+  const entropyDev = new EntropyDevice();
+
+  // Connect xterm keyboard → guest console input.
+  term.onData(data => {
+    guestWrite(new TextEncoder().encode(data));
+  });
+
+  machine = new Machine({
+    devices: [consoleDev, entropyDev],
+    memoryMib: 128,
+    cmdline: 'console=hvc0',
+  });
+
+  // Pipe the early boot console (pre-virtio kernel messages) to xterm.
+  (async () => {
+    const reader = machine.bootConsole.getReader();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      term.write(value);
+    }
+  })();
+
+  machine.addEventListener('error', ev => {
+    setStatus('error', 'err');
+    term.write('\r\n\x1b[31m[wasm-shell] kernel error: ' + ev.message + '\x1b[0m\r\n');
+    $('boot').disabled = false;
+  });
+
+  try {
+    await machine.boot();
+    booted = true;
+    setStatus('running', 'ok');
+    $('reset').disabled = false;
+    $('tunnels').disabled = false;
+    $('lot-bridge-btn').disabled = false;
+    term.focus();
+  } catch (err) {
+    setStatus('boot failed', 'err');
+    term.write('\r\n\x1b[31m[wasm-shell] boot failed: ' + err.message + '\x1b[0m\r\n');
+    $('boot').disabled = false;
+  }
+}
+
+$('boot').onclick = () => doBoat();
+$('reset').onclick = () => doBoat();
+
+// ── panel toggles ─────────────────────────────────────────────────────────────
+const panels = { tunnels: $('tunnels-panel'), 'lot-bridge': $('lot-bridge-panel') };
+function openPanel(name) {
+  for (const [k, el] of Object.entries(panels)) el.hidden = (k !== name);
+}
+function closePanel() { for (const el of Object.values(panels)) el.hidden = true; }
+
+$('tunnels').onclick     = () => $('tunnels-panel').hidden ? openPanel('tunnels')    : closePanel();
+$('lot-bridge-btn').onclick = () => $('lot-bridge-panel').hidden ? openPanel('lot-bridge') : closePanel();
+$('tunnels-close').onclick  = closePanel;
+$('lb-close').onclick       = closePanel;
+
+// ── tunnels panel ─────────────────────────────────────────────────────────────
+const tunnelsLogEl = $('tunnels-log');
+
+const TUNNEL_CMD_PREFIX = 'wget -qO /tmp/tunnel-up.sh https://linuxontab.com/local/tunnel-up.sh && sh /tmp/tunnel-up.sh';
+const TUNNEL_PORTS_KEY  = 'traits.tunnels.ports';
+const TUNNEL_DEFAULT_PORTS = [
+  { port: 22,    label: 'ssh',            enabled: true,  channels: null, expose: true  },
+  { port: 8080,  label: 'public-http',    enabled: true,  channels: null, expose: false },
+  { port: 22000, label: 'syncthing-sync', enabled: true,  channels: null, expose: false },
+  { port: 8384,  label: 'syncthing-gui',  enabled: true,  channels: 64,   expose: false },
+];
+const TUNNEL_RELAY_ENDPOINTS = [
+  'https://linuxontab-tunnel.fly.dev',
+  'https://tunnel.linuxontab.com',
+];
+const TUNNEL_EXPOSE_ENDPOINTS = ['https://linuxontab-tunnel.fly.dev'];
+
+function tnLoadPorts() {
+  try {
+    const raw = localStorage.getItem(TUNNEL_PORTS_KEY);
+    if (!raw) return TUNNEL_DEFAULT_PORTS.map(p => ({ ...p }));
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) throw new Error('not array');
+    return arr.map(e => {
+      const ch = parseInt(e.channels, 10);
+      const port = parseInt(e.port, 10);
+      let expose = typeof e.expose === 'boolean' ? e.expose : !TUNNEL_DEFAULT_PORTS.some(d => d.port === port);
+      return { port, label: String(e.label || ''), enabled: !!e.enabled, channels: Number.isFinite(ch) && ch > 0 ? ch : null, expose };
+    }).filter(e => Number.isFinite(e.port) && e.port > 0 && e.port < 65536);
+  } catch (_) { return TUNNEL_DEFAULT_PORTS.map(p => ({ ...p })); }
+}
+function tnSavePorts(arr) {
+  try { localStorage.setItem(TUNNEL_PORTS_KEY, JSON.stringify(arr)); } catch (_) {}
+}
+function tnEnabledPortSpecs() {
+  return tnLoadPorts()
+    .filter(e => e.enabled)
+    .map(e => (e.channels && e.channels > 0) ? (e.port + ':' + e.channels) : String(e.port));
+}
+function tnBuildDefaultCmd() {
+  const specs = tnEnabledPortSpecs();
+  return TUNNEL_CMD_PREFIX + ' ' + (specs.length ? specs.join(' ') : '22');
+}
+
+function tnLog(line, cls) {
+  const d = document.createElement('div');
+  d.className = 'tl-' + (cls || 'info');
+  d.textContent = line;
+  tunnelsLogEl.appendChild(d);
+  tunnelsLogEl.scrollTop = tunnelsLogEl.scrollHeight;
+}
+
+async function tnFetchRelayStatus(code) {
+  if (!code) return null;
+  for (const base of TUNNEL_RELAY_ENDPOINTS) {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 4000);
+      const r = await fetch(base + '/port/status?code=' + encodeURIComponent(code), { signal: ctrl.signal });
+      clearTimeout(t);
+      if (!r.ok) continue;
+      const j = await r.json();
+      return { endpoint: base, ...j };
+    } catch (_) {}
+  }
+  return null;
+}
+
+function tnRenderPortsConfig() {
+  const ports = tnLoadPorts();
+  const list = $('tn-ports-list');
+  list.innerHTML = '';
+  ports.forEach((p, i) => {
+    const row = document.createElement('div');
+    row.className = 'tn-port-row';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = p.enabled;
+    cb.onchange = () => { ports[i].enabled = cb.checked; tnSavePorts(ports); };
+
+    const num = document.createElement('span');
+    num.className = 'tn-port-num'; num.textContent = ':' + p.port;
+
+    const lbl = document.createElement('input');
+    lbl.type = 'text'; lbl.className = 'tn-port-label-input'; lbl.value = p.label; lbl.placeholder = 'label';
+    lbl.onchange = () => { ports[i].label = lbl.value; tnSavePorts(ports); };
+
+    const exp = document.createElement('label');
+    exp.className = 'tn-port-expose' + (p.expose ? ' tn-expose-on' : '');
+    const expCb = document.createElement('input');
+    expCb.type = 'checkbox'; expCb.checked = !!p.expose;
+    expCb.onchange = () => { ports[i].expose = expCb.checked; exp.className = 'tn-port-expose' + (expCb.checked ? ' tn-expose-on' : ''); tnSavePorts(ports); };
+    exp.appendChild(expCb);
+    exp.append('expose');
+
+    const del = document.createElement('button');
+    del.className = 'tn-port-del'; del.textContent = '×'; del.title = 'remove port';
+    del.onclick = () => { ports.splice(i, 1); tnSavePorts(ports); tnRenderPortsConfig(); };
+
+    row.append(cb, num, lbl, exp, del);
+    list.appendChild(row);
+  });
+}
+tnRenderPortsConfig();
+
+$('tn-add-btn').onclick = () => {
+  const portVal = parseInt($('tn-add-port').value, 10);
+  if (!Number.isFinite(portVal) || portVal < 1 || portVal > 65535) return;
+  const label = $('tn-add-label').value.trim();
+  const ports = tnLoadPorts();
+  if (!ports.find(p => p.port === portVal)) {
+    ports.push({ port: portVal, label, enabled: true, channels: null, expose: true });
+    tnSavePorts(ports);
+    tnRenderPortsConfig();
+    $('tn-add-port').value = '';
+    $('tn-add-label').value = '';
+  }
+};
+
+async function tnRefresh() {
+  tnLog('scanning relay…', 'info');
+  const list = $('tunnels-list');
+  list.innerHTML = '';
+  // Without serialVfs we can't exec in the guest; show a relay-query-only view.
+  const code = localStorage.getItem('traits.tunnels.lastCode') || '';
+  if (code) {
+    const s = await tnFetchRelayStatus(code);
+    const row = document.createElement('div');
+    row.className = 'tn-row';
+    if (s) {
+      const active = !!s.active;
+      const guestPorts = Array.isArray(s.guest_ports) ? s.guest_ports : [];
+      row.innerHTML = '<span class="tn-code">code: ' + code + '</span>' +
+        '<div class="tn-meta ' + (active ? 'tn-relay-ok' : 'tn-relay-warn') + '">relay: ' +
+        (active ? '✓ active' : '✗ inactive') +
+        (guestPorts.length ? '  guest=' + guestPorts.join(',') : '') + '</div>';
+    } else {
+      row.innerHTML = '<span class="tn-code">code: ' + code + '</span><div class="tn-meta tn-relay-err">relay: unreachable</div>';
+    }
+    list.appendChild(row);
+    tnLog('done', 'ok');
+  } else {
+    const row = document.createElement('div');
+    row.className = 'tn-row tn-empty';
+    row.textContent = 'no active code — run tunnel-up in the guest to get one';
+    list.appendChild(row);
+    tnLog('no code cached; run tunnel-up in guest first', 'info');
+  }
+}
+
+$('tunnels-refresh').onclick = () => tnRefresh();
+
+$('tn-run-btn').onclick = () => {
+  const cmd = tnBuildDefaultCmd();
+  tnLog('sending to guest: ' + cmd, 'cmd');
+  guestSend(cmd);
+  tnLog('sent — watch the terminal', 'ok');
+};
+
+// ── lot-bridge panel ──────────────────────────────────────────────────────────
+(function () {
+  const lbBtn       = $('lot-bridge-btn');
+  const lbPanel     = $('lot-bridge-panel');
+  const lbClose     = $('lb-close');
+  const lbStart     = $('lb-start');
+  const lbStop      = $('lb-stop');
+  const lbStatusBtn = $('lb-status-btn');
+  const lbRefresh   = $('lb-refresh');
+  const lbPorts     = $('lb-ports');
+  const lbRelay     = $('lb-relay');
+  const lbDot       = $('lb-dot');
+  const lbStateLabel = $('lb-state-label');
+  const lbCodeVal   = $('lb-code-val');
+  const lbPoolInfo  = $('lb-pool-info');
+  const lbLog       = $('lb-log');
+
+  function lbAppend(text, cls) {
+    const line = document.createElement('div');
+    if (cls) line.className = cls;
+    line.textContent = text;
+    lbLog.appendChild(line);
+    lbLog.scrollTop = lbLog.scrollHeight;
+  }
+
+  function lbSetRunning(running, code) {
+    lbDot.className = running ? 'ok' : '';
+    lbStateLabel.textContent = running ? 'running' : 'not running';
+    lbCodeVal.textContent = (running && code) ? 'code: ' + code : '';
+  }
+
+  // guestExec: type a command into the guest terminal and wait.
+  // Because we don't have serialVfs output capture, this just sends the cmd
+  // and returns after a delay. Output appears in the terminal directly.
+  async function lbExec(cmd, opts) {
+    guestSend(cmd);
+    const wait = (opts && opts.timeout) ? Math.min(opts.timeout, 3000) : 1500;
+    await new Promise(r => setTimeout(r, wait));
+    return { stdout: '', exitCode: 0 };
+  }
+
+  async function lbReadStatus() {
+    // Ask the guest to print the status JSON to a known marker line.
+    guestSend('echo __LB_STATUS__; cat /tmp/lot-bridge.status.json 2>/dev/null || echo __LB_NOFILE__; echo __LB_END__');
+    lbAppend('checking status (check terminal output)…', 'lb-info');
+    await new Promise(r => setTimeout(r, 2000));
+    return null; // can't capture output without serialVfs
+  }
+
+  async function lbRefreshUI() {
+    lbAppend('refresh: check terminal for lot-bridge status output', 'lb-info');
+    guestSend('cat /tmp/lot-bridge.status.json 2>/dev/null || echo "(lot-bridge not running)"');
+    guestSend('cat /tmp/lot-bridge.code 2>/dev/null && echo || true');
+    await new Promise(r => setTimeout(r, 1000));
+  }
+
+  async function lbDoStart() {
+    const ports = (lbPorts.value || '22 8080').trim().split(/\s+/).filter(Boolean);
+    const relay = (lbRelay.value || 'https://linuxontab-tunnel.fly.dev').trim();
+    if (!ports.length) { lbAppend('no ports specified', 'lb-err'); return; }
+
+    lbAppend('downloading lot-bridge binary…', 'lb-info');
+    guestSend(
+      'rm -f /usr/local/bin/lot-bridge; ' +
+      'wget -qO /usr/local/bin/lot-bridge https://raw.githubusercontent.com/kilian-ai/linuxontab/main/local/lot-bridge ' +
+      '|| wget -qO /usr/local/bin/lot-bridge https://linuxontab.com/local/lot-bridge; ' +
+      'chmod +x /usr/local/bin/lot-bridge; ' +
+      '/usr/local/bin/lot-bridge --version 2>&1'
+    );
+    lbAppend('waiting for download (watch terminal)…', 'lb-info');
+    await new Promise(r => setTimeout(r, 8000));
+
+    guestSend('lot-bridge down 2>/dev/null; killall -q websocat 2>/dev/null; killall -q lot-bridge 2>/dev/null; true');
+    guestSend('rm -f /tmp/lot-bridge.code /tmp/lot-bridge.status.json /tmp/lot-bridge.pid');
+    await new Promise(r => setTimeout(r, 600));
+
+    const cmd = `LOT_BRIDGE_RELAY='${relay}' lot-bridge up ${ports.join(' ')} > /tmp/lot-bridge.log 2>&1 &`;
+    lbAppend('starting: ' + cmd, 'lb-info');
+    guestSend(cmd);
+    lbAppend('sent — watching for code (check terminal)…', 'lb-info');
+
+    // Poll for code via terminal output — we can only ask the guest to print it.
+    for (let i = 0; i < 8; i++) {
+      await new Promise(r => setTimeout(r, 1500));
+      guestSend('cat /tmp/lot-bridge.code 2>/dev/null | tr -d "\\n"; echo');
+    }
+    lbAppend('done — copy code from terminal output above', 'lb-ok');
+    lbSetRunning(true, '?');
+  }
+
+  async function lbDoStop() {
+    lbAppend('stopping…', 'lb-info');
+    guestSend('lot-bridge down 2>/dev/null; killall -q websocat 2>/dev/null; killall -q lot-bridge 2>/dev/null; true');
+    await new Promise(r => setTimeout(r, 800));
+    lbSetRunning(false, null);
+    lbPoolInfo.textContent = '';
+    lbAppend('stop command sent', 'lb-ok');
+  }
+
+  lbStart.onclick = async () => {
+    lbStart.disabled = true;
+    try { await lbDoStart(); }
+    catch (e) { lbAppend('error: ' + e.message, 'lb-err'); }
+    finally { lbStart.disabled = false; }
+  };
+
+  lbStop.onclick = async () => {
+    lbStop.disabled = true;
+    try { await lbDoStop(); }
+    finally { lbStop.disabled = false; }
+  };
+
+  lbStatusBtn.onclick = async () => {
+    lbStatusBtn.disabled = true;
+    try {
+      lbAppend('requesting status (see terminal)…', 'lb-info');
+      guestSend('cat /tmp/lot-bridge.status.json 2>/dev/null | head -20 || echo "(not running)"');
+      guestSend('cat /tmp/lot-bridge.code 2>/dev/null && echo || true');
+    } finally { lbStatusBtn.disabled = false; }
+  };
+
+  lbRefresh.onclick = async () => {
+    lbRefresh.disabled = true;
+    try { await lbRefreshUI(); }
+    finally { lbRefresh.disabled = false; }
+  };
+})();
+</script>
+</body>
+</html>
