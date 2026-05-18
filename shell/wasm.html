@@ -645,6 +645,10 @@ async function doBoat() {
   const slirp = new WispSlirp();
   const netDev = new NetworkDevice(guestMac, slirp.backend);
 
+  // Load userspace initramfs (BusyBox + musl compiled to WASM).
+  const initcpioResp = await fetch('./linux-dist/initramfs.cpio');
+  const initcpio = new Uint8Array(await initcpioResp.arrayBuffer());
+
   // Connect xterm keyboard → guest console input.
   term.onData(data => {
     guestWrite(new TextEncoder().encode(data));
@@ -653,9 +657,11 @@ async function doBoat() {
   machine = new Machine({
     devices: [netDev, consoleDev, entropyDev],
     memoryMib: 128,
+    cpus: 1,
+    initcpio,
     // Static IP: 192.168.86.100/24, gw 192.168.86.1, DNS 192.168.86.1
     // SLIRP intercepts UDP/53 and forwards via DoH.
-    cmdline: 'console=hvc0 ip=192.168.86.100::192.168.86.1:255.255.255.0::eth0:off',
+    cmdline: 'console=hvc0 nr_cpus=1 rdinit=/init ip=192.168.86.100::192.168.86.1:255.255.255.0::eth0:off',
   });
 
   // Pipe the early boot console (pre-virtio kernel messages) to xterm.
@@ -668,7 +674,7 @@ async function doBoat() {
     }
   })();
 
-  machine.addEventListener('error', ev => {
+  machine.on('error', ev => {
     setStatus('error', 'err');
     term.write('\r\n\x1b[31m[wasm-shell] kernel error: ' + ev.message + '\x1b[0m\r\n');
     $('boot').disabled = false;
@@ -989,6 +995,9 @@ $('tn-run-btn').onclick = () => {
     try { await lbRefreshUI(); }
     finally { lbRefresh.disabled = false; }
   };
+
+  // Expose guestSend globally for test/debug automation
+  window.guestSend = guestSend;
 })();
 </script>
 </body>
