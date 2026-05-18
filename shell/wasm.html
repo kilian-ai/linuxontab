@@ -278,12 +278,14 @@ class WispSlirp {
     this.#ws = new WebSocket(this.#url);
     this.#ws.binaryType = 'arraybuffer';
     this.#ws.onopen = () => {
+      console.log('[WISP] WebSocket open');
       this.#wsReady = true;
       for (const pkt of this.#wsQueue) this.#ws.send(pkt);
       this.#wsQueue = [];
     };
     this.#ws.onmessage = ev => this.#onWispMsg(new Uint8Array(ev.data));
-    this.#ws.onclose = this.#ws.onerror = () => {
+    this.#ws.onclose = this.#ws.onerror = (ev) => {
+      console.log('[WISP] WebSocket closed/error', ev?.code, ev?.reason);
       this.#wsReady = false;
       this.#streams.clear();
       this.#tcpConns.clear();
@@ -337,8 +339,10 @@ class WispSlirp {
     const payload = buf.slice(5);
     if (type === 0x02) {
       const s = this.#streams.get(id);
-      if (s?.onData) s.onData(payload);
+      if (s?.onData) { console.log('[WISP] DATA sid='+id+' len='+payload.length); s.onData(payload); }
+      else console.log('[WISP] DATA sid='+id+' — no handler!');
     } else if (type === 0x04) {
+      console.log('[WISP] CLOSE sid='+id);
       const s = this.#streams.get(id);
       if (s?.onClose) s.onClose();
       this.#streams.delete(id);
@@ -364,6 +368,7 @@ class WispSlirp {
     if (!WispSlirp.#ipEq(tpa, WispSlirp.GW_IP)) return;  // not asking for us
     const sha = arp.slice(8, 14);   // sender hardware (guest MAC)
     const spa = arp.slice(14, 18);  // sender protocol (guest IP)
+    console.log('[ARP] request from', Array.from(spa).join('.'), '→ sending reply');
     const reply = new Uint8Array(28);
     const dv = new DataView(reply.buffer);
     dv.setUint16(0, 1); dv.setUint16(2, 0x0800); reply[4]=6; reply[5]=4;
@@ -407,6 +412,7 @@ class WispSlirp {
     // New connection SYN
     if ((flags & SYN) && !(flags & ACK)) {
       const dstStr = Array.from(dstIp).join('.');
+      console.log('[TCP] SYN', Array.from(srcIp).join('.')+':'+srcPort, '→', dstStr+':'+dstPort);
       const wispId = this.#wispConnect(dstStr, dstPort);
       const myIsn  = (Math.random() * 0x80000000 | 0) >>> 0;
       const conn = {
