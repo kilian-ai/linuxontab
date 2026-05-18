@@ -661,7 +661,9 @@ async function doBoat() {
     initcpio,
     // Static IP: 192.168.86.100/24, gw 192.168.86.1, DNS 192.168.86.1
     // SLIRP intercepts UDP/53 and forwards via DoH.
-    cmdline: 'console=hvc0 nr_cpus=1 rdinit=/init ip=192.168.86.100::192.168.86.1:255.255.255.0::eth0:off',
+    // ip=... format: ip:server:gw:netmask:hostname:interface:autoconf
+    // 'on' means bring the interface up, 'off' means don't auto-bring up
+    cmdline: 'console=hvc0 nr_cpus=1 rdinit=/init ip=192.168.86.100::192.168.86.1:255.255.255.0::eth0:on',
   });
 
   // Pipe the early boot console (pre-virtio kernel messages) to xterm.
