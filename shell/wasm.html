@@ -233,7 +233,7 @@
 // @tombl/linux Machine API
 // vmlinux-UHA6PIC5.wasm + worker-Q7XWPLKR.js must be in ./linux-dist/dist/
 // ─────────────────────────────────────────────────────────────────────────────
-import { Machine, ConsoleDevice, EntropyDevice, NetworkDevice } from './linux-dist/dist/index.js';
+import { Machine, BlockDevice, ConsoleDevice, EntropyDevice, NetworkDevice } from './linux-dist/dist/index.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WispSlirp — Browser-side SLIRP + WISP networking for the WASM kernel
@@ -755,9 +755,18 @@ async function doBoat() {
   const netDev = new NetworkDevice(guestMac, slirp.backend);
   window.__netDev = netDev;
 
-  // Load userspace initramfs (BusyBox + musl compiled to WASM).
+  // Load userspace initramfs (pivot-root stub that hands off to rootfs.ext4).
   const initcpioResp = await fetch('./linux-dist/initramfs.cpio');
   const initcpio = new Uint8Array(await initcpioResp.arrayBuffer());
+
+  // Load Alpine-like rootfs as a virtio block device (/dev/vda inside guest).
+  const rootfsResp = await fetch('./linux-dist/rootfs.ext4');
+  const rootfsBuffer = await rootfsResp.arrayBuffer();
+  const rootfsBytes = new Uint8Array(rootfsBuffer);
+  const blockDev = new BlockDevice({
+    capacity: rootfsBytes.byteLength,
+    read: (offset, length) => Promise.resolve(rootfsBytes.slice(offset, offset + length)),
+  });
 
   // Connect xterm keyboard → guest console input (track disposable to avoid double-registration on reset).
   onDataDisposable = term.onData(data => {
@@ -765,7 +774,7 @@ async function doBoat() {
   });
 
   machine = new Machine({
-    devices: [netDev, consoleDev, entropyDev],
+    devices: [netDev, consoleDev, entropyDev, blockDev],
     memoryMib: 128,
     cpus: 1,
     initcpio,
