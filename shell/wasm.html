@@ -536,9 +536,27 @@ class WispSlirp {
       }
     }
     // Resolve target → absolute URL
+    const GW = '192.168.86.1';
     let url;
     if (/^https?:\/\//i.test(target)) {
-      url = target;                                // absolute-form
+      // absolute-form (wget through http_proxy=). If host is the gateway,
+      // treat the path as origin-form against the LinuxOnTab CDN.
+      try {
+        const u = new URL(target);
+        if (u.hostname === GW) {
+          if (u.pathname.startsWith('/_https/')) {
+            url = 'https://' + u.pathname.slice('/_https/'.length) + u.search;
+          } else if (u.pathname.startsWith('/_http/')) {
+            url = 'http://' + u.pathname.slice('/_http/'.length) + u.search;
+          } else {
+            const base = window.location.hostname === 'localhost'
+              ? window.location.origin : 'https://linuxontab.com';
+            url = base + u.pathname + u.search;
+          }
+        } else {
+          url = target;
+        }
+      } catch { url = target; }
     } else if (target.startsWith('/_https/')) {
       url = 'https://' + target.slice('/_https/'.length);  // explicit https
     } else if (target.startsWith('/_http/')) {
