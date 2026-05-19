@@ -439,8 +439,20 @@ class WispSlirp {
       if (this.#tcpConns.has(srcPort)) return;
       const dstStr = Array.from(dstIp).join('.');
       console.log('[TCP] SYN', Array.from(srcIp).join('.')+':'+srcPort, '→', dstStr+':'+dstPort);
-      const wispId = this.#wispConnect(dstStr, dstPort);
       const myIsn  = (Math.random() * 0x80000000 | 0) >>> 0;
+      // Intercept connections to gateway:80 for local HTTP proxy
+      if (dstStr === Array.from(WispSlirp.GW_IP).join('.') && dstPort === 80) {
+        const conn = {
+          wispId: null, httpBuf: new Uint8Array(0),
+          mySeq: myIsn, guestSeq: (seq + 1) >>> 0,
+          srcIp: [...srcIp], srcPort,
+          dstIp: [...dstIp], dstPort,
+        };
+        this.#tcpConns.set(srcPort, conn);
+        this.#tcpSynAck(conn, seq);
+        return;
+      }
+      const wispId = this.#wispConnect(dstStr, dstPort);
       const conn = {
         wispId, mySeq: myIsn,
         guestSeq: (seq + 1) >>> 0,
@@ -473,11 +485,57 @@ class WispSlirp {
       const seqDiff = (seq - conn.guestSeq) | 0;  // signed 32-bit
       if (seqDiff >= 0) {
         conn.guestSeq = (seq + data.length) >>> 0;
-        if (conn.wispId) this.#wispData(conn.wispId, data);
+        if (conn.wispId) {
+          this.#wispData(conn.wispId, data);
+        } else if (conn.httpBuf !== undefined) {
+          // Local HTTP proxy: accumulate request bytes
+          const combined = new Uint8Array(conn.httpBuf.length + data.length);
+          combined.set(conn.httpBuf); combined.set(data, conn.httpBuf.length);
+          conn.httpBuf = combined;
+          const reqStr = new TextDecoder().decode(conn.httpBuf);
+          if (reqStr.includes('\r\n\r\n') && !conn.httpHandled) {
+            conn.httpHandled = true;
+            this.#handleLocalHttp(conn, reqStr).catch(console.error);
+          }
+        }
       }
       // Always ACK so guest doesn't retransmit
       this.#tcpAck(conn);
     }
+  }
+
+  // ── Local HTTP proxy at gateway:80 ────────────────────────────────────────
+  async #handleLocalHttp(conn, reqStr) {
+    const firstLine = reqStr.split('\r\n')[0];
+    const parts = firstLine.split(' ');
+    const path = parts[1] || '/';
+    // Use same origin when running locally so COEP doesn't block the fetch
+    const base = window.location.hostname === 'localhost'
+      ? window.location.origin
+      : 'https://linuxontab.com';
+    const url = base + path;
+    console.log('[HTTP-GW] GET', url);
+    let respBytes;
+    try {
+      const resp = await fetch(url);
+      const body = new Uint8Array(await resp.arrayBuffer());
+      const status = resp.status + ' ' + (resp.statusText || 'OK');
+      const ctype  = resp.headers.get('content-type') || 'application/octet-stream';
+      const hdr = new TextEncoder().encode(
+        'HTTP/1.0 ' + status + '\r\n' +
+        'Content-Length: ' + body.length + '\r\n' +
+        'Content-Type: ' + ctype + '\r\n' +
+        'Connection: close\r\n\r\n');
+      respBytes = new Uint8Array(hdr.length + body.length);
+      respBytes.set(hdr); respBytes.set(body, hdr.length);
+    } catch (e) {
+      console.error('[HTTP-GW] error', e);
+      respBytes = new TextEncoder().encode(
+        'HTTP/1.0 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+    }
+    this.#tcpToGuest(conn, respBytes);
+    this.#tcpSendFin(conn);
+    this.#tcpConns.delete(conn.srcPort);
   }
 
   #tcpSynAck(conn, guestIsn) {
