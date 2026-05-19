@@ -352,7 +352,8 @@ export class NetworkDevice extends VirtioDevice {
             return;
         }
         this.#drainPending(queue);
-        this.#writeRxFrame(queue, frame);
+        if (!this.#writeRxFrame(queue, frame))
+            this.#rxPending.push(frame);  // no RX descriptors available — queue it
     }
     #drainPending(queue) {
         while (this.#rxPending.length > 0) {
@@ -364,8 +365,10 @@ export class NetworkDevice extends VirtioDevice {
     }
     // Write a single frame into the RX virtqueue. Returns false if no descriptors available.
     #writeRxFrame(queue, frame) {
-        // virtio_net_hdr (10 bytes of zeros = no offloading)
-        const HDR = 10;
+        // virtio_net_hdr_mrg_rxbuf = 12 bytes: 10-byte virtio_net_hdr + u16 num_buffers.
+        // The @tombl/linux kernel uses vi->hdr_len=12 for both TX and RX, so we must
+        // write a 12-byte header. num_buffers=1 (we always use a single RX buffer).
+        const HDR = 12;
         const total = HDR + frame.byteLength;
         for (const chain of queue) {
             let offset = 0;
@@ -374,8 +377,11 @@ export class NetworkDevice extends VirtioDevice {
                     continue;
                 const slice = new Uint8Array(array.buffer, array.byteOffset, array.byteLength);
                 if (offset < HDR) {
-                    // write header zeros (already zero)
+                    // write 12-byte header: 10 zeros (no offloading) + num_buffers=1 (LE16)
                     const hdrBytes = Math.min(HDR - offset, slice.byteLength);
+                    // bytes 10-11 = num_buffers = 1 (little-endian)
+                    if (offset <= 10 && offset + hdrBytes > 10) slice[10 - offset] = 1;
+                    if (offset <= 11 && offset + hdrBytes > 11) slice[11 - offset] = 0;
                     offset += hdrBytes;
                     const remaining = slice.byteLength - hdrBytes;
                     if (remaining > 0 && frame.byteLength > 0) {
@@ -413,8 +419,8 @@ export class NetworkDevice extends VirtioDevice {
                         parts.push(array.slice(0)); // copy since SharedArrayBuffer
                         totalLen += array.byteLength;
                     }
-                    // Strip the 10-byte virtio_net_hdr before handing to backend.
-                    const HDR = 10;
+                    // Strip the 12-byte virtio_net_hdr_mrg_rxbuf before handing to backend.
+                    const HDR = 12;
                     if (totalLen > HDR) {
                         const full = new Uint8Array(totalLen);
                         let off = 0;
@@ -424,7 +430,7 @@ export class NetworkDevice extends VirtioDevice {
                         }
                         this.#backend.send(full.subarray(HDR));
                     }
-                    chain.release(0);
+                    chain.release(totalLen);
                 }
                 this.trigger_interrupt("vring");
                 break;

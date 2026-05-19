@@ -262,6 +262,7 @@ class WispSlirp {
   #streams = new Map();   // id → { onData, onClose }
   #tcpConns = new Map();  // guestSrcPort → TcpConn
   #guestMac = null;
+  #dnsCache = new Map();  // ipStr → hostname (from snooped DNS responses)
 
   backend = {
     send: frame => this.#onGuestFrame(frame),
@@ -302,7 +303,10 @@ class WispSlirp {
 
   #wispConnect(host, port) {
     const id = this.#streamId++;
-    const hostBytes = new TextEncoder().encode(host);
+    const resolvedHost = this.#dnsCache.get(host) || host;
+    if (resolvedHost !== host) console.log('[WISP] CONNECT', resolvedHost, port, '(resolved from', host+')');
+    else console.log('[WISP] CONNECT', resolvedHost, port);
+    const hostBytes = new TextEncoder().encode(resolvedHost);
     const pkt = new Uint8Array(1 + 4 + 1 + 2 + hostBytes.length);
     const dv = new DataView(pkt.buffer);
     pkt[0] = 0x01;                  // CONNECT
@@ -411,6 +415,8 @@ class WispSlirp {
 
     // New connection SYN
     if ((flags & SYN) && !(flags & ACK)) {
+      // Ignore SYN retransmits — connection already in progress
+      if (this.#tcpConns.has(srcPort)) return;
       const dstStr = Array.from(dstIp).join('.');
       console.log('[TCP] SYN', Array.from(srcIp).join('.')+':'+srcPort, '→', dstStr+':'+dstPort);
       const wispId = this.#wispConnect(dstStr, dstPort);
@@ -443,8 +449,14 @@ class WispSlirp {
     }
 
     if ((flags & ACK) && data.length > 0) {
-      conn.guestSeq = (seq + data.length) >>> 0;
-      if (conn.wispId) this.#wispData(conn.wispId, data);
+      // Only forward new data (skip retransmits where seq < expected guestSeq)
+      const seqDiff = (seq - conn.guestSeq) | 0;  // signed 32-bit
+      if (seqDiff >= 0) {
+        conn.guestSeq = (seq + data.length) >>> 0;
+        if (conn.wispId) this.#wispData(conn.wispId, data);
+      }
+      // Always ACK so guest doesn't retransmit
+      this.#tcpAck(conn);
     }
   }
 
@@ -460,7 +472,21 @@ class WispSlirp {
     conn.mySeq = (conn.mySeq + 1) >>> 0;
     conn.guestSeq = (guestIsn + 1) >>> 0;
     this.#tcpChecksum(t, new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp));
-    this.#sendIpv4(new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp), 6, t);
+    this.#sendIpv4(new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp), 6, t);
+  }
+
+  // Pure ACK to the guest — confirms receipt of data up to conn.guestSeq.
+  #tcpAck(conn) {
+    const t = new Uint8Array(20);
+    const dv = new DataView(t.buffer);
+    dv.setUint16(0, conn.dstPort, false);
+    dv.setUint16(2, conn.srcPort, false);
+    dv.setUint32(4, conn.mySeq, false);
+    dv.setUint32(8, conn.guestSeq, false);
+    t[12] = 0x50; t[13] = 0x10;  // data-offset=5, ACK
+    new DataView(t.buffer).setUint16(14, 65535, false);
+    this.#tcpChecksum(t, new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp));
+    this.#sendIpv4(new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp), 6, t);
   }
 
   #tcpSendFin(conn) {
@@ -474,7 +500,7 @@ class WispSlirp {
     new DataView(t.buffer).setUint16(14, 65535, false);
     conn.mySeq = (conn.mySeq + 1) >>> 0;
     this.#tcpChecksum(t, new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp));
-    this.#sendIpv4(new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp), 6, t);
+    this.#sendIpv4(new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp), 6, t);
   }
 
   #tcpToGuest(conn, data) {
@@ -492,7 +518,7 @@ class WispSlirp {
       t.set(chunk, 20);
       conn.mySeq = (conn.mySeq + chunk.length) >>> 0;
       this.#tcpChecksum(t, new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp));
-      this.#sendIpv4(new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp), 6, t);
+      this.#sendIpv4(new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp), 6, t);
     }
   }
 
@@ -506,6 +532,52 @@ class WispSlirp {
     if (dstPort === 53) this.#forwardDns(srcIp, srcPort, payload).catch(() => {});
   }
 
+  // Parse a DNS name from a buffer at offset; returns { name, offset }.
+  #parseDnsName(buf, offset) {
+    const labels = [];
+    while (offset < buf.length) {
+      const len = buf[offset];
+      if (len === 0) { offset++; break; }
+      if ((len & 0xc0) === 0xc0) {
+        const ptr = ((len & 0x3f) << 8) | buf[offset + 1];
+        labels.push(this.#parseDnsName(buf, ptr).name);
+        offset += 2; break;
+      }
+      offset++;
+      labels.push(String.fromCharCode(...buf.slice(offset, offset + len)));
+      offset += len;
+    }
+    return { name: labels.join('.'), offset };
+  }
+
+  // Snoop A records from a DNS response and cache ip → hostname.
+  #snoopDnsResponse(buf) {
+    if (buf.length < 12) return;
+    const ancount = (buf[6] << 8) | buf[7];
+    if (ancount === 0) return;
+    // Skip past questions
+    let off = 12;
+    const qdcount = (buf[4] << 8) | buf[5];
+    for (let i = 0; i < qdcount && off < buf.length; i++) {
+      const { offset } = this.#parseDnsName(buf, off);
+      off = offset + 4;  // skip qtype + qclass
+    }
+    // Parse answers
+    for (let i = 0; i < ancount && off < buf.length; i++) {
+      const { name, offset } = this.#parseDnsName(buf, off);
+      off = offset;
+      if (off + 10 > buf.length) break;
+      const type = (buf[off] << 8) | buf[off + 1];
+      const rdlen = (buf[off + 8] << 8) | buf[off + 9];
+      off += 10;
+      if (type === 1 && rdlen === 4 && off + 4 <= buf.length) {
+        const ip = buf[off]+'.'+buf[off+1]+'.'+buf[off+2]+'.'+buf[off+3];
+        this.#dnsCache.set(ip, name);
+      }
+      off += rdlen;
+    }
+  }
+
   async #forwardDns(clientIp, clientPort, query) {
     const resp = await fetch('https://relay.linuxontab.com/dns-query', {
       method: 'POST',
@@ -514,6 +586,7 @@ class WispSlirp {
     });
     if (!resp.ok) return;
     const answer = new Uint8Array(await resp.arrayBuffer());
+    this.#snoopDnsResponse(answer);
     const udpResp = new Uint8Array(8 + answer.length);
     const dv = new DataView(udpResp.buffer);
     dv.setUint16(0, 53, false);
@@ -655,7 +728,9 @@ async function doBoat() {
   // forwards DNS (UDP/53) via DoH at relay.linuxontab.com.
   const guestMac = new Uint8Array([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
   const slirp = new WispSlirp();
+  window.__slirp = slirp;
   const netDev = new NetworkDevice(guestMac, slirp.backend);
+  window.__netDev = netDev;
 
   // Load userspace initramfs (BusyBox + musl compiled to WASM).
   const initcpioResp = await fetch('./linux-dist/initramfs.cpio');
