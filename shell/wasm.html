@@ -766,6 +766,8 @@ async function doBoat() {
   const blockDev = new BlockDevice({
     capacity: rootfsBytes.byteLength,
     read: (offset, length) => Promise.resolve(rootfsBytes.slice(offset, offset + length)),
+    write: (offset, data) => { rootfsBytes.set(data, offset); return Promise.resolve(data.byteLength); },
+    flush: () => Promise.resolve(),
   });
 
   // Connect xterm keyboard → guest console input (track disposable to avoid double-registration on reset).
