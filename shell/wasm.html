@@ -394,6 +394,24 @@ class WispSlirp {
     const payload = ip.slice(ihl);
     if (proto === 6) this.#handleTcp(srcIp, dstIp, payload);
     else if (proto === 17) this.#handleUdp(srcIp, dstIp, payload);
+    else if (proto === 1) this.#handleIcmp(srcIp, dstIp, payload);
+  }
+
+  // ── ICMP ──────────────────────────────────────────────────────────────────
+  #handleIcmp(srcIp, dstIp, icmp) {
+    if (icmp.length < 8) return;
+    const type = icmp[0];
+    if (type !== 8) return;  // only handle echo request (type=8)
+    // Build echo reply: copy payload, set type=0
+    const reply = new Uint8Array(icmp.length);
+    reply.set(icmp);
+    reply[0] = 0;  // type: echo reply
+    reply[1] = 0;  // code: 0
+    reply[2] = 0; reply[3] = 0;  // zero checksum for recalculation
+    const dv = new DataView(reply.buffer);
+    dv.setUint16(2, WispSlirp.#cksum(reply), false);
+    // Send from dstIp (the target host) back to srcIp (the guest)
+    this.#sendIpv4(dstIp, srcIp, 1, reply);
   }
 
   // ── TCP ───────────────────────────────────────────────────────────────────
