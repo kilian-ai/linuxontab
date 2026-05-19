@@ -348,11 +348,14 @@ export class NetworkDevice extends VirtioDevice {
     #injectRx(frame) {
         const queue = this.vqs[0]; // receiveq
         if (!queue || !this.#rx_queue_ready) {
+            console.log('[VIRTIO RX] pending (queue='+(!!queue)+' ready='+this.#rx_queue_ready+')');
             this.#rxPending.push(frame);
             return;
         }
         this.#drainPending(queue);
-        if (!this.#writeRxFrame(queue, frame))
+        const ok = this.#writeRxFrame(queue, frame);
+        console.log('[VIRTIO RX] writeRxFrame len='+frame.byteLength+' ok='+ok+' pending='+this.#rxPending.length);
+        if (!ok)
             this.#rxPending.push(frame);  // no RX descriptors available — queue it
     }
     #drainPending(queue) {

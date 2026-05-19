@@ -346,7 +346,9 @@ class WispSlirp {
       if (s?.onData) { console.log('[WISP] DATA sid='+id+' len='+payload.length); s.onData(payload); }
       else console.log('[WISP] DATA sid='+id+' — no handler!');
     } else if (type === 0x04) {
-      console.log('[WISP] CLOSE sid='+id);
+      const reason = payload.length > 0 ? payload[0] : -1;
+      const reasons = {1:'voluntary',2:'unexpected',3:'blocked',4:'throttled',0x41:'server_err',0x42:'unreach'};
+      console.log('[WISP] CLOSE sid='+id+' reason='+reason+'('+(reasons[reason]||'?')+')');
       const s = this.#streams.get(id);
       if (s?.onClose) s.onClose();
       this.#streams.delete(id);
@@ -504,6 +506,7 @@ class WispSlirp {
   }
 
   #tcpToGuest(conn, data) {
+    console.log('[TCP] toGuest len='+data.length+' mySeq='+conn.mySeq+' guestSeq='+conn.guestSeq+' hasReceive='+(!!this.backend.receive));
     const MSS = 1400;
     for (let off = 0; off < data.length; off += MSS) {
       const chunk = data.slice(off, Math.min(off + MSS, data.length));
@@ -602,7 +605,9 @@ class WispSlirp {
     frame.set(dstMac, 0); frame.set(srcMac, 6);
     frame[12] = ethertype >> 8; frame[13] = ethertype & 0xff;
     frame.set(payload, 14);
+    console.log('[ETH] inject et=0x'+ethertype.toString(16)+' len='+frame.length+' hasReceive='+(!!this.backend.receive));
     if (this.backend.receive) this.backend.receive(frame);
+    else console.log('[ETH] DROPPED — backend.receive not set!');
   }
 
   #sendIpv4(srcIp, dstIp, proto, payload) {
