@@ -505,19 +505,59 @@ class WispSlirp {
   }
 
   // ── Local HTTP proxy at gateway:80 ────────────────────────────────────────
+  //
+  // Supports three request forms — guest browsers/wgets can pick any:
+  //
+  //   1. GET /packages/foo.tar.gz HTTP/1.1     (origin-form, served from
+  //                                             linuxontab.com — used by apk)
+  //   2. GET http://example.com/path HTTP/1.1  (absolute-form, used by wget
+  //                                             when http_proxy=192.168.86.1)
+  //   3. GET /path HTTP/1.1 + Host: example.com  (host-header routing)
+  //
+  // For any https://… target the guest would otherwise hit directly, set
+  //   export http_proxy=http://192.168.86.1/
+  //   export https_proxy=http://192.168.86.1/    # wget tunnels via CONNECT
+  // …or just use http://example.com/ — the host browser does the real TLS
+  // via fetch(), so HTTPS-grade transport security is preserved end-to-end.
   async #handleLocalHttp(conn, reqStr) {
-    const firstLine = reqStr.split('\r\n')[0];
-    const parts = firstLine.split(' ');
-    const path = parts[1] || '/';
-    // Use same origin when running locally so COEP doesn't block the fetch
-    const base = window.location.hostname === 'localhost'
-      ? window.location.origin
-      : 'https://linuxontab.com';
-    const url = base + path;
-    console.log('[HTTP-GW] GET', url);
+    const lines = reqStr.split('\r\n');
+    const firstLine = lines[0] || '';
+    const [method, target] = firstLine.split(' ');
+    // Parse Host: header (case-insensitive)
+    let hostHdr = '';
+    for (let i = 1; i < lines.length; i++) {
+      const ln = lines[i];
+      if (!ln) break;
+      const c = ln.indexOf(':');
+      if (c < 0) continue;
+      if (ln.slice(0, c).toLowerCase() === 'host') {
+        hostHdr = ln.slice(c + 1).trim();
+        break;
+      }
+    }
+    // Resolve target → absolute URL
+    let url;
+    if (/^https?:\/\//i.test(target)) {
+      url = target;                                // absolute-form
+    } else if (target.startsWith('/_https/')) {
+      url = 'https://' + target.slice('/_https/'.length);  // explicit https
+    } else if (target.startsWith('/_http/')) {
+      url = 'http://' + target.slice('/_http/'.length);
+    } else if (hostHdr && hostHdr !== '192.168.86.1') {
+      url = 'http://' + hostHdr + target;          // host-header routing
+    } else {
+      // origin-form against the LinuxOnTab CDN (or same-origin in dev)
+      const base = window.location.hostname === 'localhost'
+        ? window.location.origin
+        : 'https://linuxontab.com';
+      url = base + target;
+    }
+    console.log('[HTTP-GW]', method, url);
     let respBytes;
     try {
-      const resp = await fetch(url);
+      // Pass through method; for now only GET/HEAD have no body — sufficient
+      // for wget/curl downloads. POST bodies could be added later.
+      const resp = await fetch(url, { method: method || 'GET', redirect: 'follow' });
       const body = new Uint8Array(await resp.arrayBuffer());
       const status = resp.status + ' ' + (resp.statusText || 'OK');
       const ctype  = resp.headers.get('content-type') || 'application/octet-stream';
@@ -530,10 +570,17 @@ class WispSlirp {
       respBytes.set(hdr); respBytes.set(body, hdr.length);
     } catch (e) {
       console.error('[HTTP-GW] error', e);
-      respBytes = new TextEncoder().encode(
-        'HTTP/1.0 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+      const msg = 'fetch failed: ' + (e?.message || e);
+      const body = new TextEncoder().encode(msg);
+      const hdr = new TextEncoder().encode(
+        'HTTP/1.0 502 Bad Gateway\r\nContent-Length: ' + body.length +
+        '\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n');
+      respBytes = new Uint8Array(hdr.length + body.length);
+      respBytes.set(hdr); respBytes.set(body, hdr.length);
     }
-    this.#tcpToGuest(conn, respBytes);
+    await this.#tcpToGuest(conn, respBytes);
+    // Brief yield so the guest can ACK and read before we FIN.
+    await new Promise(r => setTimeout(r, 50));
     this.#tcpSendFin(conn);
     this.#tcpConns.delete(conn.srcPort);
   }
@@ -581,9 +628,14 @@ class WispSlirp {
     this.#sendIpv4(new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp), 6, t);
   }
 
-  #tcpToGuest(conn, data) {
+  async #tcpToGuest(conn, data) {
     console.log('[TCP] toGuest len='+data.length+' mySeq='+conn.mySeq+' guestSeq='+conn.guestSeq+' hasReceive='+(!!this.backend.receive));
     const MSS = 1400;
+    // Yield to the browser event loop every N chunks so a large response
+    // (e.g. 1.7 MB sqlite3 tarball) doesn't block rendering / keep the guest
+    // kernel from draining the RX ring.
+    const YIELD_EVERY = 8;            // ~11 KB between yields
+    let i = 0;
     for (let off = 0; off < data.length; off += MSS) {
       const chunk = data.slice(off, Math.min(off + MSS, data.length));
       const t = new Uint8Array(20 + chunk.length);
@@ -598,6 +650,9 @@ class WispSlirp {
       conn.mySeq = (conn.mySeq + chunk.length) >>> 0;
       this.#tcpChecksum(t, new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp));
       this.#sendIpv4(new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp), 6, t);
+      if (++i % YIELD_EVERY === 0) {
+        await new Promise(r => setTimeout(r, 0));
+      }
     }
   }
 
