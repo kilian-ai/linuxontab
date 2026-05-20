@@ -164,6 +164,7 @@
     <span class="tag">wasm</span>
     <button id="boot">boot</button>
     <button id="reset" disabled>reset</button>
+    <button id="break" disabled title="send Ctrl-C to the guest">break</button>
     <span id="status" class="hint">not booted</span>
     <span class="stat" style="margin-left:auto"></span>
     <button id="tunnels" disabled>tunnels</button>
@@ -818,6 +819,19 @@ term.open($('term'));
 fitAddon.fit();
 window.addEventListener('resize', () => fitAddon.fit());
 
+term.attachCustomKeyEventHandler(ev => {
+  if (ev.type !== 'keydown') return true;
+  if (ev.ctrlKey && !ev.altKey && !ev.metaKey && ev.key.toLowerCase() === 'c') {
+    guestWrite(new Uint8Array([0x03]));
+    return false;
+  }
+  if (ev.ctrlKey && !ev.altKey && !ev.metaKey && ev.key.toLowerCase() === 'd') {
+    guestWrite(new Uint8Array([0x04]));
+    return false;
+  }
+  return true;
+});
+
 // ── state ─────────────────────────────────────────────────────────────────────
 let machine = null;
 let consoleInputWriter = null; // WritableStreamDefaultWriter<Uint8Array> — host → guest
@@ -861,6 +875,7 @@ async function doBoat() {
   setStatus('booting…', 'hint');
   $('boot').disabled = true;
   $('reset').disabled = true;
+  $('break').disabled = true;
 
   // Pipe: host keyboard → guest console input.
   const inputTransform = new TransformStream();
@@ -958,6 +973,7 @@ async function doBoat() {
     booted = true;
     setStatus('running', 'ok');
     $('reset').disabled = false;
+    $('break').disabled = false;
     $('tunnels').disabled = false;
     $('lot-bridge-btn').disabled = false;
     term.focus();
@@ -970,6 +986,7 @@ async function doBoat() {
 
 $('boot').onclick = () => doBoat();
 $('reset').onclick = () => doBoat();
+$('break').onclick = () => guestWrite(new Uint8Array([0x03]));
 
 // ── panel toggles ─────────────────────────────────────────────────────────────
 const panels = { tunnels: $('tunnels-panel'), 'lot-bridge': $('lot-bridge-panel') };
