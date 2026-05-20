@@ -887,11 +887,12 @@ async function doBoat() {
   window.__netDev = netDev;
 
   // Load userspace initramfs (pivot-root stub that hands off to rootfs.ext4).
-  const initcpioResp = await fetch('./linux-dist/initramfs.cpio');
+  const imageCacheBust = Date.now().toString(36);
+  const initcpioResp = await fetch('./linux-dist/initramfs.cpio?v=' + imageCacheBust, { cache: 'no-store' });
   const initcpio = new Uint8Array(await initcpioResp.arrayBuffer());
 
   // Load Alpine-like rootfs as a virtio block device (/dev/vda inside guest).
-  const rootfsResp = await fetch('./linux-dist/rootfs.ext4');
+  const rootfsResp = await fetch('./linux-dist/rootfs.ext4?v=' + imageCacheBust, { cache: 'no-store' });
   const rootfsBuffer = await rootfsResp.arrayBuffer();
   const rootfsBytes = new Uint8Array(rootfsBuffer);
   const blockDev = new BlockDevice({
