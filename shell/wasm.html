@@ -1339,12 +1339,21 @@ $('tn-run-btn').onclick = () => {
       const slirp = window.__slirp;
       if (!slirp) { jtnLog('WispSlirp not ready — boot the guest first', 'tn-relay-err'); return; }
       slirp.injectConnect(tunnelPort, ws);
+      // injectConnect overwrites ws.onclose — chain our pool-refill handler after it
+      const injClose = ws.onclose;
+      ws.onclose = (e) => {
+        pool = pool.filter(w => w !== ws);
+        jtnLog('guest WS closed (pool=' + pool.length + ')', 'hint');
+        if (active) setTimeout(addPoolWs, 800);  // refill pool slot
+        if (injClose) injClose.call(ws, e);
+      };
     };
     ws.onerror = () => jtnLog('guest WS error', 'tn-relay-err');
     ws.onclose = () => {
+      // Initial onclose before injectConnect (handles WS fail-before-open)
       pool = pool.filter(w => w !== ws);
       jtnLog('guest WS closed (pool=' + pool.length + ')', 'hint');
-      if (active) setTimeout(addPoolWs, 800);  // refill pool slot
+      if (active) setTimeout(addPoolWs, 800);
     };
   }
 
