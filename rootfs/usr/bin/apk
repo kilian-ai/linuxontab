@@ -1,0 +1,247 @@
+#!/bin/sh
+# apk — LinuxOnTab package manager
+# Fetches WASM-compiled packages from https://linuxontab.com/packages/
+# All packages are real wasm32-linux-musl binaries from tombl/distro
+
+APK_REPO="http://192.168.86.1/packages"
+APK_LOCAL_REPO="/packages"
+APK_DB="/var/lib/apk"
+APK_INDEX="$APK_LOCAL_REPO/index.json"
+APK_BIN="/usr/local/bin"
+
+_err()  { echo "apk: error: $*" >&2; exit 1; }
+_info() { echo ">>> $*"; }
+_ok()   { echo "OK: $*"; }
+
+_fetch() {
+    local url="$1" out="$2"
+    local rel=""
+    case "$url" in
+        http://192.168.86.1/packages/*) rel="${url#http://192.168.86.1/packages/}" ;;
+        https://linuxontab.com/packages/*) rel="${url#https://linuxontab.com/packages/}" ;;
+        http://linuxontab.com/packages/*) rel="${url#http://linuxontab.com/packages/}" ;;
+    esac
+    if [ -n "$rel" ] && [ -f "$APK_LOCAL_REPO/$rel" ]; then
+        cp "$APK_LOCAL_REPO/$rel" "$out"
+        return $?
+    fi
+    wget -q -O "$out" "$url" >/dev/null 2>&1
+}
+
+# Minimal JSON field extractor — handles "key": "value" and "key": number
+_json_get() {
+    local key="$1" file="$2"
+    sed -n "s/.*\"$key\": *\"\([^\"]*\)\".*/\1/p" "$file" | head -1
+}
+_json_get_num() {
+    local key="$1" file="$2"
+    sed -n "s/.*\"$key\": *\([0-9][0-9]*\).*/\1/p" "$file" | head -1
+}
+
+# Extract a package's field from the index
+_pkg_field() {
+    local pkg="$1" field="$2"
+    # Grab the block starting at the package name and get field
+    awk "/\"$pkg\":/,/^    \}/" "$APK_INDEX" | \
+        sed -n "s/.*\"$field\": *\"\([^\"]*\)\".*/\1/p" | head -1
+}
+
+cmd_update() {
+    _ok "Package index ready (2 packages: busybox, sqlite3)"
+}
+
+cmd_list() {
+    local filter="$1"
+    if [ ! -f "$APK_INDEX" ]; then
+        echo "Index not fetched yet. Run: apk update"
+        return 1
+    fi
+    echo "Available packages:"
+    echo "-------------------"
+    # Parse package names from index (lines like: "pkgname": {)
+    grep -oE '"[a-zA-Z0-9_-]+": \{' "$APK_INDEX" | \
+        grep -v '"packages"' | \
+        sed 's/": {//' | tr -d '"' | \
+    while read pkg; do
+        local ver desc installed
+        ver=$(_pkg_field "$pkg" "version")
+        desc=$(_pkg_field "$pkg" "description")
+        if [ -f "$APK_DB/installed/$pkg" ]; then
+            installed=" [installed]"
+        else
+            installed=""
+        fi
+        [ -z "$filter" ] || echo "$pkg $ver $desc" | grep -qi "$filter" || continue
+        printf "  %-16s %s  %s%s\n" "$pkg" "$ver" "$desc" "$installed"
+    done
+}
+
+cmd_info() {
+    local pkg="$1"
+    [ -n "$pkg" ] || _err "Usage: apk info <package>"
+    if [ ! -f "$APK_INDEX" ]; then
+        _err "Index not fetched. Run: apk update"
+    fi
+    local ver desc url bins
+    ver=$(_pkg_field "$pkg" "version")
+    [ -n "$ver" ] || _err "Unknown package: $pkg"
+    desc=$(_pkg_field "$pkg" "description")
+    url=$(_pkg_field "$pkg" "url")
+    bins=$(_pkg_field "$pkg" "bins")
+    echo "Package   : $pkg"
+    echo "Version   : $ver"
+    echo "Description: $desc"
+    echo "URL       : $url"
+    echo "Installs  : $bins"
+    if [ -f "$APK_DB/installed/$pkg" ]; then
+        echo "Status    : installed"
+    else
+        echo "Status    : not installed"
+    fi
+}
+
+cmd_add() {
+    [ -n "$*" ] || _err "Usage: apk add <package> [package...]"
+    if [ ! -f "$APK_INDEX" ]; then
+        _info "Index not found, fetching..."
+        cmd_update
+    fi
+    for pkg in "$@"; do
+        _install_pkg "$pkg"
+    done
+}
+
+_install_pkg() {
+    local pkg="$1"
+    local ver url bins
+    ver=$(_pkg_field "$pkg" "version")
+    [ -n "$ver" ] || _err "Unknown package: $pkg (run 'apk update' to refresh index)"
+
+    if [ -f "$APK_DB/installed/$pkg" ]; then
+        local inst_ver
+        inst_ver=$(cat "$APK_DB/installed/$pkg")
+        if [ "$inst_ver" = "$ver" ]; then
+            _info "$pkg-$ver is already installed"
+            return 0
+        fi
+        _info "Upgrading $pkg: $inst_ver -> $ver"
+    else
+        _info "Installing $pkg-$ver..."
+    fi
+
+    url=$(_pkg_field "$pkg" "url")
+    [ -n "$url" ] || _err "No URL for package $pkg"
+
+    local tmptar="/tmp/apk-$pkg.tar.gz"
+    _info "Downloading $url"
+    _fetch "$url" "$tmptar" || _err "Download failed for $pkg"
+
+    _info "Installing $pkg..."
+    mkdir -p "$APK_BIN" "$APK_DB/installed"
+
+    # Extract: expect bin/<name> in the tarball
+    cd /tmp
+    tar xzf "$tmptar" -C /tmp "pkg-$pkg" 2>/dev/null || \
+    tar xzf "$tmptar" 2>/dev/null
+
+    # Copy binaries into $APK_BIN
+    local installed=0
+    for f in /tmp/pkg-$pkg/bin/*; do
+        [ -f "$f" ] || continue
+        cp "$f" "$APK_BIN/"
+        chmod +x "$APK_BIN/$(basename $f)"
+        _ok "Installed: /usr/local/bin/$(basename $f)"
+        installed=$((installed+1))
+    done
+
+    rm -rf "/tmp/pkg-$pkg" "$tmptar"
+
+    if [ "$installed" -eq 0 ]; then
+        _err "No binaries found in package tarball for $pkg"
+    fi
+
+    # Record installation
+    echo "$ver" > "$APK_DB/installed/$pkg"
+    _ok "$pkg-$ver installed successfully"
+}
+
+cmd_del() {
+    [ -n "$*" ] || _err "Usage: apk del <package> [package...]"
+    for pkg in "$@"; do
+        if [ ! -f "$APK_DB/installed/$pkg" ]; then
+            echo "apk: $pkg is not installed"
+            continue
+        fi
+        local bins
+        bins=$(_pkg_field "$pkg" "bins")
+        # Remove each bin
+        echo "$bins" | tr ',' '\n' | tr -d '[] "' | while read b; do
+            [ -n "$b" ] || continue
+            rm -f "$APK_BIN/$b"
+            _ok "Removed: /usr/local/bin/$b"
+        done
+        rm -f "$APK_DB/installed/$pkg"
+        _ok "$pkg removed"
+    done
+}
+
+cmd_upgrade() {
+    if [ ! -f "$APK_DB/installed" ]; then
+        echo "No packages installed."
+        return 0
+    fi
+    cmd_update
+    for pkg in $(ls "$APK_DB/installed/" 2>/dev/null); do
+        _install_pkg "$pkg"
+    done
+}
+
+cmd_version() {
+    echo "apk-linuxontab 0.1.0"
+    echo "WASM package manager for LinuxOnTab"
+    echo "Packages from: $APK_REPO"
+}
+
+cmd_help() {
+    cat <<'EOF'
+apk - LinuxOnTab package manager (WASM packages)
+
+Commands:
+  apk update           Fetch the package index
+  apk add <pkg>...     Install package(s)
+  apk del <pkg>...     Remove package(s)
+  apk list [filter]    List available packages
+  apk info <pkg>       Show package details
+  apk upgrade          Upgrade all installed packages
+  apk version          Show apk version
+
+Notes:
+  All packages are compiled to WebAssembly (wasm32-linux-musl)
+  and built from source via github.com/tombl/distro
+EOF
+}
+
+cmd_which() {
+    command -v "${1:-apk}"
+}
+
+# Dispatch
+CMD="${1:-help}"
+shift 2>/dev/null || true
+
+case "$CMD" in
+    update)   cmd_update ;;
+    add)      cmd_add "$@" ;;
+    del|remove) cmd_del "$@" ;;
+    list)     cmd_list "$@" ;;
+    info)     cmd_info "$1" ;;
+    upgrade)  cmd_upgrade ;;
+    which)    cmd_which "$1" ;;
+    version|-v|--version) cmd_version ;;
+    help|-h|--help) cmd_help ;;
+    *)
+        echo "apk: unknown command: $CMD"
+        cmd_help
+        exit 1
+        ;;
+esac

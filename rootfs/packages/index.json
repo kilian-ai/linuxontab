@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "generated": "2026-05-19",
+  "packages": {
+    "busybox": {
+      "version": "1.37.0",
+      "description": "Swiss Army Knife of embedded Linux (WASM)",
+      "url": "http://192.168.86.1/packages/busybox-1.37.0.tar.gz",
+      "size": 528142,
+      "sha256": "5b398b456f35419725da46fef6302ad4697f976c54b56be3589feeba319757ca",
+      "bins": ["busybox"],
+      "status": "available"
+    },
+    "sqlite3": {
+      "version": "3.51.0",
+      "description": "Serverless SQL database engine",
+      "url": "http://192.168.86.1/packages/sqlite3-3.51.0.tar.gz",
+      "size": 1728326,
+      "sha256": "5ed65c284c779ce7fb225812e9ea44e6d3a8a98a4ef15e5a6abedb9b94ca2cef",
+      "bins": ["sqlite3"],
+      "status": "available"
+    }
+  }
+}

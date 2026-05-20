@@ -1,0 +1,15 @@
+#!/bin/sh
+# wget wrapper — rewrite https:// URLs into the JS gateway's _https/ prefix
+# so the host browser does the real TLS via fetch(), instead of WASM doing
+# software TLS (which pegs the main thread and crashes the tab).
+#
+# Bypass with:  busybox wget [args]
+args=
+for a in "$@"; do
+  case "$a" in
+    https://*) a="http://192.168.86.1/_https/${a#https://}";;
+  esac
+  args="$args $a"
+done
+# Disable proxy for the rewritten URL — it already points at the gateway.
+http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= exec busybox wget $args

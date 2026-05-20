@@ -1,0 +1,6 @@
+NAME="Alpine Linux"
+ID=alpine
+VERSION_ID=3.21.0
+PRETTY_NAME="Alpine Linux v3.21 (WebAssembly)"
+HOME_URL="https://linuxontab.com/"
+BUG_REPORT_URL="https://github.com/kilian-ai/linuxontab/issues"

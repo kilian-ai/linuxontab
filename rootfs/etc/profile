@@ -1,0 +1,17 @@
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PS1='\[\033[1;32m\]\u@\h\[\033[00m\]:\[\033[1;34m\]\w\[\033[00m\]\$ '
+export TERM=xterm-256color
+export EDITOR=vi
+export HOME=/root
+export USER=root
+
+[ -f /etc/motd ] && cat /etc/motd
+
+# HTTP forward proxy at the gateway — lets wget/curl reach https:// URLs
+# without doing TLS inside WASM (the browser does TLS via fetch()).
+# To bypass, run:  unset http_proxy https_proxy
+export http_proxy=http://192.168.86.1/
+export https_proxy=http://192.168.86.1/
+export HTTP_PROXY=$http_proxy
+export HTTPS_PROXY=$https_proxy
+export no_proxy=localhost,127.0.0.1

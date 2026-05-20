@@ -1,0 +1,19 @@
+#!/bin/sh
+/bin/busybox --install -s
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts
+mkdir -p /tmp /run /var/tmp /var/run /var/log
+chmod 1777 /tmp /var/tmp
+
+hostname linuxontab
+
+ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
+ifconfig eth0 192.168.86.100 netmask 255.255.255.0 broadcast 192.168.86.255 up
+route add default gw 192.168.86.1
+arp -s 192.168.86.1 52:54:00:01:02:03
+echo "nameserver 192.168.86.1" > /etc/resolv.conf
+
+cat /etc/motd

@@ -1,0 +1,24 @@
+#!/bin/busybox sh
+
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+/bin/busybox mount -t proc proc /proc 2>/dev/null
+/bin/busybox mount -t sysfs sysfs /sys 2>/dev/null
+/bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
+/bin/busybox mkdir -p /dev/pts /tmp /run /var/log /var/run 2>/dev/null
+/bin/busybox chmod 1777 /tmp 2>/dev/null
+
+/bin/busybox hostname linuxontab
+
+/bin/busybox ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
+/bin/busybox ifconfig eth0 192.168.86.100 netmask 255.255.255.0 broadcast 192.168.86.255 up
+/bin/busybox route add default gw 192.168.86.1
+/bin/busybox arp -s 192.168.86.1 52:54:00:01:02:03
+/bin/busybox echo "nameserver 192.168.86.1" > /etc/resolv.conf
+
+/bin/busybox cat /etc/motd
+
+# Use getty so it properly calls TIOCSCTTY on hvc0, enabling TTY line discipline
+# signals (SIGINT on Ctrl-C, SIGTSTP on Ctrl-Z, etc.) for all foreground processes.
+# -n: no login prompt  -L: local line  -l: login program  -i: suppress /etc/issue
+exec /sbin/getty -n -L -l /bin/sh -i 0 hvc0
