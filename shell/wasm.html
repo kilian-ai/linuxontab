@@ -802,6 +802,7 @@ const $ = id => document.getElementById(id);
 // ── xterm.js setup ───────────────────────────────────────────────────────────
 const term = new Terminal({
   cursorBlink: true,
+  convertEol: true,
   fontFamily: "'Menlo','Monaco','Consolas','Courier New',monospace",
   fontSize: 13,
   theme: {
