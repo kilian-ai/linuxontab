@@ -223,6 +223,17 @@
       <div style="padding:10px 0">
         <button id="tn-run-btn" style="background:#14532d;border:1px solid #166534;color:#d1fae5;padding:5px 14px;border-radius:4px;cursor:pointer;font:inherit">run tunnel-up in guest</button>
       </div>
+      <!-- JS Tunnel: browser-side WASM guest bridging, no websocat needed -->
+      <div id="jtn-section" style="border-top:1px solid #2a2f36;padding-top:10px;margin-top:4px">
+        <div class="tn-section-hdr"><b>SSH tunnel (JS bridge)</b><span class="hint" style="font-size:10px;margin-left:6px">browser-side — no websocat needed</span></div>
+        <div style="display:flex;gap:6px;margin:6px 0;flex-wrap:wrap">
+          <button id="jtn-start" style="background:#1e3a5f;border:1px solid #2563eb;color:#bfdbfe;padding:4px 12px;border-radius:4px;cursor:pointer;font:inherit">start SSH tunnel (port 22)</button>
+          <button id="jtn-stop"  style="background:#3b1515;border:1px solid #7f1d1d;color:#fecaca;padding:4px 12px;border-radius:4px;cursor:pointer;font:inherit">stop</button>
+        </div>
+        <div id="jtn-code" style="font-family:monospace;color:#7ab8f5;font-weight:600;font-size:14px;letter-spacing:0.04em;padding:2px 0"></div>
+        <div style="font-size:11px;color:#888;padding:2px 0">Mac command (after tunnel starts):</div>
+        <code id="jtn-cmd" style="font-size:11px;color:#d5d8dc;word-break:break-all"></code>
+      </div>
     </div>
   </div>
 </div>
@@ -232,7 +243,7 @@
 <script type="module">
 // ─────────────────────────────────────────────────────────────────────────────
 // @tombl/linux Machine API
-// vmlinux-UHA6PIC5.wasm + worker-Q7XWPLKR.js must be in ./linux-dist/dist/
+// vmlinux-DKGM2TYZ.wasm + worker-Q7XWPLKR.js must be in ./linux-dist/dist/
 // ─────────────────────────────────────────────────────────────────────────────
 import { Machine, BlockDevice, ConsoleDevice, EntropyDevice, NetworkDevice } from './linux-dist/dist/index.js';
 
@@ -263,7 +274,8 @@ class WispSlirp {
   #streams = new Map();   // id → { onData, onClose }
   #tcpConns = new Map();  // guestSrcPort → TcpConn
   #guestMac = null;
-  #dnsCache = new Map();  // ipStr → hostname (from snooped DNS responses)
+  #dnsCache = new Map();    // ipStr → hostname (from snooped DNS responses)
+  #serverConns = new Map();  // 'guestPort:remotePort' → InboundConn (injected inbound TCP)
 
   backend = {
     send: frame => this.#onGuestFrame(frame),
@@ -431,7 +443,61 @@ class WispSlirp {
       const conn = this.#tcpConns.get(srcPort);
       if (conn?.wispId) this.#wispClose(conn.wispId);
       this.#tcpConns.delete(srcPort);
+      // Also check server-side injected connections
+      const sconnR = this.#serverConns.get(srcPort + ':' + dstPort);
+      if (sconnR?.relayWs) sconnR.relayWs.close();
+      this.#serverConns.delete(srcPort + ':' + dstPort);
       return;
+    }
+
+    // ── Injected inbound connection (guest is server; e.g. dropbear on :22) ──
+    // Keyed by 'guestPort:remotePort' — opposite direction to outbound conns.
+    {
+      const skey = srcPort + ':' + dstPort;
+      const sc = this.#serverConns.get(skey);
+      if (sc) {
+        if ((flags & SYN) && (flags & ACK)) {
+          // Complete 3-way handshake
+          sc.guestSeq = (seq + 1) >>> 0;
+          sc.mySeq    = (sc.mySeq + 1) >>> 0;  // our SYN counted as 1 byte
+          const ack = new Uint8Array(20);
+          const adv = new DataView(ack.buffer);
+          adv.setUint16(0, sc.srcPort, false);
+          adv.setUint16(2, sc.dstPort, false);
+          adv.setUint32(4, sc.mySeq,    false);
+          adv.setUint32(8, sc.guestSeq, false);
+          ack[12] = 0x50; ack[13] = 0x10;  // ACK
+          adv.setUint16(14, 65535, false);
+          this.#tcpChecksum(ack, new Uint8Array(sc.srcIp), new Uint8Array(sc.dstIp));
+          this.#sendIpv4(new Uint8Array(sc.srcIp), new Uint8Array(sc.dstIp), 6, ack);
+          sc.handshakeDone = true;
+          console.log('[INJECT] handshake complete →', sc.dstIp[3] + ':' + sc.dstPort);
+          for (const d of sc.pendingData) this.#injectDataToGuest(sc, d);
+          sc.pendingData = [];
+        } else if (flags & FIN) {
+          sc.guestSeq = (seq + 1) >>> 0;
+          if (sc.relayWs && sc.relayWs.readyState < 2) sc.relayWs.close();
+          this.#serverConns.delete(skey);
+        } else if ((flags & ACK) && data.length > 0) {
+          // Guest sending SSH/data → relay WebSocket → Mac client
+          sc.guestSeq = (seq + data.length) >>> 0;
+          if (sc.relayWs && sc.relayWs.readyState === WebSocket.OPEN) {
+            sc.relayWs.send(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+          }
+          // ACK back to guest
+          const ack = new Uint8Array(20);
+          const adv = new DataView(ack.buffer);
+          adv.setUint16(0, sc.srcPort, false);
+          adv.setUint16(2, sc.dstPort, false);
+          adv.setUint32(4, sc.mySeq,    false);
+          adv.setUint32(8, sc.guestSeq, false);
+          ack[12] = 0x50; ack[13] = 0x10;
+          adv.setUint16(14, 65535, false);
+          this.#tcpChecksum(ack, new Uint8Array(sc.srcIp), new Uint8Array(sc.dstIp));
+          this.#sendIpv4(new Uint8Array(sc.srcIp), new Uint8Array(sc.dstIp), 6, ack);
+        }
+        return;
+      }
     }
 
     // New connection SYN
@@ -794,6 +860,89 @@ class WispSlirp {
   }
 
   static #ipEq(a, b) { return a[0]===b[0]&&a[1]===b[1]&&a[2]===b[2]&&a[3]===b[3]; }
+
+  // ── Inbound TCP injection ─────────────────────────────────────────────────
+  // Opens a synthetic inbound TCP connection to guestPort from a fake external
+  // IP. relayWs is an already-opened binary WebSocket to the relay tunnel
+  // (tunnel.linuxontab.com /port/guest side). Data flows:
+  //   relay client (Mac) → relayWs.onmessage → #injectDataToGuest → guest:guestPort
+  //   guest:guestPort → #handleTcp (server branch) → relayWs.send → Mac
+  injectConnect(guestPort, relayWs) {
+    const remoteIp   = new Uint8Array([10, 0, 2, 100]);  // fake external client
+    const remotePort = 20000 + (Math.random() * 10000 | 0);
+    const myIsn = (Math.random() * 0x80000000 | 0) >>> 0;
+    const key = guestPort + ':' + remotePort;
+    const conn = {
+      relayWs,
+      mySeq: myIsn, guestSeq: 0,
+      srcIp:  [...remoteIp],
+      srcPort: remotePort,
+      dstIp:  [...WispSlirp.GUEST_IP],
+      dstPort: guestPort,
+      handshakeDone: false,
+      pendingData: [],
+    };
+    this.#serverConns.set(key, conn);
+    // Send SYN from remoteIp:remotePort → guest:guestPort
+    const syn = new Uint8Array(20);
+    const dv  = new DataView(syn.buffer);
+    dv.setUint16(0, remotePort, false);
+    dv.setUint16(2, guestPort,  false);
+    dv.setUint32(4, myIsn, false);
+    syn[12] = 0x50; syn[13] = 0x02;  // data-offset=5, SYN
+    new DataView(syn.buffer).setUint16(14, 65535, false);
+    this.#tcpChecksum(syn, remoteIp, new Uint8Array(WispSlirp.GUEST_IP));
+    this.#sendIpv4(remoteIp, new Uint8Array(WispSlirp.GUEST_IP), 6, syn);
+    console.log('[INJECT] SYN →', guestPort, 'key', key);
+    relayWs.binaryType = 'arraybuffer';
+    relayWs.onmessage = (e) => {
+      const data = new Uint8Array(e.data instanceof ArrayBuffer ? e.data : e.data);
+      if (conn.handshakeDone) {
+        this.#injectDataToGuest(conn, data);
+      } else {
+        conn.pendingData.push(data);
+      }
+    };
+    relayWs.onclose = () => {
+      if (this.#serverConns.has(key)) {
+        this.#injectFinToGuest(conn);
+        this.#serverConns.delete(key);
+      }
+    };
+  }
+
+  #injectDataToGuest(conn, data) {
+    const MSS = 1400;
+    for (let off = 0; off < data.length; off += MSS) {
+      const chunk = data.slice(off, Math.min(off + MSS, data.length));
+      const t  = new Uint8Array(20 + chunk.length);
+      const dv = new DataView(t.buffer);
+      dv.setUint16(0, conn.srcPort, false);
+      dv.setUint16(2, conn.dstPort, false);
+      dv.setUint32(4, conn.mySeq,    false);
+      dv.setUint32(8, conn.guestSeq, false);
+      t[12] = 0x50; t[13] = 0x18;  // PSH+ACK
+      new DataView(t.buffer).setUint16(14, 65535, false);
+      t.set(chunk, 20);
+      conn.mySeq = (conn.mySeq + chunk.length) >>> 0;
+      this.#tcpChecksum(t, new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp));
+      this.#sendIpv4(new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp), 6, t);
+    }
+  }
+
+  #injectFinToGuest(conn) {
+    const t  = new Uint8Array(20);
+    const dv = new DataView(t.buffer);
+    dv.setUint16(0, conn.srcPort, false);
+    dv.setUint16(2, conn.dstPort, false);
+    dv.setUint32(4, conn.mySeq,    false);
+    dv.setUint32(8, conn.guestSeq, false);
+    t[12] = 0x50; t[13] = 0x11;  // FIN+ACK
+    new DataView(t.buffer).setUint16(14, 65535, false);
+    conn.mySeq = (conn.mySeq + 1) >>> 0;
+    this.#tcpChecksum(t, new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp));
+    this.#sendIpv4(new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp), 6, t);
+  }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -893,14 +1042,12 @@ async function doBoat() {
   const consoleDev = new ConsoleDevice(inputTransform.readable, outputStream);
   const entropyDev = new EntropyDevice();
 
-  // VirtIO-net + SLIRP: guest gets a NIC with static IP 192.168.86.100/24.
-  // WispSlirp proxies TCP through wss://linuxontab-net.fly.dev/wisp and
-  // forwards DNS (UDP/53) via DoH at relay.linuxontab.com.
-  const guestMac = new Uint8Array([0x52, 0x54, 0x00, 0x12, 0x34, 0x56]);
-  const slirp = new WispSlirp();
-  window.__slirp = slirp;
+  // Set up WISP-slirp networking (virtual NIC + WISP WebSocket proxy).
+  const slirp = new WispSlirp('wss://linuxontab-net.fly.dev/wisp');
+  const guestMac = crypto.getRandomValues(new Uint8Array(6));
+  guestMac[0] &= 0xfe;  // clear multicast bit
   const netDev = new NetworkDevice(guestMac, slirp.backend);
-  window.__netDev = netDev;
+  window.__slirp = slirp;  // exposed for JS tunnel below
 
   // Load userspace initramfs (pivot-root stub that hands off to rootfs.ext4).
   const imageCacheBust = Date.now().toString(36);
@@ -924,7 +1071,7 @@ async function doBoat() {
   });
 
   machine = new Machine({
-    devices: [netDev, consoleDev, entropyDev, blockDev],
+    devices: [consoleDev, entropyDev, blockDev, netDev],
     memoryMib: 128,
     cpus: 1,
     initcpio,
@@ -932,7 +1079,7 @@ async function doBoat() {
     // SLIRP intercepts UDP/53 and forwards via DoH.
     // ip=... format: ip:server:gw:netmask:hostname:interface:autoconf
     // 'on' means bring the interface up, 'off' means don't auto-bring up
-    cmdline: 'console=hvc0 nr_cpus=1 rdinit=/init ip=192.168.86.100::192.168.86.1:255.255.255.0::eth0:on',
+    cmdline: 'console=hvc0 nr_cpus=1 rdinit=/init ip=192.168.86.100::192.168.86.1:255.255.255.0::eth0:off',
   });
 
   // Pipe the early boot console (pre-virtio kernel messages) to xterm.
@@ -967,7 +1114,7 @@ async function doBoat() {
   } catch (e) {
     console.log('[WASM Boot] Error logging device tree:', e.message);
   }
-  console.log('[WASM Boot] NetworkDevice created with MAC:', [...guestMac].map(b => b.toString(16).padStart(2, '0')).join(':'));
+  console.log('[WASM Boot] booting with WispSlirp networking (WISP + virtio-net)…');
 
   try {
     await machine.boot();
@@ -1159,6 +1306,86 @@ $('tn-run-btn').onclick = () => {
   guestSend(cmd);
   tnLog('sent — watch the terminal', 'ok');
 };
+
+// ── JS tunnel (browser-side WASM guest bridge, no websocat) ──────────────────
+(function () {
+  const TUNNEL_RELAY    = 'https://tunnel.linuxontab.com';
+  const TUNNEL_RELAY_WS = 'wss://tunnel.linuxontab.com';
+  const POOL_SIZE = 3;
+  let tunnelCode  = null;
+  let tunnelPort  = 22;
+  let pool        = [];
+  let active      = false;
+
+  function jtnLog(msg, cls) {
+    const el = $('tunnels-log');
+    if (!el) return;
+    const d = document.createElement('div');
+    if (cls) d.className = cls;
+    d.textContent = msg;
+    el.appendChild(d);
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function addPoolWs() {
+    if (!active || !tunnelCode) return;
+    const ws = new WebSocket(
+      TUNNEL_RELAY_WS + '/port/guest?code=' + tunnelCode + '&port=' + tunnelPort
+    );
+    ws.binaryType = 'arraybuffer';
+    pool.push(ws);
+    ws.onopen = () => {
+      jtnLog('guest WS open (pool=' + pool.length + ')', 'hint');
+      const slirp = window.__slirp;
+      if (!slirp) { jtnLog('WispSlirp not ready — boot the guest first', 'tn-relay-err'); return; }
+      slirp.injectConnect(tunnelPort, ws);
+    };
+    ws.onerror = () => jtnLog('guest WS error', 'tn-relay-err');
+    ws.onclose = () => {
+      pool = pool.filter(w => w !== ws);
+      jtnLog('guest WS closed (pool=' + pool.length + ')', 'hint');
+      if (active) setTimeout(addPoolWs, 800);  // refill pool slot
+    };
+  }
+
+  async function startJsTunnel(port) {
+    tunnelPort = port || 22;
+    try {
+      const resp = await fetch(TUNNEL_RELAY + '/port/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ports: [tunnelPort] }),
+      });
+      if (!resp.ok) { jtnLog('register failed: ' + resp.status, 'tn-relay-err'); return; }
+      const j = await resp.json();
+      tunnelCode = j.code;
+    } catch (e) {
+      jtnLog('register error: ' + e.message, 'tn-relay-err');
+      return;
+    }
+    active = true;
+    const codeEl = $('jtn-code');
+    if (codeEl) codeEl.textContent = 'code: ' + tunnelCode;
+    const cmdEl  = $('jtn-cmd');
+    if (cmdEl)  cmdEl.textContent  = 'sh <(curl -sS https://linuxontab.com/local/tunnel-listen.sh) ' + tunnelCode;
+    jtnLog('registered code: ' + tunnelCode, 'tn-relay-ok');
+    jtnLog('then: ssh -p 2222 root@localhost  or  sftp -P 2222 root@localhost', 'hint');
+    for (let i = 0; i < POOL_SIZE; i++) setTimeout(addPoolWs, i * 300);
+  }
+
+  function stopJsTunnel() {
+    active = false;
+    for (const ws of pool) try { ws.close(); } catch (_) {}
+    pool = [];
+    tunnelCode = null;
+    const codeEl = $('jtn-code'); if (codeEl) codeEl.textContent = '';
+    const cmdEl  = $('jtn-cmd');  if (cmdEl)  cmdEl.textContent  = '';
+    jtnLog('tunnel stopped', 'hint');
+  }
+
+  $('jtn-start').onclick = () => startJsTunnel(22);
+  $('jtn-stop').onclick  = stopJsTunnel;
+})();
 
 // ── lot-bridge panel ──────────────────────────────────────────────────────────
 (function () {

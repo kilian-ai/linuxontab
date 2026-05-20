@@ -18,6 +18,14 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 /bin/busybox cat /etc/motd
 
+# Set root password (allows SSH login with password "root")
+echo "root:root" | /bin/busybox chpasswd 2>/dev/null || true
+
+# Start SSH daemon (dropbear) if available
+if [ -x /usr/sbin/dropbear ]; then
+  /usr/sbin/dropbear -R -p 22 2>/dev/null || true
+fi
+
 # Use getty so it properly calls TIOCSCTTY on hvc0, enabling TTY line discipline
 # signals (SIGINT on Ctrl-C, SIGTSTP on Ctrl-Z, etc.) for all foreground processes.
 # -n: no login prompt  -L: local line  -l: login program  -i: suppress /etc/issue
