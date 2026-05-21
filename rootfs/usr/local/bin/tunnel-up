@@ -17,8 +17,12 @@ fi
 echo "$CODE" > /tmp/tunnel.code
 echo "[tunnel-up] CODE: $CODE"
 for PORT in 22 8080; do
-  for i in $(seq 1 $POOL); do
-    (while :; do /usr/local/bin/wsbridge "$CODE" "$PORT"; sleep 1; done) &
+  # Start POOL=3 persistent wsbridge connections per port
+  # Avoid $(seq ...) — not available in all BusyBox builds
+  i=0
+  while [ $i -lt $POOL ]; do
+    (while :; do /usr/local/bin/wsbridge "$CODE" "$PORT" 2>/tmp/wsbridge.log; sleep 1; done) &
+    i=$((i + 1))
   done
   echo "  port $PORT: $POOL bridges started"
 done
