@@ -1,0 +1,26 @@
+#!/bin/sh
+# System init — runs after switch_root from initramfs
+
+/bin/busybox --install -s
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts
+mount -t devpts devpts /dev/pts
+mkdir -p /tmp /run /var/tmp /var/run /var/log
+chmod 1777 /tmp /var/tmp
+
+hostname linuxontab
+
+/bin/busybox ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
+/bin/busybox ifconfig eth0 192.168.86.100 netmask 255.255.255.0 broadcast 192.168.86.255 up
+/bin/busybox route add default gw 192.168.86.1
+/bin/busybox arp -s 192.168.86.1 52:54:00:01:02:03
+echo "nameserver 192.168.86.1" > /etc/resolv.conf
+
+cat /etc/motd
+
+/sbin/dropbear -B -F -p 22 2>/dev/null &
+
+exec /sbin/getty -n -l /bin/sh hvc0 0 vt100

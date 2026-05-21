@@ -439,6 +439,8 @@ class WispSlirp {
     const data    = tcp.slice(dataOff);
     const [SYN, ACK, FIN, RST, PSH] = [0x02, 0x10, 0x01, 0x04, 0x08];
 
+    if (srcPort === 22 || dstPort === 22) console.log('[TCP22] ' + srcPort + '→' + dstPort + ' flags=0x' + flags.toString(16) + ' datalen=' + data.length + ' seq=' + seq);
+
     if (flags & RST) {
       const conn = this.#tcpConns.get(srcPort);
       if (conn?.wispId) this.#wispClose(conn.wispId);
@@ -455,6 +457,7 @@ class WispSlirp {
     {
       const skey = srcPort + ':' + dstPort;
       const sc = this.#serverConns.get(skey);
+      if (sc || (srcPort === 22 || dstPort === 22)) console.log('[HTCP] ' + srcPort + ':' + dstPort + ' flags=0x' + flags.toString(16) + ' datalen=' + data.length + ' sc=' + !!sc);
       if (sc) {
         if ((flags & SYN) && (flags & ACK)) {
           // Complete 3-way handshake
@@ -471,9 +474,8 @@ class WispSlirp {
           this.#tcpChecksum(ack, new Uint8Array(sc.srcIp), new Uint8Array(sc.dstIp));
           this.#sendIpv4(new Uint8Array(sc.srcIp), new Uint8Array(sc.dstIp), 6, ack);
           sc.handshakeDone = true;
-          console.log('[INJECT] handshake complete →', sc.dstIp[3] + ':' + sc.dstPort);
-          for (const d of sc.pendingData) this.#injectDataToGuest(sc, d);
-          sc.pendingData = [];
+          console.log('[INJECT] handshake complete →', sc.dstIp[3] + ':' + sc.dstPort, 'pendingData=' + sc.pendingData.length + ' (held until guest sends first)');
+          // Do NOT drain pendingData here — hold until guest sends its banner first
         } else if (flags & FIN) {
           sc.guestSeq = (seq + 1) >>> 0;
           if (sc.relayWs && sc.relayWs.readyState < 2) sc.relayWs.close();
@@ -481,8 +483,16 @@ class WispSlirp {
         } else if ((flags & ACK) && data.length > 0) {
           // Guest sending SSH/data → relay WebSocket → Mac client
           sc.guestSeq = (seq + data.length) >>> 0;
+          console.log('[INJECT] data len=' + data.length + ' rs=' + sc.relayWs?.readyState);
           if (sc.relayWs && sc.relayWs.readyState === WebSocket.OPEN) {
             sc.relayWs.send(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+            // First data from guest (e.g. SSH banner) — now safe to flush buffered client data
+            if (!sc.guestSentFirst) {
+              sc.guestSentFirst = true;
+              console.log('[INJECT] guest sent first — flushing ' + sc.pendingData.length + ' buffered client chunks');
+              for (const d of sc.pendingData) this.#injectDataToGuest(sc, d);
+              sc.pendingData = [];
+            }
           }
           // ACK back to guest
           const ack = new Uint8Array(20);
@@ -880,6 +890,7 @@ class WispSlirp {
       dstIp:  [...WispSlirp.GUEST_IP],
       dstPort: guestPort,
       handshakeDone: false,
+      guestSentFirst: false,  // true after guest sends first data (e.g. SSH banner)
       pendingData: [],
     };
     this.#serverConns.set(key, conn);
@@ -897,9 +908,14 @@ class WispSlirp {
     relayWs.binaryType = 'arraybuffer';
     relayWs.onmessage = (e) => {
       const data = new Uint8Array(e.data instanceof ArrayBuffer ? e.data : e.data);
-      if (conn.handshakeDone) {
+      const hex = Array.from(data.slice(0, 32)).map(b => b.toString(16).padStart(2,'0')).join(' ');
+      const txt = typeof e.data === 'string' ? e.data.slice(0, 40) : '';
+      console.log('[RELAYWS] done=' + conn.handshakeDone + ' gsf=' + conn.guestSentFirst + ' len=' + data.length + (txt ? ' str="' + txt + '"' : ' hex=' + hex));
+      if (conn.handshakeDone && conn.guestSentFirst) {
+        // Guest sent first — safe to inject client data directly
         this.#injectDataToGuest(conn, data);
       } else {
+        // Buffer until guest sends its banner first (avoids OpenSSH sending-first race)
         conn.pendingData.push(data);
       }
     };
@@ -1336,23 +1352,31 @@ $('tn-run-btn').onclick = () => {
     pool.push(ws);
     ws.onopen = () => {
       jtnLog('guest WS open (pool=' + pool.length + ')', 'hint');
+      // Pool WS stays idle until the CF Worker signals a client has arrived.
+      // injectConnect is called lazily to avoid dropbear's unauthenticated-
+      // session timeout (default ~30s) cycling the entire pool.
+    };
+    ws.onmessage = (e) => {
+      if (e.data !== '__connected__') return;  // ignore unexpected text frames
+      // CF Worker paired this WS with a client — establish TCP → dropbear now.
+      pool = pool.filter(w => w !== ws);
+      if (active) addPoolWs();  // refill pool slot immediately
+      jtnLog('client arrived — connecting dropbear (pool=' + pool.length + ')', 'hint');
       const slirp = window.__slirp;
-      if (!slirp) { jtnLog('WispSlirp not ready — boot the guest first', 'tn-relay-err'); return; }
+      if (!slirp) { jtnLog('WispSlirp not ready — boot the guest first', 'tn-relay-err'); ws.close(); return; }
       slirp.injectConnect(tunnelPort, ws);
-      // injectConnect overwrites ws.onclose — chain our pool-refill handler after it
+      // injectConnect sets ws.onclose; chain a close logger on top.
       const injClose = ws.onclose;
-      ws.onclose = (e) => {
-        pool = pool.filter(w => w !== ws);
-        jtnLog('guest WS closed (pool=' + pool.length + ')', 'hint');
-        if (active) setTimeout(addPoolWs, 800);  // refill pool slot
-        if (injClose) injClose.call(ws, e);
+      ws.onclose = (e2) => {
+        jtnLog('SSH session closed code=' + (e2.code || '?') + ' ' + (e2.reason || ''), 'hint');
+        if (injClose) injClose.call(ws, e2);
       };
     };
     ws.onerror = () => jtnLog('guest WS error', 'tn-relay-err');
-    ws.onclose = () => {
-      // Initial onclose before injectConnect (handles WS fail-before-open)
+    ws.onclose = (e) => {
+      // Idle pool WS closed before any client arrived (e.g. CF WS timeout).
       pool = pool.filter(w => w !== ws);
-      jtnLog('guest WS closed (pool=' + pool.length + ')', 'hint');
+      jtnLog('guest WS closed code=' + (e.code || '?') + ' ' + (e.reason || '') + ' (pool=' + pool.length + ')', 'hint');
       if (active) setTimeout(addPoolWs, 800);
     };
   }

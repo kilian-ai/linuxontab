@@ -9,6 +9,7 @@ var unavailable = () => {
   throw new Error("not available on worker thread");
 };
 var postMessage = self.postMessage;
+var workerLog = (msg) => { postMessage({ type: "log", msg: "[W:" + (self.name||'?') + "] " + msg }); };
 function user_imports({
   kernel_memory,
   get_kernel_instance,
@@ -87,7 +88,13 @@ function user_imports({
           });
           if ("memory" in instance.exports) {
             assert(instance.exports.memory instanceof WebAssembly.Memory);
-            memory = instance.exports.memory;
+            // Only adopt the exported memory if it is shared (SharedArrayBuffer).
+            // Non-shared exports (e.g. dropbearkey) must NOT replace the shared
+            // memory we provided at instantiation, otherwise spawn_worker's
+            // postMessage throws a DataCloneError when the task tries to fork.
+            if (instance.exports.memory.buffer instanceof SharedArrayBuffer) {
+              memory = instance.exports.memory;
+            }
           }
         } catch (error) {
           console.log("error instantiating user module:", String(error));
@@ -165,6 +172,7 @@ function user_imports({
 }
 self.onmessage = (event) => {
   const { fn, arg, vmlinux, memory, parent_user_module, parent_user_memory } = event.data;
+  workerLog('start fn=' + fn + ' has_parent_user=' + (parent_user_module != null));
   const user = user_imports({
     kernel_memory: memory,
     get_kernel_instance: () => instance,
@@ -182,6 +190,8 @@ self.onmessage = (event) => {
       is_worker: true,
       memory,
       spawn_worker(fn2, arg2, name, user_module, user_memory) {
+        const mem_shared = user_memory ? (user_memory.buffer instanceof SharedArrayBuffer) : null;
+        workerLog('spawn_worker name=' + name + ' fn=' + fn2 + ' has_user_mem=' + (user_memory != null) + ' shared=' + mem_shared);
         postMessage({
           type: "spawn_worker",
           fn: fn2,

@@ -114,6 +114,8 @@ export class Machine extends EventEmitter {
             this.#boot_console_writer.close();
         };
         const spawn_worker = (fn, arg, name, user_module, user_memory) => {
+            const mem_shared = user_memory ? (user_memory.buffer instanceof SharedArrayBuffer) : null;
+            console.log('[SPAWN_WORKER] name=' + name + ' fn=' + fn + ' has_user_mem=' + (user_memory != null) + ' shared=' + mem_shared);
             const worker = new Worker(new URL("./worker.js", import.meta.url), {
                 type: "module",
                 name,
@@ -131,8 +133,12 @@ export class Machine extends EventEmitter {
                         boot_console_close();
                         break;
                     case "run_on_main":
+                        console.log('[RUN_ON_MAIN] fn=' + event.data.fn + ' arg=' + event.data.arg);
                         instance.exports.__indirect_function_table
                             .get(event.data.fn)(event.data.arg);
+                        break;
+                    case "log":
+                        console.log(event.data.msg);
                         break;
                     default:
                         unreachable(event.data);
@@ -141,14 +147,18 @@ export class Machine extends EventEmitter {
             worker.onerror = (event) => {
                 this.emit("error", event);
             };
-            worker.postMessage({
-                fn,
-                arg,
-                vmlinux,
-                memory: this.#memory,
-                parent_user_module: user_module,
-                parent_user_memory: user_memory,
-            });
+            try {
+                worker.postMessage({
+                    fn,
+                    arg,
+                    vmlinux,
+                    memory: this.#memory,
+                    parent_user_module: user_module,
+                    parent_user_memory: user_memory,
+                });
+            } catch (e) {
+                console.error('[SPAWN_WORKER] postMessage failed: ' + e + ' user_memory=' + user_memory);
+            }
         };
         const unavailable = () => {
             throw new Error("not available on main thread");

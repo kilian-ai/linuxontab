@@ -4,6 +4,7 @@ const unavailable = () => {
     throw new Error("not available on worker thread");
 };
 const postMessage = self.postMessage;
+const workerLog = (msg) => { postMessage({ type: "log", msg: "[W:" + (self.name || '?') + "] " + msg }); };
 function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: parent_module, parent_user_memory: parent_memory, }) {
     const HALT_USER = Symbol("halt user");
     const kernel_memory_buffer = new Uint8Array(kernel_memory.buffer);
@@ -28,16 +29,20 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
         imports: {
             // program management:
             compile(buf, size) {
+                workerLog('compile buf=' + buf + ' size=' + size);
                 const bytes = new Uint8Array(kernel_memory_buffer.slice(buf, buf + size));
                 try {
                     module = new WebAssembly.Module(bytes);
+                    workerLog('compile OK size=' + size);
                     return 0;
                 }
-                catch {
+                catch (e) {
+                    workerLog('compile FAILED: ' + e);
                     return -8; // exec format error
                 }
             },
             instantiate(fresh_memory) {
+                workerLog('instantiate fresh_memory=' + fresh_memory);
                 assert(module);
                 if (fresh_memory || !memory) {
                     const size = 2048 + Math.floor(Math.random() * 1000);
@@ -56,8 +61,10 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                         env: { memory },
                         linux: {
                             syscall: (nr, arg0, arg1, arg2, arg3, arg4, arg5) => {
+                                workerLog('sc nr=' + nr + ' a0=' + arg0 + ' a1=' + arg1 + ' a2=' + arg2);
                                 const original_instance = instance;
                                 const ret = kernel_instance.exports.syscall(nr, arg0, arg1, arg2, arg3, arg4, arg5);
+                                workerLog('sc nr=' + nr + ' ret=' + ret);
                                 if (instance !== original_instance) {
                                     // if the instance changed, then this was the exec syscall,
                                     // so call into the new instance:
@@ -75,6 +82,9 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                     });
                     if ("memory" in instance.exports) {
                         assert(instance.exports.memory instanceof WebAssembly.Memory);
+                        // Always use the actual exported memory for syscall read/write.
+                        // If it's non-shared, get_user_memory() returns null so spawn_worker
+                        // won't try to postMessage a non-transferable ArrayBuffer.
                         memory = instance.exports.memory;
                     }
                 }
@@ -83,6 +93,7 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                 }
             },
             call() {
+                workerLog('call() starting');
                 for (;;) {
                     try {
                         call_entry();
@@ -92,12 +103,31 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                             continue;
                         if (error === HALT_KERNEL)
                             throw error;
+                        workerLog('call() error: ' + String(error));
                         console.log("error running user module:", String(error));
                         return;
                     }
                 }
             },
             switch_entry(fn, arg) {
+                // Dump fn_arg memory to help debug pipe fd setup
+                if (parent_memory && arg > 0 && arg < parent_memory.buffer.byteLength - 64) {
+                    const mem = new Int32Array(parent_memory.buffer);
+                    const base = arg >> 2;
+                    const sub = mem[base] >> 2; // fn_arg[0] is a pointer, load the sub-struct
+                    let dump = 'switch_entry fn=' + fn + ' arg=' + arg;
+                    dump += ' fnarg=[';
+                    for (let i = 0; i < 8; i++) dump += mem[base + i] + ',';
+                    dump += ']';
+                    if (sub > 0 && sub < parent_memory.buffer.byteLength/4 - 12) {
+                        dump += ' sub=[';
+                        for (let i = 0; i < 12; i++) dump += mem[sub + i] + ',';
+                        dump += ']';
+                    }
+                    workerLog(dump);
+                } else {
+                    workerLog('switch_entry fn=' + fn + ' arg=' + arg);
+                }
                 // This is called if this thread was created by a clone call,
                 // and therefore we our entrypoint is a user-specified function.
                 // Our custom variant of the clone syscall spawns a worker that calls
@@ -112,8 +142,9 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                     assert(__indirect_function_table instanceof WebAssembly.Table, "Invalid function table");
                     const f = __indirect_function_table.get(fn);
                     assert(typeof f === "function" && f.length === 1, "Invalid function signature");
+                    workerLog('call_entry calling fn=' + fn);
                     f(arg);
-                    // throw new Error("thread entrypoint reached the end without exiting");
+                    workerLog('call_entry fn=' + fn + ' returned (no exit!)');
                     console.warn("thread entrypoint reached the end without exiting");
                 };
             },
@@ -150,6 +181,7 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
 }
 self.onmessage = (event) => {
     const { fn, arg, vmlinux, memory, parent_user_module, parent_user_memory } = event.data;
+    workerLog('start fn=' + fn + ' has_parent_user=' + (parent_user_module != null));
     const user = user_imports({
         kernel_memory: memory,
         get_kernel_instance: () => instance,
@@ -167,6 +199,8 @@ self.onmessage = (event) => {
             is_worker: true,
             memory,
             spawn_worker(fn, arg, name, user_module, user_memory) {
+                const mem_shared = user_memory ? (user_memory.buffer instanceof SharedArrayBuffer) : null;
+                workerLog('spawn_worker name=' + name + ' fn=' + fn + ' has_user_mem=' + (user_memory != null) + ' shared=' + mem_shared);
                 postMessage({
                     type: "spawn_worker",
                     fn,
@@ -189,7 +223,11 @@ self.onmessage = (event) => {
                 return user.module;
             },
             get_user_memory() {
-                return user.memory;
+                // Only return memory if it's a SharedArrayBuffer; non-shared
+                // memory cannot be transferred via postMessage (DataCloneError).
+                const m = user.memory;
+                if (!m || !(m.buffer instanceof SharedArrayBuffer)) return null;
+                return m;
             },
         }),
         virtio: {

@@ -114,6 +114,7 @@ export class Machine extends EventEmitter {
             this.#boot_console_writer.close();
         };
         const spawn_worker = (fn, arg, name, user_module, user_memory) => {
+            console.log('[SPAWN_WORKER] name=' + name + ' fn=' + fn);
             const worker = new Worker(new URL("./worker.js", import.meta.url), {
                 type: "module",
                 name,
@@ -131,6 +132,7 @@ export class Machine extends EventEmitter {
                         boot_console_close();
                         break;
                     case "run_on_main":
+                        console.log('[RUN_ON_MAIN] fn=' + event.data.fn + ' arg=' + event.data.arg);
                         instance.exports.__indirect_function_table
                             .get(event.data.fn)(event.data.arg);
                         break;
