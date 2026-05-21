@@ -5,7 +5,7 @@ const unavailable = () => {
 };
 const postMessage = self.postMessage;
 const workerLog = (msg) => { postMessage({ type: "log", msg: "[W:" + (self.name || '?') + "] " + msg }); };
-function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: parent_module, parent_user_memory: parent_memory, }) {
+function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: parent_module, parent_user_memory: parent_memory, fork_bufPtr = null, fork_retPtr = null, setForkOverride, clearForkOverride, }) {
     const HALT_USER = Symbol("halt user");
     const kernel_memory_buffer = new Uint8Array(kernel_memory.buffer);
     let module = null;
@@ -19,6 +19,11 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
         throw new Error("_start reached the end without exiting");
     }
     let call_entry = call_start;
+    // fork()/vfork() state:
+    //   pendingFork — set by syscall handler during asyncify unwind (parent side)
+    //   forkRewindState — set from message params for asyncify rewind (child side)
+    let pendingFork = null;
+    let forkRewindState = (fork_bufPtr != null) ? { bufPtr: fork_bufPtr, retPtr: fork_retPtr } : null;
     return {
         get module() {
             return module;
@@ -99,6 +104,25 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                         linux: {
                             syscall: (nr, arg0, arg1, arg2, arg3, arg4, arg5) => {
                                 workerLog('sc nr=' + nr + ' a0=' + arg0 + ' a1=' + arg1 + ' a2=' + arg2);
+                                // Intercept WASM-fork syscalls (9999=fork, 10000=vfork) before kernel.
+                                if (nr === 9999 || nr === 10000) {
+                                    if (!instance?.exports?.asyncify_get_state) {
+                                        workerLog('sc nr=' + nr + ': not asyncify-transformed, ENOSYS');
+                                        return -38; // ENOSYS
+                                    }
+                                    const state = instance.exports.asyncify_get_state();
+                                    if (state === 0) {
+                                        // Phase 1 (Normal): initiate asyncify unwind
+                                        pendingFork = { bufPtr: arg0, retPtr: arg1, vfork: nr === 10000 };
+                                        instance.exports.asyncify_start_unwind(arg0);
+                                        return 0;
+                                    } else if (state === 2) {
+                                        // Phase 3 (Rewinding): stop rewind, return fork result
+                                        instance.exports.asyncify_stop_rewind();
+                                        return new Int32Array(memory.buffer)[arg1 >> 2];
+                                    }
+                                    return -38; // ENOSYS (unexpected asyncify state)
+                                }
                                 const original_instance = instance;
                                 const ret = kernel_instance.exports.syscall(nr, arg0, arg1, arg2, arg3, arg4, arg5);
                                 workerLog('sc nr=' + nr + ' ret=' + ret);
@@ -140,6 +164,27 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                             continue;
                         if (error === HALT_KERNEL)
                             throw error;
+                        // Check if this is an asyncify fork unwind (pendingFork set by syscall handler)
+                        if (pendingFork !== null && instance?.exports?.asyncify_get_state?.() === 1) {
+                            const fork = pendingFork;
+                            pendingFork = null;
+                            instance.exports.asyncify_stop_unwind();
+                            // Copy user memory for the child (both fork and vfork copy for safety)
+                            const pages = memory.buffer.byteLength >>> 16;
+                            const childMem = new WebAssembly.Memory({ initial: pages, maximum: pages, shared: true });
+                            new Uint8Array(childMem.buffer).set(new Uint8Array(memory.buffer));
+                            // Override get_user_memory so the kernel's spawn_worker passes childMem
+                            setForkOverride(childMem, { bufPtr: fork.bufPtr, retPtr: fork.retPtr });
+                            // Have the kernel create the child task (proper PID, fd/cred inheritance)
+                            const SYS_CLONE = 220, SIGCHLD = 17;
+                            const childPid = get_kernel_instance().exports.syscall(SYS_CLONE, 0, 0, SIGCHLD, 0, 0, 0);
+                            clearForkOverride();
+                            workerLog('fork: kernel sys_clone → childPid=' + childPid);
+                            // Rewind parent: fork() returns childPid (or negative errno on failure)
+                            new Int32Array(memory.buffer)[fork.retPtr >> 2] = childPid;
+                            instance.exports.asyncify_start_rewind(fork.bufPtr);
+                            continue;
+                        }
                         workerLog('call() error: ' + String(error));
                         console.log("error running user module:", String(error));
                         return;
@@ -173,6 +218,26 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                 assert(parent_memory);
                 module = parent_module;
                 memory = parent_memory;
+                // Fork child: bypass the thread entry function entirely and instead
+                // do an asyncify rewind back to the fork() syscall return point.
+                // forkRewindState was set from the fork_bufPtr/fork_retPtr in the worker message.
+                if (forkRewindState !== null) {
+                    const rs = forkRewindState;
+                    forkRewindState = null;
+                    workerLog('switch_entry: fork child rewind bufPtr=0x' + rs.bufPtr.toString(16) + ' retPtr=0x' + rs.retPtr.toString(16));
+                    call_entry = () => {
+                        call_entry = call_start; // reset for subsequent iterations
+                        assert(instance);
+                        // Child: fork() must return 0
+                        new Int32Array(memory.buffer)[rs.retPtr >> 2] = 0;
+                        // Rewind the WASM stack back into fork()'s syscall return path.
+                        // The syscall handler (state=Rewinding) will call asyncify_stop_rewind()
+                        // and return m32[retPtr>>2] = 0.
+                        instance.exports.asyncify_start_rewind(rs.bufPtr);
+                        call_start();
+                    };
+                    return;
+                }
                 call_entry = () => {
                     assert(instance);
                     const { __indirect_function_table } = instance.exports;
@@ -217,13 +282,28 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
     };
 }
 self.onmessage = (event) => {
-    const { fn, arg, vmlinux, memory, parent_user_module, parent_user_memory } = event.data;
-    workerLog('start fn=' + fn + ' has_parent_user=' + (parent_user_module != null));
+    const { fn, arg, vmlinux, memory, parent_user_module, parent_user_memory, fork_bufPtr = null, fork_retPtr = null } = event.data;
+    workerLog('start fn=' + fn + ' has_parent_user=' + (parent_user_module != null) + ' fork=' + (fork_bufPtr != null));
+    // Shared state between user_imports' call() and the kernel spawn_worker callback.
+    // During a fork(), call() sets these before calling kernel sys_clone so that
+    // get_user_memory() returns the child's memory copy to the kernel's spawn_worker.
+    let forkChildMemory = null;
+    let forkSpawnParams = null;
     const user = user_imports({
         kernel_memory: memory,
         get_kernel_instance: () => instance,
         parent_user_module,
         parent_user_memory,
+        fork_bufPtr,
+        fork_retPtr,
+        setForkOverride(childMem, params) {
+            forkChildMemory = childMem;
+            forkSpawnParams = params;
+        },
+        clearForkOverride() {
+            forkChildMemory = null;
+            forkSpawnParams = null;
+        },
     });
     const imports = {
         env: { memory },
@@ -237,7 +317,7 @@ self.onmessage = (event) => {
             memory,
             spawn_worker(fn, arg, name, user_module, user_memory) {
                 const mem_shared = user_memory ? (user_memory.buffer instanceof SharedArrayBuffer) : null;
-                workerLog('spawn_worker name=' + name + ' fn=' + fn + ' has_user_mem=' + (user_memory != null) + ' shared=' + mem_shared);
+                workerLog('spawn_worker name=' + name + ' fn=' + fn + ' has_user_mem=' + (user_memory != null) + ' shared=' + mem_shared + ' fork=' + (forkSpawnParams != null));
                 postMessage({
                     type: "spawn_worker",
                     fn,
@@ -245,6 +325,9 @@ self.onmessage = (event) => {
                     name,
                     user_module,
                     user_memory,
+                    // Include fork params so child worker knows to do asyncify rewind
+                    fork_bufPtr: forkSpawnParams?.bufPtr ?? null,
+                    fork_retPtr: forkSpawnParams?.retPtr ?? null,
                 });
             },
             boot_console_write(message) {
@@ -260,6 +343,8 @@ self.onmessage = (event) => {
                 return user.module;
             },
             get_user_memory() {
+                // During a fork(), return the child's memory copy instead of parent's.
+                if (forkChildMemory) return forkChildMemory;
                 // Only return memory if it's a SharedArrayBuffer; non-shared
                 // memory cannot be transferred via postMessage (DataCloneError).
                 const m = user.memory;

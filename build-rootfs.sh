@@ -39,6 +39,28 @@ echo "[build-rootfs] using $MKE2FS"
 echo "[build-rootfs] staging: $STAGING"
 echo "[build-rootfs] output:  $OUTPUT"
 
+# Apply wasm-opt --asyncify to every WASM binary in the staging tree so that
+# fork()/vfork() (which rely on asyncify_start_unwind / asyncify_start_rewind)
+# work at runtime.  Binaries that are already transformed are idempotent (wasm-
+# opt is a no-op for already-asyncify'd modules).
+WASM_OPT="${WASM_OPT:-/opt/homebrew/bin/wasm-opt}"
+if [ -x "$WASM_OPT" ]; then
+  echo "[build-rootfs] applying wasm-opt --asyncify to staging WASM binaries..."
+  find "$STAGING" -type f | while read -r f; do
+    # Quick magic-byte check: WASM files start with \0asm
+    if [ "$(head -c 4 "$f" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "0061736d" ]; then
+      echo "  asyncify: $f"
+      "$WASM_OPT" --asyncify -O1 "$f" -o "$f.tmp" && mv "$f.tmp" "$f" || {
+        echo "  WARNING: wasm-opt failed for $f (skipping)" >&2
+        rm -f "$f.tmp"
+      }
+    fi
+  done
+else
+  echo "[build-rootfs] WARNING: wasm-opt not found at $WASM_OPT — skipping asyncify transform." >&2
+  echo "[build-rootfs] Install with: brew install binaryen" >&2
+fi
+
 $MKE2FS -q -t ext4 -d "$STAGING" -F -L "Alpine Linux" -m 0 "$OUTPUT" "$SIZE"
 
 echo "[build-rootfs] done — $(du -sh "$OUTPUT" | cut -f1) written to $OUTPUT"
