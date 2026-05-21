@@ -1,16 +1,19 @@
 #!/bin/sh
-# tunnel-up — register ports and start wsbridge pool
+# tunnel-up — start wsbridge pool (no HTTP registration needed)
 # Usage: tunnel-up [CODE]
-RELAY="https://linuxontab-tunnel.fly.dev"
+#
+# wsbridge connects to ws://linuxontab-tunnel.fly.dev:4344/port/guest
+# which auto-creates the session on first connect — no wget/HTTPS needed.
 POOL=3
 CODE="${1:-}"
 if [ -z "$CODE" ]; then
-  echo "[tunnel-up] Registering with relay..."
-  REG=$(wget -qO- --post-data='{"ports":[22,8080]}' \
-    --header='Content-Type: application/json' "$RELAY/port/register" 2>/dev/null)
-  CODE=$(echo "$REG" | sed -n 's/.*"code":"\([^"]*\)".*/\1/p')
+  # Generate a random 4-char alphanumeric code
+  CODE=$(cat /dev/urandom 2>/dev/null | od -An -tx1 | tr -d ' \n' | \
+         fold -w1 | head -c 64 | tr 'a-f0-9' 'A-F0-9' | \
+         grep -oE '[A-Z0-9]' | head -c 4 | tr -d '\n')
+  # Fallback if urandom or od missing
+  [ ${#CODE} -lt 4 ] && CODE="LOT1"
 fi
-[ -z "$CODE" ] && { echo "[tunnel-up] ERROR: no tunnel code" >&2; exit 1; }
 echo "$CODE" > /tmp/tunnel.code
 echo "[tunnel-up] CODE: $CODE"
 for PORT in 22 8080; do
