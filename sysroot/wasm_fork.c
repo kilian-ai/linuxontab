@@ -36,7 +36,13 @@
 
 #include <sys/types.h>
 #include <stdint.h>
-#include <unistd.h>
+
+/* syscall() is in <unistd.h> but guarded by #ifndef __wasm__ in the musl sysroot.
+ * Declare it directly so we can call the WASM linux.syscall import. */
+extern long syscall(long nr, ...);
+
+/* pid_t fork(void) and pid_t vfork(void) are also guarded by #ifndef __wasm__
+ * in the musl sysroot.  Our definitions here are the only declarations needed. */
 
 #define SYS_WASM_FORK   9999L
 #define SYS_WASM_VFORK  10000L

@@ -50,7 +50,9 @@ if [ -x "$WASM_OPT" ]; then
     # Quick magic-byte check: WASM files start with \0asm
     if [ "$(head -c 4 "$f" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "0061736d" ]; then
       echo "  asyncify: $f"
-      "$WASM_OPT" --asyncify -O1 "$f" -o "$f.tmp" && mv "$f.tmp" "$f" || {
+      # Preserve the original execute bits across the transform.
+      _perms=$(stat -c "%a" "$f" 2>/dev/null || stat -f "%Lp" "$f" 2>/dev/null || echo "755")
+      "$WASM_OPT" --asyncify -O1 "$f" -o "$f.tmp" && mv "$f.tmp" "$f" && chmod "$_perms" "$f" || {
         echo "  WARNING: wasm-opt failed for $f (skipping)" >&2
         rm -f "$f.tmp"
       }
