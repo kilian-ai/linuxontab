@@ -57,8 +57,45 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                 const kernel_instance = get_kernel_instance();
                 // console.log("instantiating with", memory);
                 try {
+                    // Emscripten-sjlj runtime: invoke_* wrappers and emscripten_longjmp.
+                    // Required when user binaries are built with -mllvm --enable-emscripten-sjlj.
+                    // The LLVM transform routes every call inside a setjmp scope through
+                    // invoke_*(fn_idx, ...args) so longjmps can be caught here.
+                    // emscripten_longjmp writes __THREW__/__threwValue into WASM TLS then throws
+                    // a JS exception that invoke_* catches, after which WASM checks __THREW__.
+                    const LONGJMP_SENTINEL = { type: 'longjmp' };
+                    const inv = (fn, args) => {
+                        try {
+                            return instance.exports.__indirect_function_table.get(fn)(...args);
+                        } catch (e) {
+                            if (e !== LONGJMP_SENTINEL) throw e;
+                        }
+                    };
+                    const env_sjlj = {
+                        emscripten_longjmp: (buf, val) => {
+                            const tp = instance.exports.__get_tp ? instance.exports.__get_tp() : 0;
+                            const m32 = new Int32Array(memory.buffer);
+                            m32[(tp + 0) >> 2] = buf; // __THREW__
+                            m32[(tp + 4) >> 2] = val; // __threwValue
+                            throw LONGJMP_SENTINEL;
+                        },
+                        // void invoke_*
+                        invoke_v:      (f)             => { inv(f, []); },
+                        invoke_vi:     (f,a)           => { inv(f, [a]); },
+                        invoke_vii:    (f,a,b)         => { inv(f, [a,b]); },
+                        invoke_viii:   (f,a,b,c)       => { inv(f, [a,b,c]); },
+                        invoke_viiii:  (f,a,b,c,d)     => { inv(f, [a,b,c,d]); },
+                        invoke_viiiii: (f,a,b,c,d,e)   => { inv(f, [a,b,c,d,e]); },
+                        // i32-returning invoke_*
+                        invoke_i:      (f)             => inv(f, []) ?? 0,
+                        invoke_ii:     (f,a)           => inv(f, [a]) ?? 0,
+                        invoke_iii:    (f,a,b)         => inv(f, [a,b]) ?? 0,
+                        invoke_iiii:   (f,a,b,c)       => inv(f, [a,b,c]) ?? 0,
+                        invoke_iiiii:  (f,a,b,c,d)     => inv(f, [a,b,c,d]) ?? 0,
+                        invoke_iiiiii: (f,a,b,c,d,e)   => inv(f, [a,b,c,d,e]) ?? 0,
+                    };
                     instance = new WebAssembly.Instance(module, {
-                        env: { memory },
+                        env: { memory, ...env_sjlj },
                         linux: {
                             syscall: (nr, arg0, arg1, arg2, arg3, arg4, arg5) => {
                                 workerLog('sc nr=' + nr + ' a0=' + arg0 + ' a1=' + arg1 + ' a2=' + arg2);
