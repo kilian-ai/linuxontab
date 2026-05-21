@@ -21,6 +21,7 @@ echo "nameserver 192.168.86.1" > /etc/resolv.conf
 
 cat /etc/motd
 
-/sbin/dropbear -B -F -p 22 2>/dev/null &
+# Start SSH daemon (blank-password root login allowed)
+/usr/local/bin/mininetd 2>/tmp/mininetd.log &
 
 exec /sbin/getty -n -l /bin/sh hvc0 0 vt100

@@ -1,0 +1,28 @@
+#!/bin/sh
+# tunnel-up — register ports and start wsbridge pool
+# Usage: tunnel-up [CODE]
+RELAY="https://linuxontab-tunnel.fly.dev"
+POOL=3
+CODE="${1:-}"
+if [ -z "$CODE" ]; then
+  echo "[tunnel-up] Registering with relay..."
+  REG=$(wget -qO- --post-data='{"ports":[22,8080]}' \
+    --header='Content-Type: application/json' "$RELAY/port/register" 2>/dev/null)
+  CODE=$(echo "$REG" | sed -n 's/.*"code":"\([^"]*\)".*/\1/p')
+fi
+[ -z "$CODE" ] && { echo "[tunnel-up] ERROR: no tunnel code" >&2; exit 1; }
+echo "$CODE" > /tmp/tunnel.code
+echo "[tunnel-up] CODE: $CODE"
+for PORT in 22 8080; do
+  for i in $(seq 1 $POOL); do
+    (while :; do /usr/local/bin/wsbridge "$CODE" "$PORT"; sleep 1; done) &
+  done
+  echo "  port $PORT: $POOL bridges started"
+done
+echo ""
+echo "Connect from Mac:"
+echo "  sh <(curl -sS https://linuxontab.com/local/tunnel-listen.sh) $CODE"
+echo "  ssh -p 2222 -o StrictHostKeyChecking=no root@localhost"
+echo ""
+echo "One-liner SSH:"
+echo "  sh <(curl -sS https://linuxontab.com/local/tunnel-ssh.sh) $CODE"
