@@ -1,0 +1,132 @@
+#!/bin/sh
+# rebuild — trigger a GitHub Actions build from inside the LinuxOnTab guest.
+#
+# Usage:
+#   rebuild [--token TOKEN] [--branch BRANCH] [--skip-distro] [--wait] [--help]
+#
+# The GitHub token can also be set via the GITHUB_TOKEN environment variable,
+# or stored in /root/.config/linuxontab/github-token (chmod 600).
+#
+# Examples:
+#   rebuild                          # trigger build on current branch
+#   rebuild --wait                   # trigger and poll until complete
+#   rebuild --skip-distro --wait     # quick rebuild (recompile C only, skip Nix)
+#   GITHUB_TOKEN=ghp_... rebuild
+
+set -e
+
+REPO="kilian-ai/linuxontab"
+WORKFLOW="build-packages.yml"
+BRANCH="feature/linux-kernel-integration"
+SKIP_DISTRO="false"
+WAIT="false"
+POLL_INTERVAL=15
+
+# ── Parse arguments ────────────────────────────────────────────────────────────
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --token)     GITHUB_TOKEN="$2"; shift ;;
+    --branch)    BRANCH="$2"; shift ;;
+    --skip-distro) SKIP_DISTRO="true" ;;
+    --wait)      WAIT="true" ;;
+    --help|-h)
+      sed -n '2,12p' "$0" | sed 's/^# \?//'
+      exit 0
+      ;;
+    *) echo "Unknown option: $1"; exit 1 ;;
+  esac
+  shift
+done
+
+# ── Load token ─────────────────────────────────────────────────────────────────
+if [ -z "$GITHUB_TOKEN" ]; then
+  TOKEN_FILE="/root/.config/linuxontab/github-token"
+  if [ -f "$TOKEN_FILE" ]; then
+    GITHUB_TOKEN=$(cat "$TOKEN_FILE")
+  fi
+fi
+
+if [ -z "$GITHUB_TOKEN" ]; then
+  echo "Error: GITHUB_TOKEN not set."
+  echo "  Set it with: GITHUB_TOKEN=ghp_... rebuild"
+  echo "  Or store it: mkdir -p /root/.config/linuxontab && echo 'ghp_...' > /root/.config/linuxontab/github-token && chmod 600 /root/.config/linuxontab/github-token"
+  exit 1
+fi
+
+API="https://api.github.com"
+AUTH="Authorization: Bearer $GITHUB_TOKEN"
+
+# ── Trigger workflow dispatch ─────────────────────────────────────────────────
+echo "→ Triggering build on $REPO ($BRANCH)..."
+RESPONSE=$(wget -qO- \
+  --header="$AUTH" \
+  --header="Accept: application/vnd.github+json" \
+  --header="Content-Type: application/json" \
+  --post-data="{\"ref\":\"$BRANCH\",\"inputs\":{\"skip_distro\":\"$SKIP_DISTRO\"}}" \
+  "$API/repos/$REPO/actions/workflows/$WORKFLOW/dispatches" 2>&1)
+
+if [ -n "$RESPONSE" ]; then
+  echo "API response: $RESPONSE"
+  echo "Error: dispatch may have failed. Check your token and repo name."
+  exit 1
+fi
+
+echo "✓ Dispatch sent. Build starting..."
+echo "  https://github.com/$REPO/actions"
+
+# ── Optionally wait for completion ────────────────────────────────────────────
+if [ "$WAIT" = "false" ]; then
+  exit 0
+fi
+
+echo ""
+echo "Waiting for build to complete (polling every ${POLL_INTERVAL}s)..."
+echo "Press Ctrl+C to stop waiting (build continues in background)"
+
+# Give GitHub a few seconds to register the run
+sleep 5
+
+# Find the latest run
+get_latest_run() {
+  wget -qO- \
+    --header="$AUTH" \
+    --header="Accept: application/vnd.github+json" \
+    "$API/repos/$REPO/actions/workflows/$WORKFLOW/runs?branch=$BRANCH&per_page=1"
+}
+
+STARTED=$(date +%s)
+while true; do
+  ELAPSED=$(( $(date +%s) - STARTED ))
+  RUN_JSON=$(get_latest_run 2>/dev/null)
+  STATUS=$(echo "$RUN_JSON" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4)
+  CONCL=$(echo "$RUN_JSON" | grep -o '"conclusion":"[^"]*"' | head -1 | cut -d'"' -f4)
+  RUN_ID=$(echo "$RUN_JSON" | grep -o '"id":[0-9]*' | head -1 | cut -d: -f2)
+
+  printf "\r  [%ds] status=%-12s conclusion=%-10s run=%s " \
+    "$ELAPSED" "${STATUS:-pending}" "${CONCL:--}" "${RUN_ID:--}"
+
+  case "$STATUS" in
+    completed)
+      echo ""
+      if [ "$CONCL" = "success" ]; then
+        echo "✓ Build succeeded!"
+        echo "  Artifacts: https://github.com/$REPO/actions/runs/$RUN_ID"
+        echo ""
+        echo "To apply the new rootfs, reboot this VM (the host serves the new"
+        echo "rootfs.ext4 from linuxontab.com/shell/ after a hard-refresh)."
+      else
+        echo ""
+        echo "✗ Build $CONCL. Check logs at:"
+        echo "  https://github.com/$REPO/actions/runs/$RUN_ID"
+        exit 1
+      fi
+      break
+      ;;
+    queued|in_progress|waiting)
+      sleep "$POLL_INTERVAL"
+      ;;
+    *)
+      sleep "$POLL_INTERVAL"
+      ;;
+  esac
+done

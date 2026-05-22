@@ -1,0 +1,194 @@
+name: Build WASM Packages
+
+# Rebuild package tarballs and rootfs.ext4 whenever kernel source files change,
+# or on manual dispatch (useful for triggering from inside the guest via curl).
+#
+# Dispatch from the guest:
+#   curl -X POST \
+#     -H "Authorization: Bearer $GITHUB_TOKEN" \
+#     -H "Accept: application/vnd.github+json" \
+#     https://api.github.com/repos/kilian-ai/linuxontab/actions/workflows/build-packages.yml/dispatches \
+#     -d '{"ref":"feature/linux-kernel-integration"}'
+
+on:
+  push:
+    branches: [ "feature/linux-kernel-integration" ]
+    paths:
+      - "tcplisten.c"
+      - "sftp-server.c"
+      - "sysroot/**"
+      - "rootfs/**"
+      - "packages/**"
+      - "build-rootfs.sh"
+      - ".github/workflows/build-packages.yml"
+  workflow_dispatch:
+    inputs:
+      skip_distro:
+        description: "Skip wasm-distro Nix build (use existing packages)"
+        required: false
+        default: "false"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to push rebuilt rootfs back to branch
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: feature/linux-kernel-integration
+          fetch-depth: 0
+
+      # ── Nix + Cachix ──────────────────────────────────────────────────────────
+      - name: Install Nix
+        if: ${{ github.event.inputs.skip_distro != 'true' }}
+        uses: cachix/install-nix-action@v27
+        with:
+          nix_path: nixpkgs=channel:nixos-unstable
+          extra_nix_config: |
+            extra-substituters = https://linuxwasm.cachix.org
+            extra-trusted-public-keys = linuxwasm.cachix.org-1:+z2SehaESo/3sYp7afTgyXBHUkSj/Y+BokzAkWZEmeM=
+
+      # ── Build WASM packages via @tombl/distro ─────────────────────────────────
+      - name: Clone @tombl/distro
+        if: ${{ github.event.inputs.skip_distro != 'true' }}
+        run: |
+          git clone --depth=1 https://github.com/tombl/distro /tmp/wasm-distro
+
+      - name: Build WASM packages (from cachix binary cache)
+        if: ${{ github.event.inputs.skip_distro != 'true' }}
+        run: |
+          cd /tmp/wasm-distro
+          # Build all packages; fast if already in cachix
+          nix build \
+            .#busybox \
+            .#sqlite3 \
+            .#dropbear \
+            --accept-flake-config \
+            --no-link \
+            --print-out-paths
+          echo "WASM_DISTRO=/tmp/wasm-distro" >> "$GITHUB_ENV"
+
+      - name: Repackage into apk tarballs
+        if: ${{ github.event.inputs.skip_distro != 'true' }}
+        run: |
+          bash packages/make-packages.sh "$WASM_DISTRO" rootfs/packages
+
+      # ── Compile C programs via wasm-distro devShell ───────────────────────────
+      # The @tombl/distro devShell includes a patched clang that supports
+      # wasm32-unknown-linux-musl (standard clang does not). We use
+      # `nix develop` to get patched clang + wasm-ld in PATH and the SYSROOT.
+      - name: Install binaryen + e2fsprogs
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y binaryen e2fsprogs
+
+      - name: Build WASM sysroot (needed even if skip_distro=true)
+        run: |
+          cd /tmp/wasm-distro 2>/dev/null || \
+            git clone --depth=1 https://github.com/tombl/distro /tmp/wasm-distro && cd /tmp/wasm-distro
+          SYSROOT_WASM=$(nix build .#sysroot --accept-flake-config --no-link --print-out-paths)
+          echo "SYSROOT_WASM=$SYSROOT_WASM" >> "$GITHUB_ENV"
+
+      - name: Discover patched toolchain from devShell
+        run: |
+          # nix develop gives us patched clang and matching wasm-ld
+          cd /tmp/wasm-distro
+          PATCHED_CLANG=$(nix develop --accept-flake-config --command sh -c 'which clang')
+          PATCHED_LD=$(nix develop --accept-flake-config --command sh -c 'which wasm-ld')
+          echo "PATCHED_CLANG=$PATCHED_CLANG" >> "$GITHUB_ENV"
+          echo "PATCHED_LD=$PATCHED_LD"       >> "$GITHUB_ENV"
+          echo "Clang: $PATCHED_CLANG"
+          echo "wasm-ld: $PATCHED_LD"
+
+      - name: Compile C programs (tcplisten + sftp-server)
+        run: |
+          cd /tmp/wasm-distro
+          nix develop --accept-flake-config --command sh -c "
+            set -e
+            REPO=$GITHUB_WORKSPACE
+            SYSROOT=$SYSROOT_WASM
+            WASM_LD=\$(which wasm-ld)
+
+            # ── tcplisten ──────────────────────────────────────────────────────
+            clang --target=wasm32-unknown-linux-musl --sysroot=\$SYSROOT \
+              -nostdlib -O2 -fno-exceptions -matomics -mbulk-memory \
+              -I \$REPO/sysroot -DASYNCIFY_BUF_SIZE=8192 \
+              -c \$REPO/tcplisten.c -o /tmp/tcplisten.o
+
+            clang --target=wasm32-unknown-linux-musl --sysroot=\$SYSROOT \
+              -nostdlib -O2 -fno-exceptions -matomics -mbulk-memory \
+              -I \$REPO/sysroot -DASYNCIFY_BUF_SIZE=8192 \
+              -c \$REPO/sysroot/wasm_fork.c -o /tmp/wasm_fork.o
+
+            clang --target=wasm32-unknown-linux-musl --sysroot=\$SYSROOT \
+              --no-standard-libraries -fuse-ld=\$WASM_LD \
+              -Wl,--import-memory -Wl,--export-memory -Wl,--export-table \
+              -Wl,--export=__heap_base -Wl,--export=__data_end \
+              -Wl,-z,stack-size=\$((4*1024*1024)) \
+              -Wl,--shared-memory -Wl,--max-memory=\$((256*1024*1024)) \
+              \$SYSROOT/lib/crt1.o /tmp/tcplisten.o /tmp/wasm_fork.o \
+              -lc -o /tmp/tcplisten.wasm
+
+            wasm-opt --asyncify -O1 /tmp/tcplisten.wasm -o \$REPO/rootfs/sbin/tcplisten
+            chmod +x \$REPO/rootfs/sbin/tcplisten
+            echo \"tcplisten: \$(wc -c < \$REPO/rootfs/sbin/tcplisten) bytes\"
+
+            # ── sftp-server ────────────────────────────────────────────────────
+            clang --target=wasm32-unknown-linux-musl --sysroot=\$SYSROOT \
+              -nostdlib -O2 -fno-exceptions -matomics -mbulk-memory \
+              -I \$REPO/sysroot \
+              -c \$REPO/sftp-server.c -o /tmp/sftp-server.o
+
+            clang --target=wasm32-unknown-linux-musl --sysroot=\$SYSROOT \
+              --no-standard-libraries -fuse-ld=\$WASM_LD \
+              -Wl,--import-memory -Wl,--export-memory -Wl,--export-table \
+              -Wl,--export=__heap_base -Wl,--export=__data_end \
+              -Wl,-z,stack-size=\$((4*1024*1024)) \
+              -Wl,--shared-memory -Wl,--max-memory=\$((256*1024*1024)) \
+              \$SYSROOT/lib/crt1.o /tmp/sftp-server.o \
+              -lc -o /tmp/sftp-server.wasm
+
+            wasm-opt --asyncify -O1 /tmp/sftp-server.wasm -o \$REPO/rootfs/usr/lib/sftp-server
+            chmod +x \$REPO/rootfs/usr/lib/sftp-server
+            echo \"sftp-server: \$(wc -c < \$REPO/rootfs/usr/lib/sftp-server) bytes\"
+          "
+
+      # ── Rebuild rootfs.ext4 ────────────────────────────────────────────────────
+      - name: Rebuild rootfs.ext4
+        run: |
+          WASM_OPT=wasm-opt bash build-rootfs.sh
+
+      # ── Upload artifacts ──────────────────────────────────────────────────────
+      - name: Upload rootfs.ext4
+        uses: actions/upload-artifact@v4
+        with:
+          name: rootfs-ext4-${{ github.sha }}
+          path: shell/linux-dist/rootfs.ext4
+          retention-days: 30
+
+      - name: Upload package tarballs
+        uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ github.sha }}
+          path: rootfs/packages/*.tar.gz
+          retention-days: 30
+
+      # ── Commit rebuilt artifacts back ─────────────────────────────────────────
+      - name: Commit and push rebuilt artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add \
+            rootfs/packages/ \
+            rootfs/sbin/tcplisten \
+            rootfs/usr/lib/sftp-server \
+            shell/linux-dist/rootfs.ext4
+          if git diff --staged --quiet; then
+            echo "Nothing changed, skipping commit."
+          else
+            git commit -m "ci: rebuild packages and rootfs [skip ci]"
+            git push origin feature/linux-kernel-integration
+          fi
