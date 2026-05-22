@@ -15,11 +15,9 @@ _ok()   { echo "OK: $*"; }
 
 # Resolve a package URL: prefer local copy in /packages/, fall back to HTTP.
 _fetch() {
-    local url="$1" out="$2"
-    # Strip URL prefix to get filename
-    local rel=""
+    local url="$1" out="$2" rel=""
     case "$url" in
-        http://192.168.86.1/packages/*)   rel="${url#http://192.168.86.1/packages/}" ;;
+        http://192.168.86.1/packages/*)    rel="${url#http://192.168.86.1/packages/}" ;;
         https://linuxontab.com/packages/*) rel="${url#https://linuxontab.com/packages/}" ;;
     esac
     if [ -n "$rel" ] && [ -f "$APK_LOCAL_REPO/$rel" ]; then
@@ -30,26 +28,40 @@ _fetch() {
     [ -s "$out" ] || { echo "apk: download failed: $url" >&2; return 1; }
 }
 
-# Minimal JSON field extractor (works without jq)
-_json_get() {
-    local key="$1" file="$2"
-    sed -n "s/.*\"$key\": *\"\([^\"]*\)\".*/\1/p" "$file" | head -1
-}
-_json_get_num() {
-    local key="$1" file="$2"
-    sed -n "s/.*\"$key\": *\([0-9][0-9]*\).*/\1/p" "$file" | head -1
+# Pure-shell JSON field extractors — no external commands (awk/sed/grep hang at
+# asyncify fork depth ≥ 3).  Reads APK_INDEX directly via shell redirection.
+# APK_INDEX format (2-space indent at top, 4-space for pkg keys, 6-space fields):
+#   {
+#     "packages": {
+#       "pkgname": {
+#         "version": "...",
+#         "size": 12345,
+#         ...
+#       },
+#     }
+#   }
+_pkg_field() {
+    local pkg="$1" field="$2" _in=0 _l
+    while IFS= read -r _l; do
+        case "$_in:$_l" in
+            0:'    "'"$pkg"'": {'*)  _in=1 ;;
+            1:'      "'"$field"'": "'*)
+                _l="${_l#*\"$field\": \"}"; printf '%s\n' "${_l%%\"*}"; return 0 ;;
+            1:'    }'*)  return 1 ;;
+        esac
+    done < "$APK_INDEX"
 }
 
-# Extract a package's string field from the active index
-_pkg_field() {
-    local pkg="$1" field="$2"
-    awk "/\"$pkg\":/,/^    \}/" "$APK_INDEX" | \
-        sed -n "s/.*\"$field\": *\"\([^\"]*\)\".*/\1/p" | head -1
-}
 _pkg_field_num() {
-    local pkg="$1" field="$2"
-    awk "/\"$pkg\":/,/^    \}/" "$APK_INDEX" | \
-        sed -n "s/.*\"$field\": *\([0-9][0-9]*\).*/\1/p" | head -1
+    local pkg="$1" field="$2" _in=0 _l
+    while IFS= read -r _l; do
+        case "$_in:$_l" in
+            0:'    "'"$pkg"'": {'*)  _in=1 ;;
+            1:'      "'"$field"'": '[0-9]*)
+                _l="${_l#*\"$field\": }"; printf '%s\n' "${_l%%[^0-9]*}"; return 0 ;;
+            1:'    }'*)  return 1 ;;
+        esac
+    done < "$APK_INDEX"
 }
 
 cmd_update() {
@@ -63,33 +75,41 @@ cmd_update() {
 }
 
 cmd_list() {
-    local filter="$1"
-    if [ ! -f "$APK_INDEX" ]; then
-        _info "Index not found — running apk update..."
-        cmd_update
-    fi
+    local filter="$1" _pkg _ver _desc _inst _in _l
+    [ -f "$APK_INDEX" ] || { _info "Index not found — run: apk update"; return 1; }
     echo "Available packages:"
     echo "-------------------"
-    grep -oE '"[a-zA-Z0-9_-]+": \{' "$APK_INDEX" | \
-        grep -v '"packages"' | \
-        sed 's/": {//' | tr -d '"' | \
-    while read pkg; do
-        local ver desc inst
-        ver=$(_pkg_field "$pkg" "version")
-        desc=$(_pkg_field "$pkg" "description")
-        [ -n "$ver" ] || continue
-        inst=""
-        [ -f "$APK_DB/installed/$pkg" ] && inst=" [installed]"
-        [ -z "$filter" ] || echo "$pkg $ver $desc" | grep -qi "$filter" || continue
-        printf "  %-16s %-12s %s%s\n" "$pkg" "$ver" "$desc" "$inst"
-    done
+    _in=0; _pkg=""; _ver=""; _desc=""
+    while IFS= read -r _l; do
+        case "$_in:$_l" in
+            0:'    "'*'": {')
+                _pkg="${_l#    \"}"; _pkg="${_pkg%%\"*}"
+                _ver=""; _desc=""; _in=1 ;;
+            1:'      "version": "'*)
+                _ver="${_l#*\"version\": \"}"; _ver="${_ver%%\"*}" ;;
+            1:'      "description": "'*)
+                _desc="${_l#*\"description\": \"}"; _desc="${_desc%%\"*}" ;;
+            1:'    }'*)
+                if [ -n "$_pkg" ] && [ -n "$_ver" ]; then
+                    _inst=""
+                    [ -f "$APK_DB/installed/$_pkg" ] && _inst=" [installed]"
+                    if [ -z "$filter" ]; then
+                        printf "  %-16s %-12s %s%s\n" "$_pkg" "$_ver" "$_desc" "$_inst"
+                    else
+                        case "$_pkg $_ver $_desc" in
+                            *"$filter"*) printf "  %-16s %-12s %s%s\n" "$_pkg" "$_ver" "$_desc" "$_inst" ;;
+                        esac
+                    fi
+                fi
+                _in=0; _pkg="" ;;
+        esac
+    done < "$APK_INDEX"
 }
 
 cmd_info() {
-    local pkg="$1"
+    local pkg="$1" ver desc url size sha _inst_ver
     [ -n "$pkg" ] || _err "Usage: apk info <package>"
     [ -f "$APK_INDEX" ] || _err "Index not found. Run: apk update"
-    local ver desc url size sha
     ver=$(_pkg_field "$pkg" "version")
     [ -n "$ver" ] || _err "Unknown package: $pkg"
     desc=$(_pkg_field "$pkg" "description")
@@ -103,7 +123,8 @@ cmd_info() {
     echo "Size       : $size bytes"
     echo "SHA256     : $sha"
     if [ -f "$APK_DB/installed/$pkg" ]; then
-        echo "Status     : installed ($(cat "$APK_DB/installed/$pkg"))"
+        IFS= read -r _inst_ver < "$APK_DB/installed/$pkg"
+        echo "Status     : installed ($_inst_ver)"
     else
         echo "Status     : not installed"
     fi
@@ -111,24 +132,19 @@ cmd_info() {
 
 cmd_add() {
     [ -n "$*" ] || _err "Usage: apk add <package> [package...]"
-    if [ ! -f "$APK_INDEX" ]; then
-        _info "Index not found, running apk update..."
-        cmd_update
-    fi
+    [ -f "$APK_INDEX" ] || cmd_update
     for pkg in "$@"; do
         _install_pkg "$pkg"
     done
 }
 
 _install_pkg() {
-    local pkg="$1"
-    local ver url sha size
+    local pkg="$1" ver url sha inst_ver tmptar workdir pkgroot manifest _entry _rel
     ver=$(_pkg_field "$pkg" "version")
     [ -n "$ver" ] || _err "Unknown package: $pkg (run 'apk update' to refresh index)"
 
     if [ -f "$APK_DB/installed/$pkg" ]; then
-        local inst_ver
-        inst_ver=$(cat "$APK_DB/installed/$pkg" | head -1)
+        IFS= read -r inst_ver < "$APK_DB/installed/$pkg"
         if [ "$inst_ver" = "$ver" ]; then
             _info "$pkg-$ver is already installed"
             return 0
@@ -142,13 +158,13 @@ _install_pkg() {
     sha=$(_pkg_field "$pkg" "sha256")
     [ -n "$url" ] || _err "No URL for package $pkg"
 
-    local tmptar="/tmp/apk-$pkg.tar.gz"
+    tmptar="/tmp/apk-$pkg.tar.gz"
     _info "Downloading $url"
     _fetch "$url" "$tmptar" || _err "Download failed for $pkg"
 
-    # Verify checksum if shasum is available
+    # Optional checksum verification (sha256sum is a single fork at depth 2 — OK)
     if command -v sha256sum >/dev/null 2>&1 && [ -n "$sha" ]; then
-        actual=$(sha256sum "$tmptar" | awk '{print $1}')
+        actual=$(sha256sum "$tmptar"); actual="${actual%% *}"
         if [ "$actual" != "$sha" ]; then
             rm -f "$tmptar"
             _err "Checksum mismatch for $pkg (expected $sha, got $actual)"
@@ -156,36 +172,35 @@ _install_pkg() {
     fi
 
     _info "Extracting $pkg..."
-    local workdir="/tmp/apk-work-$pkg"
+    workdir="/tmp/apk-work-$pkg"
     rm -rf "$workdir" && mkdir -p "$workdir"
     tar xzf "$tmptar" -C "$workdir" 2>/dev/null || _err "Failed to extract tarball"
 
-    # The tarball has pkg-<name>/ at the top level.
-    # Copy its entire tree to /, preserving paths:
-    #   pkg-dropbear/sbin/dropbear  →  /sbin/dropbear
-    #   pkg-dropbear/usr/bin/ssh    →  /usr/bin/ssh
-    #   pkg-busybox/bin/busybox     →  /bin/busybox  (or /usr/local/bin)
-    local pkgroot="$workdir/pkg-$pkg"
+    pkgroot="$workdir/pkg-$pkg"
     [ -d "$pkgroot" ] || _err "Malformed tarball: pkg-$pkg/ not found"
 
-    # Track installed files for removal support
-    local manifest="$APK_DB/files/$pkg"
+    # Install: copy entire pkg tree to / preserving permissions.
+    # Packages are pre-asyncify-transformed at build time (make-packages.sh).
+    # cp -rp is a single depth-2 fork — safe in the asyncify fork chain.
     mkdir -p "$APK_DB/files"
+    manifest="$APK_DB/files/$pkg"
     : > "$manifest"
+    cp -rp "$pkgroot/." / 2>/dev/null || _err "Failed to install files for $pkg"
+    _ok "Installed $pkg files to /"
 
-    find "$pkgroot" -type f -o -type l | while read src; do
-        local rel="${src#$pkgroot/}"
-        case "$rel" in info) continue ;; esac  # skip metadata
-        local dst="/$rel"
-        mkdir -p "$(dirname "$dst")"
-        cp "$src" "$dst" && chmod +x "$dst" 2>/dev/null || true
-        echo "$dst" >> "$manifest"
-        _ok "Installed: $dst"
-    done
+    # Build manifest via tar -t (single fork, no pipeline) then pure-shell parse
+    tar tzf "$tmptar" > "/tmp/apk-fl-$pkg.txt" 2>/dev/null || true
+    while IFS= read -r _entry; do
+        case "$_entry" in
+            */) continue ;;          # skip directory entries
+            pkg-*/*)
+                _rel="${_entry#*/}"  # strip "pkg-NAME/" prefix
+                echo "/$_rel" >> "$manifest" ;;
+        esac
+    done < "/tmp/apk-fl-$pkg.txt"
+    rm -f "/tmp/apk-fl-$pkg.txt" "$tmptar"
 
-    rm -rf "$workdir" "$tmptar"
-
-    # Record version
+    # Record installed version
     mkdir -p "$APK_DB/installed"
     echo "$ver" > "$APK_DB/installed/$pkg"
     _ok "$pkg-$ver installed"
@@ -210,8 +225,10 @@ cmd_del() {
 
 cmd_upgrade() {
     cmd_update
-    for pkg in $(ls "$APK_DB/installed/" 2>/dev/null); do
-        _install_pkg "$pkg"
+    # Use glob instead of $(ls ...) to avoid depth-3 fork
+    for _f in "$APK_DB/installed/"*; do
+        [ -f "$_f" ] || continue
+        _install_pkg "${_f##*/}"
     done
 }
 
@@ -220,7 +237,7 @@ cmd_search() {
 }
 
 cmd_version() {
-    echo "apk-linuxontab 0.2.0"
+    echo "apk-linuxontab 0.3.0"
     echo "WASM package manager for LinuxOnTab"
     echo "Local repo  : $APK_LOCAL_REPO"
     echo "Remote repo : $APK_REPO_HTTP"
