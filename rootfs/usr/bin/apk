@@ -3,11 +3,288 @@
 # Fetches WASM-compiled packages from https://linuxontab.com/packages/
 # All packages are real wasm32-linux-musl binaries from tombl/distro
 
-APK_REPO="http://192.168.86.1/packages"
+APK_REPO_HTTP="https://linuxontab.com/packages"
+APK_REPO_VGWX="http://192.168.86.1/packages"  # virtual gateway (fast, in-rootfs)
 APK_LOCAL_REPO="/packages"
 APK_DB="/var/lib/apk"
-APK_INDEX="$APK_LOCAL_REPO/index.json"
-APK_BIN="/usr/local/bin"
+APK_INDEX="$APK_DB/index.json"
+APK_INDEX_LOCAL="$APK_LOCAL_REPO/index.json"
+
+_err()  { echo "apk: error: $*" >&2; exit 1; }
+_info() { echo ">>> $*"; }
+_ok()   { echo "OK: $*"; }
+
+# Resolve a package URL: prefer local copy in /packages/, fall back to HTTP.
+_fetch() {
+    local url="$1" out="$2"
+    # Strip URL prefix to get filename
+    local rel=""
+    case "$url" in
+        http://192.168.86.1/packages/*)   rel="${url#http://192.168.86.1/packages/}" ;;
+        https://linuxontab.com/packages/*) rel="${url#https://linuxontab.com/packages/}" ;;
+    esac
+    if [ -n "$rel" ] && [ -f "$APK_LOCAL_REPO/$rel" ]; then
+        cp "$APK_LOCAL_REPO/$rel" "$out"
+        return $?
+    fi
+    wget -q -O "$out" "$url" 2>&1 | grep -v '^$' || true
+    [ -s "$out" ] || { echo "apk: download failed: $url" >&2; return 1; }
+}
+
+# Minimal JSON field extractor (works without jq)
+_json_get() {
+    local key="$1" file="$2"
+    sed -n "s/.*\"$key\": *\"\([^\"]*\)\".*/\1/p" "$file" | head -1
+}
+_json_get_num() {
+    local key="$1" file="$2"
+    sed -n "s/.*\"$key\": *\([0-9][0-9]*\).*/\1/p" "$file" | head -1
+}
+
+# Extract a package's string field from the active index
+_pkg_field() {
+    local pkg="$1" field="$2"
+    awk "/\"$pkg\":/,/^    \}/" "$APK_INDEX" | \
+        sed -n "s/.*\"$field\": *\"\([^\"]*\)\".*/\1/p" | head -1
+}
+_pkg_field_num() {
+    local pkg="$1" field="$2"
+    awk "/\"$pkg\":/,/^    \}/" "$APK_INDEX" | \
+        sed -n "s/.*\"$field\": *\([0-9][0-9]*\).*/\1/p" | head -1
+}
+
+cmd_update() {
+    mkdir -p "$APK_DB"
+    # Try the virtual gateway (fast, served from rootfs itself) first
+    if [ -f "$APK_INDEX_LOCAL" ]; then
+        cp "$APK_INDEX_LOCAL" "$APK_INDEX"
+        local n
+        n=$(grep -c '"status"' "$APK_INDEX" 2>/dev/null || echo 0)
+        _ok "Package index updated ($n packages)"
+        return 0
+    fi
+    # Fall back to fetching from linuxontab.com
+    local tmp="/tmp/apk-index.json"
+    _info "Fetching package index from $APK_REPO_HTTP..."
+    _fetch "$APK_REPO_HTTP/index.json" "$tmp" || _err "Could not fetch index"
+    cp "$tmp" "$APK_INDEX"
+    rm -f "$tmp"
+    local n
+    n=$(grep -c '"status"' "$APK_INDEX" 2>/dev/null || echo 0)
+    _ok "Package index updated ($n packages)"
+}
+
+cmd_list() {
+    local filter="$1"
+    if [ ! -f "$APK_INDEX" ]; then
+        _info "Index not found — running apk update..."
+        cmd_update
+    fi
+    echo "Available packages:"
+    echo "-------------------"
+    grep -oE '"[a-zA-Z0-9_-]+": \{' "$APK_INDEX" | \
+        grep -v '"packages"' | \
+        sed 's/": {//' | tr -d '"' | \
+    while read pkg; do
+        local ver desc inst
+        ver=$(_pkg_field "$pkg" "version")
+        desc=$(_pkg_field "$pkg" "description")
+        [ -n "$ver" ] || continue
+        inst=""
+        [ -f "$APK_DB/installed/$pkg" ] && inst=" [installed]"
+        [ -z "$filter" ] || echo "$pkg $ver $desc" | grep -qi "$filter" || continue
+        printf "  %-16s %-12s %s%s\n" "$pkg" "$ver" "$desc" "$inst"
+    done
+}
+
+cmd_info() {
+    local pkg="$1"
+    [ -n "$pkg" ] || _err "Usage: apk info <package>"
+    [ -f "$APK_INDEX" ] || _err "Index not found. Run: apk update"
+    local ver desc url size sha
+    ver=$(_pkg_field "$pkg" "version")
+    [ -n "$ver" ] || _err "Unknown package: $pkg"
+    desc=$(_pkg_field "$pkg" "description")
+    url=$(_pkg_field "$pkg" "url")
+    size=$(_pkg_field_num "$pkg" "size")
+    sha=$(_pkg_field "$pkg" "sha256")
+    echo "Package    : $pkg"
+    echo "Version    : $ver"
+    echo "Description: $desc"
+    echo "URL        : $url"
+    echo "Size       : $size bytes"
+    echo "SHA256     : $sha"
+    if [ -f "$APK_DB/installed/$pkg" ]; then
+        echo "Status     : installed ($(cat "$APK_DB/installed/$pkg"))"
+    else
+        echo "Status     : not installed"
+    fi
+}
+
+cmd_add() {
+    [ -n "$*" ] || _err "Usage: apk add <package> [package...]"
+    if [ ! -f "$APK_INDEX" ]; then
+        _info "Index not found, running apk update..."
+        cmd_update
+    fi
+    for pkg in "$@"; do
+        _install_pkg "$pkg"
+    done
+}
+
+_install_pkg() {
+    local pkg="$1"
+    local ver url sha size
+    ver=$(_pkg_field "$pkg" "version")
+    [ -n "$ver" ] || _err "Unknown package: $pkg (run 'apk update' to refresh index)"
+
+    if [ -f "$APK_DB/installed/$pkg" ]; then
+        local inst_ver
+        inst_ver=$(cat "$APK_DB/installed/$pkg" | head -1)
+        if [ "$inst_ver" = "$ver" ]; then
+            _info "$pkg-$ver is already installed"
+            return 0
+        fi
+        _info "Upgrading $pkg: $inst_ver -> $ver"
+    else
+        _info "Installing $pkg-$ver..."
+    fi
+
+    url=$(_pkg_field "$pkg" "url")
+    sha=$(_pkg_field "$pkg" "sha256")
+    [ -n "$url" ] || _err "No URL for package $pkg"
+
+    local tmptar="/tmp/apk-$pkg.tar.gz"
+    _info "Downloading $url"
+    _fetch "$url" "$tmptar" || _err "Download failed for $pkg"
+
+    # Verify checksum if shasum is available
+    if command -v sha256sum >/dev/null 2>&1 && [ -n "$sha" ]; then
+        actual=$(sha256sum "$tmptar" | awk '{print $1}')
+        if [ "$actual" != "$sha" ]; then
+            rm -f "$tmptar"
+            _err "Checksum mismatch for $pkg (expected $sha, got $actual)"
+        fi
+    fi
+
+    _info "Extracting $pkg..."
+    local workdir="/tmp/apk-work-$pkg"
+    rm -rf "$workdir" && mkdir -p "$workdir"
+    tar xzf "$tmptar" -C "$workdir" 2>/dev/null || _err "Failed to extract tarball"
+
+    # The tarball has pkg-<name>/ at the top level.
+    # Copy its entire tree to /, preserving paths:
+    #   pkg-dropbear/sbin/dropbear  →  /sbin/dropbear
+    #   pkg-dropbear/usr/bin/ssh    →  /usr/bin/ssh
+    #   pkg-busybox/bin/busybox     →  /bin/busybox  (or /usr/local/bin)
+    local pkgroot="$workdir/pkg-$pkg"
+    [ -d "$pkgroot" ] || _err "Malformed tarball: pkg-$pkg/ not found"
+
+    # Track installed files for removal support
+    local manifest="$APK_DB/files/$pkg"
+    mkdir -p "$APK_DB/files"
+    : > "$manifest"
+
+    find "$pkgroot" -type f -o -type l | while read src; do
+        local rel="${src#$pkgroot/}"
+        case "$rel" in info) continue ;; esac  # skip metadata
+        local dst="/$rel"
+        mkdir -p "$(dirname "$dst")"
+        cp "$src" "$dst" && chmod +x "$dst" 2>/dev/null || true
+        echo "$dst" >> "$manifest"
+        _ok "Installed: $dst"
+    done
+
+    rm -rf "$workdir" "$tmptar"
+
+    # Record version
+    mkdir -p "$APK_DB/installed"
+    echo "$ver" > "$APK_DB/installed/$pkg"
+    _ok "$pkg-$ver installed"
+}
+
+cmd_del() {
+    [ -n "$*" ] || _err "Usage: apk del <package> [package...]"
+    for pkg in "$@"; do
+        [ -f "$APK_DB/installed/$pkg" ] || { echo "apk: $pkg is not installed"; continue; }
+        local manifest="$APK_DB/files/$pkg"
+        if [ -f "$manifest" ]; then
+            while IFS= read -r f; do
+                [ -z "$f" ] && continue
+                rm -f "$f" && _ok "Removed: $f"
+            done < "$manifest"
+            rm -f "$manifest"
+        fi
+        rm -f "$APK_DB/installed/$pkg"
+        _ok "$pkg removed"
+    done
+}
+
+cmd_upgrade() {
+    cmd_update
+    for pkg in $(ls "$APK_DB/installed/" 2>/dev/null); do
+        _install_pkg "$pkg"
+    done
+}
+
+cmd_search() {
+    cmd_list "$1"
+}
+
+cmd_version() {
+    echo "apk-linuxontab 0.2.0"
+    echo "WASM package manager for LinuxOnTab"
+    echo "Local repo  : $APK_LOCAL_REPO"
+    echo "Remote repo : $APK_REPO_HTTP"
+}
+
+cmd_help() {
+    cat <<'EOF'
+apk - LinuxOnTab package manager (WASM packages)
+
+Commands:
+  apk update           Fetch/refresh the package index
+  apk add <pkg>...     Install package(s)
+  apk del <pkg>...     Remove package(s)
+  apk list [filter]    List available packages
+  apk search <query>   Search packages by name/description
+  apk info <pkg>       Show package details
+  apk upgrade          Update index and upgrade all installed packages
+  apk version          Show apk version
+
+Notes:
+  All packages are compiled to WebAssembly (wasm32-linux-musl)
+  and built from source via github.com/tombl/distro.
+
+  Wasmer.io / WAPM packages are NOT compatible — they use WASI
+  (wasi_snapshot_preview1) rather than Linux syscall ABI.
+
+  To build a new package from source:
+    rebuild --skip-distro     (triggers GitHub Actions CI)
+EOF
+}
+
+# Dispatch
+CMD="${1:-help}"
+shift 2>/dev/null || true
+
+case "$CMD" in
+    update)   cmd_update ;;
+    add)      cmd_add "$@" ;;
+    del|remove|delete) cmd_del "$@" ;;
+    list)     cmd_list "$@" ;;
+    search)   cmd_search "$1" ;;
+    info)     cmd_info "$1" ;;
+    upgrade)  cmd_upgrade ;;
+    version|-v|--version) cmd_version ;;
+    help|-h|--help) cmd_help ;;
+    *)
+        echo "apk: unknown command: $CMD"
+        cmd_help
+        exit 1
+        ;;
+esac
+
 
 _err()  { echo "apk: error: $*" >&2; exit 1; }
 _info() { echo ">>> $*"; }

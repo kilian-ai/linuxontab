@@ -23,6 +23,23 @@
         "sqlite3"
       ],
       "status": "available"
+    },
+    "dropbear": {
+      "version": "2024.86",
+      "description": "Lightweight SSH server and client (dropbear, sshd, ssh)",
+      "url": "http://192.168.86.1/packages/dropbear-2024.86.tar.gz",
+      "size": 893164,
+      "sha256": "b8d8bd6358513f7ccda079af9fd0ab4412991e697ea45b2a348de3b24ec3d21e",
+      "bins": [
+        "sbin/dropbear",
+        "usr/sbin/sshd",
+        "usr/bin/ssh",
+        "usr/bin/ssh-keygen",
+        "bin/dbclient",
+        "bin/dropbearkey",
+        "usr/lib/sftp-server"
+      ],
+      "status": "available"
     }
   }
 }
