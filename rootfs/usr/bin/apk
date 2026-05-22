@@ -7,8 +7,7 @@ APK_REPO_HTTP="https://linuxontab.com/packages"
 APK_REPO_VGWX="http://192.168.86.1/packages"  # virtual gateway (fast, in-rootfs)
 APK_LOCAL_REPO="/packages"
 APK_DB="/var/lib/apk"
-APK_INDEX="$APK_DB/index.json"
-APK_INDEX_LOCAL="$APK_LOCAL_REPO/index.json"
+APK_INDEX="$APK_LOCAL_REPO/index.json"  # already in rootfs — no copy needed
 
 _err()  { echo "apk: error: $*" >&2; exit 1; }
 _info() { echo ">>> $*"; }
@@ -27,7 +26,7 @@ _fetch() {
         cp "$APK_LOCAL_REPO/$rel" "$out"
         return $?
     fi
-    wget -q -O "$out" "$url" 2>&1 | grep -v '^$' || true
+    wget -q -O "$out" "$url" || true
     [ -s "$out" ] || { echo "apk: download failed: $url" >&2; return 1; }
 }
 
@@ -54,24 +53,13 @@ _pkg_field_num() {
 }
 
 cmd_update() {
-    mkdir -p "$APK_DB"
-    # Try the virtual gateway (fast, served from rootfs itself) first
-    if [ -f "$APK_INDEX_LOCAL" ]; then
-        cp "$APK_INDEX_LOCAL" "$APK_INDEX"
-        local n
-        n=$(grep -c '"status"' "$APK_INDEX" 2>/dev/null || echo 0)
-        _ok "Package index updated ($n packages)"
+    # APK_INDEX points directly to /packages/index.json which is baked into the
+    # rootfs — no network fetch or file copy needed.
+    if [ -f "$APK_INDEX" ]; then
+        _ok "Package index ready ($APK_INDEX)"
         return 0
     fi
-    # Fall back to fetching from linuxontab.com
-    local tmp="/tmp/apk-index.json"
-    _info "Fetching package index from $APK_REPO_HTTP..."
-    _fetch "$APK_REPO_HTTP/index.json" "$tmp" || _err "Could not fetch index"
-    cp "$tmp" "$APK_INDEX"
-    rm -f "$tmp"
-    local n
-    n=$(grep -c '"status"' "$APK_INDEX" 2>/dev/null || echo 0)
-    _ok "Package index updated ($n packages)"
+    _err "Package index missing — rootfs may be corrupt"
 }
 
 cmd_list() {
