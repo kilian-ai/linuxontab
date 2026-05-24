@@ -1,0 +1,11 @@
+cd /Users/kilian/.ai/LinuxOnTab-kernel && python3 -c "
+import http.server
+class H(http.server.SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+        self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
+        self.send_header('Cache-Control', 'no-store')
+        super().end_headers()
+    def log_message(self, f, *a): pass
+http.server.HTTPServer(('', 8001), H).serve_forever()
+" 

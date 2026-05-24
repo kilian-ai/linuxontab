@@ -96,6 +96,10 @@ function parsePort(s) {
   return (n > 0 && n < 65536) ? n : null;
 }
 
+function generateId() {
+  return Math.random().toString(36).slice(2, 10).toUpperCase();
+}
+
 function _concat(arrays) {
   let total = 0;
   for (const a of arrays) total += a.byteLength;
@@ -152,13 +156,51 @@ export class PortSession {
       if (Array.isArray(ports)) this.registeredPorts = new Set(ports);
       const created = await this.state.storage.get('created');
       if (typeof created === 'number') this.created = created;
-      // Force-reset any hibernated WSes — pair state isn't persisted to DO
-      // storage, and CF DO hibernation only triggers after extended idle
-      // (tunnel-up.sh's --ping-interval 25 keeps active sessions hot, so
-      // hibernation cannot interrupt a live transfer). Closing hibernated
-      // WS triggers tunnel-up.sh respawn → fresh bridges enqueued cleanly.
+
+      // On DO wakeup (hibernation restore or redeploy), reconstruct runtime state
+      // from WS tags. Tags survive hibernation; in-memory Maps do not.
+      //
+      // Tag schema:
+      //   guest WS:  ['guest', 'port:N', 'id:XXXX']
+      //   client WS: ['client', 'port:N', 'id:XXXX', 'peer:GUESTID']
+      //
+      // Step 1: build id → WS map.
+      const wsById = new Map();
       for (const ws of this.state.getWebSockets()) {
-        try { ws.close(1000, 'rehydrate'); } catch (_) {}
+        const tags = this.state.getTags(ws);
+        const idTag = tags.find(t => t.startsWith('id:'));
+        if (idTag) wsById.set(idTag.slice(3), ws);
+      }
+
+      // Step 2: rebuild pairs from 'peer:GUESTID' tags on client WS.
+      for (const ws of this.state.getWebSockets()) {
+        const tags = this.state.getTags(ws);
+        const peerTag = tags.find(t => t.startsWith('peer:'));
+        if (!peerTag) continue;
+        const peer = wsById.get(peerTag.slice(5));
+        if (peer) {
+          this.pairs.set(ws, peer);
+          this.pairs.set(peer, ws);
+        } else {
+          // Guest WS is gone — close this orphaned client.
+          try { ws.close(1000, 'rehydrate'); } catch (_) {}
+        }
+      }
+
+      // Step 3: enqueue unpaired guests; close unpaired non-guests.
+      for (const ws of this.state.getWebSockets()) {
+        if (this.pairs.has(ws)) continue;  // already paired — skip
+        const tags = this.state.getTags(ws);
+        const isGuest = tags.includes('guest');
+        const portTag = tags.find(t => t.startsWith('port:'));
+        const port = portTag ? parseInt(portTag.slice(5), 10) : null;
+        if (isGuest && port) {
+          let q = this.guestQueue.get(port);
+          if (!q) { q = []; this.guestQueue.set(port, q); }
+          q.push(ws);
+        } else {
+          try { ws.close(1000, 'rehydrate'); } catch (_) {}
+        }
       }
     });
   }
@@ -264,9 +306,22 @@ export class PortSession {
 
       const pair = new WebSocketPair();
       const client = pair[1];
-      this.state.acceptWebSocket(client, ['client', `port:${port}`]);
+      // Include 'peer:GUESTID' tag so pairs can be rebuilt after DO hibernation.
+      const guestTags = this.state.getTags(guest);
+      const guestIdTag = guestTags.find(t => t.startsWith('id:'));
+      const guestId = guestIdTag ? guestIdTag.slice(3) : null;
+      const clientId = generateId();
+      const clientTags = ['client', `port:${port}`, `id:${clientId}`];
+      if (guestId) clientTags.push(`peer:${guestId}`);
+      this.state.acceptWebSocket(client, clientTags);
       this.pairs.set(client, guest);
       this.pairs.set(guest, client);
+
+      // Signal the browser-side pool WS to establish the actual TCP connection
+      // to the guest service (e.g. dropbear on :22). Pool WS are idle until
+      // a client arrives — this avoids dropbear's unauthenticated-session
+      // timeout firing before any real client connects.
+      try { guest.send('__connected__'); } catch (_) {}
 
       // Flush any pre-pair buffered bytes (e.g. SSH banner sent eagerly by
       // sshd on TCP accept, before this client dequeued the bridge).
@@ -285,7 +340,10 @@ export class PortSession {
     // role === 'guest': enqueue in the per-port standby pool.
     const pair = new WebSocketPair();
     const guest = pair[1];
-    this.state.acceptWebSocket(guest, ['guest', `port:${port}`]);
+    // Include unique 'id:' tag so the client can store 'peer:GUESTID'
+    // and pairs can be reconstructed after DO hibernation.
+    const guestId = generateId();
+    this.state.acceptWebSocket(guest, ['guest', `port:${port}`, `id:${guestId}`]);
     let q = this.guestQueue.get(port);
     if (!q) { q = []; this.guestQueue.set(port, q); }
     q.push(guest);
@@ -296,6 +354,8 @@ export class PortSession {
   // WS, surviving DO eviction. All bytes flow through here.
   async webSocketMessage(ws, message) {
     this.lastActivity = Date.now();
+    // Ignore keepalive pings from the browser pool (prevent DO hibernation idle-timeout).
+    if (message === '__ping__') return;
     const { role } = this._parseTags(ws);
 
     // If an _httpProxy call owns this guest WS, deliver bytes to it.

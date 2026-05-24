@@ -32,7 +32,7 @@ curl -s 'https://tunnel.traits.build/port/status?code=42G4'
 # In guest:
 apk add openssh
 ssh-keygen -A
-passwd  # set root password
+printf 'lot-tb-61216!\nlot-tb-61216!\n' | passwd root
 echo 'PermitRootLogin yes' >> /etc/ssh/sshd_config
 /usr/sbin/sshd
 # Now rerun tunnel:
@@ -104,11 +104,15 @@ printf 'dummy1234!\ndummy1234!\n' | passwd root
 echo 'root:dummy1234!' | chpasswd
 
 #apk online
-echo "https://dl-cdn.alpinelinux.org/alpine/edge/main" >> /etc/apk/repositories
+echo "https://dl-cdn.alpinelinux.org/alpine/edge/main" > /etc/apk/repositories
 echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
 apk update
 
 apk add --repository=https://dl-cdn.alpinelinux.org/alpine/edge/main <package>
+
+
+echo "https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/x86/APKINDEX.tar.gz" > /etc/apk/repositories
+echo "https://dl-cdn.alpinelinux.org/alpine/latest-stable/community/x86/APKINDEX.tar.gz" >> /etc/apk/repositories
 
 
 #INIT
@@ -123,8 +127,8 @@ wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh
 
 # install rust/cargo (needs edge repos + staged install to avoid OOM at llvm22-libs)
 # NOTE: if 1GB zram isn't enough, add a second zram via hot_add first:
-#   cat /sys/class/zram-control/hot_add   # creates zram1
-#   echo 512M > /sys/block/zram1/disksize && mkswap /dev/zram1 && swapon /dev/zram1
+   cat /sys/class/zram-control/hot_add   # creates zram1
+   echo 2G > /sys/block/zram1/disksize && mkswap /dev/zram1 && swapon /dev/zram1
 # NOTE: never use a swapfile on Alpine tmpfs — it just consumes swap itself and causes OOM
 echo "https://dl-cdn.alpinelinux.org/alpine/edge/main" >> /etc/apk/repositories
 echo "https://dl-cdn.alpinelinux.org/alpine/edge/community" >> /etc/apk/repositories
@@ -375,3 +379,5 @@ https://linuxontab.com/shell/?pip=1&pipx=20&pipy=50&pipw=600&piph=400&browser=ht
 curl -sL https://github.com/kilian-ai/linuxontab/releases/download/snap-v1/trust \
   -o /usr/local/bin/trust && chmod +x /usr/local/bin/trust
 trust /root
+
+https://linuxontab.com/shell/?pip=1&pipx=20&pipy=50&pipw=830&piph=580&snapshot=https://github.com/kilian-ai/linuxontab/releases/download/trust-newest-alpine/trust-newest-alpine.bin.gz&postboot=trust%20%2Ftrust
