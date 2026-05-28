@@ -1,0 +1,13 @@
+name = "linuxontab-email-capture"
+account_id = "266790f1b479dc950d5833befe740e29"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+workers_dev = true
+
+routes = [
+  { pattern = "leads.linuxontab.com", custom_domain = true }
+]
+
+[[kv_namespaces]]
+binding = "LEADS"
+id = "3b28795e90bf4ee3b849cce6d3f1deb0"

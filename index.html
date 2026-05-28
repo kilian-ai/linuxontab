@@ -144,6 +144,8 @@
   .cta.secondary:hover { background:#161a1f; }
   .badges { margin-top:22px; color:var(--mut); font-size:13px; display:flex; gap:18px; justify-content:center; flex-wrap:wrap; }
   .badges span::before { content:"●"; color:var(--accent); margin-right:6px; }
+  .badges a.badge-notify { color:var(--mut); border-bottom:1px dashed var(--line); padding-bottom:1px; transition:color .15s; }
+  .badges a.badge-notify:hover { color:var(--accent); text-decoration:none; border-bottom-color:var(--accent); }
   section { padding:56px 24px; border-bottom:1px solid var(--line); }
   section h2 { font-size:clamp(22px, 2.6vw, 30px); margin:0 0 18px; letter-spacing:-.3px; }
   section p { color:#c4cad2; }
@@ -162,6 +164,20 @@
   footer.site { padding:30px 24px 50px; color:var(--mut); font-size:13px; text-align:center; }
   footer.site a { color:var(--mut); }
   footer.site a:hover { color:var(--fg); }
+  /* Email capture */
+  .email-band { background:var(--card); border-top:1px solid var(--line); border-bottom:1px solid var(--line); padding:52px 24px; text-align:center; }
+  .email-band h2 { font-size:clamp(20px,2.4vw,28px); margin:0 0 10px; letter-spacing:-.3px; }
+  .email-band p { color:var(--mut); font-size:15px; margin:0 auto 24px; max-width:480px; }
+  .email-form { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; max-width:480px; margin:0 auto; }
+  .email-form input[type="email"] { flex:1 1 220px; background:#0e1217; border:1px solid var(--line); border-radius:8px; padding:11px 14px; color:var(--fg); font-size:15px; outline:none; transition:border-color .15s; }
+  .email-form input[type="email"]:focus { border-color:var(--accent); }
+  .email-form input[type="email"]::placeholder { color:var(--mut); }
+  .email-form button { background:var(--accent); color:#0b0d10; border:none; border-radius:8px; padding:11px 22px; font-size:15px; font-weight:600; cursor:pointer; transition:background .15s; white-space:nowrap; }
+  .email-form button:hover { background:#22c55e; }
+  .email-form button:disabled { opacity:.6; cursor:default; }
+  .email-msg { margin-top:12px; font-size:14px; min-height:20px; }
+  .email-msg.ok { color:var(--accent); }
+  .email-msg.err { color:#f87171; }
   .terminal-mock { background:#0e1217; border:1px solid var(--line); border-radius:10px; padding:14px 16px; text-align:left; max-width:760px; margin:28px auto 0; font-family:ui-monospace,Menlo,monospace; font-size:13px; color:#d5d8dc; box-shadow:0 8px 30px rgba(0,0,0,.35); min-height:230px; }
   .terminal-mock .dots { display:flex; gap:6px; margin-bottom:10px; }
   .terminal-mock .dots span { width:11px; height:11px; border-radius:50%; background:#3a424d; }
@@ -217,6 +233,7 @@
     <span>Runs offline</span>
     <span>Open source stack</span>
     <span>Free, no signup</span>
+    <a class="badge-notify" href="#newsletter">Get notified of updates →</a>
   </div>
 
   <div class="terminal-mock" id="tm" aria-hidden="true">
@@ -279,7 +296,7 @@
       <tr><th></th><th>LinuxOnTab</th><th>Docker</th><th>Cloud shell (e.g. SSH VM)</th></tr>
     </thead>
     <tbody>
-      <tr><td>Install required</td>                <td class="no">No</td>      <td class="no">Yes (daemon)</td><td class="no">No (but account needed)</td></tr>
+      <tr><td>Install required</td>                <td class="yes">No</td>      <td class="no">Yes (daemon)</td><td class="no">No (but account needed)</td></tr>
       <tr><td>Account / signup</td>                <td class="yes">No</td>     <td class="yes">No</td>         <td class="no">Yes</td></tr>
       <tr><td>Real Linux kernel</td>               <td class="yes">Yes (in WASM)</td><td class="yes">Yes (host kernel)</td><td class="yes">Yes</td></tr>
       <tr><td>Runs offline</td>                    <td class="yes">Yes</td>    <td class="yes">Yes</td>        <td class="no">No</td></tr>
@@ -409,6 +426,16 @@ ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@loc
   </details>
 </section>
 
+<section class="email-band" id="newsletter">
+  <h2>Stay in the loop</h2>
+  <p>Get notified about new features, snapshot releases, and early access to upcoming tools.</p>
+  <form class="email-form" id="email-form" novalidate>
+    <input type="email" id="email-input" placeholder="you@example.com" autocomplete="email" required>
+    <button type="submit" id="email-btn">Notify me</button>
+  </form>
+  <div class="email-msg" id="email-msg" aria-live="polite"></div>
+</section>
+
 <footer class="site">
   <div>
     LinuxOnTab — a real Linux kernel in your browser via
@@ -526,6 +553,57 @@ ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@loc
     } else {
       setTimeout(start, 600);
     }
+  })();
+
+  // Email capture form
+  (function () {
+    var form = document.getElementById('email-form');
+    var input = document.getElementById('email-input');
+    var btn = document.getElementById('email-btn');
+    var msg = document.getElementById('email-msg');
+    if (!form) return;
+
+    var ENDPOINT = 'https://leads.linuxontab.com/subscribe';
+
+    form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      var email = input.value.trim();
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+        msg.textContent = 'Please enter a valid email address.';
+        msg.className = 'email-msg err';
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = 'Sending…';
+      msg.textContent = '';
+      msg.className = 'email-msg';
+
+      fetch(ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, source: 'homepage' }),
+      })
+        .then(function (res) { return res.json().then(function (d) { return { ok: res.ok, data: d }; }); })
+        .then(function (r) {
+          if (r.ok) {
+            msg.textContent = r.data.message || 'You\'re on the list!';
+            msg.className = 'email-msg ok';
+            input.value = '';
+            btn.textContent = 'Done ✓';
+          } else {
+            msg.textContent = r.data.error || 'Something went wrong. Try again.';
+            msg.className = 'email-msg err';
+            btn.disabled = false;
+            btn.textContent = 'Notify me';
+          }
+        })
+        .catch(function () {
+          msg.textContent = 'Network error. Please try again.';
+          msg.className = 'email-msg err';
+          btn.disabled = false;
+          btn.textContent = 'Notify me';
+        });
+    });
   })();
 </script>
 
