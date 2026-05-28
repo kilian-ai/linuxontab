@@ -760,24 +760,14 @@
   const termEl = $('term'), snapEl = $('snap');
 
   // ── Promo banner dismiss ─────────────────────────────────────────────────
-  // Hide the claw promo bar once the user clicks ✕. Persists across reloads
-  // via localStorage. To resurface: localStorage.removeItem('lot.promo.dismissed').
+  // Newsletter banner — always shown (no persistence). Clear any old dismiss key.
   (function initPromo() {
-    const PROMO_KEY = 'lot.promo.dismissed';
     const promoEl = $('promo');
     const closeBtn = $('promo-close');
     if (!promoEl) return;
-    try {
-      if (localStorage.getItem(PROMO_KEY) === '1') {
-        promoEl.classList.add('hidden');
-        return;
-      }
-    } catch (_) {}
+    try { localStorage.removeItem('lot.promo.dismissed'); } catch (_) {}
     if (closeBtn) {
-      closeBtn.onclick = () => {
-        promoEl.classList.add('hidden');
-        try { localStorage.setItem(PROMO_KEY, '1'); } catch (_) {}
-      };
+      closeBtn.onclick = () => { promoEl.classList.add('hidden'); };
     }
   })();
 
