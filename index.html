@@ -369,17 +369,81 @@
 
 <section id="quickstart" class="container">
   <h2>Quickstart</h2>
-  <p><strong>1.</strong> <a href="./shell/">Launch the shell</a>. Wait for the Alpine login prompt.</p>
-  <p><strong>2.</strong> Set a root password and install useful tools:</p>
-<pre><code>printf 'changeme\nchangeme\n' | passwd root
+
+  <h3 style="margin-top:0; font-size:16px; color:var(--fg);">1. Boot &amp; set a password</h3>
+  <p><a href="./shell/">Launch the shell</a> and wait for the Alpine login prompt. Then set a root password and install the tools you'll need:</p>
+<pre><code># set root password (replace 'changeme' with something real)
+printf 'changeme\nchangeme\n' | passwd root
 apk add websocat curl jq openssh-server unbound</code></pre>
-  <p><strong>3.</strong> Open a tunnel to your host:</p>
+  <p style="color:var(--mut); font-size:13px;">The password is required for SSH/SFTP. It lives only in the guest VM — set something you'll remember or save a snapshot right after.</p>
+
+  <h3 style="font-size:16px; color:var(--fg);">2. Open a tunnel</h3>
+  <p>Inside the guest, run <code>tunnel-up.sh</code> to register a 4-character pairing code and start WebSocket bridges from the guest to the relay:</p>
 <pre><code>wget -qO- https://linuxontab.com/local/tunnel-up.sh | sh
-# → prints a 4-character pairing code, e.g. ARXN</code></pre>
-  <p><strong>4.</strong> On your Mac / Linux host, open a local listener bridged to the guest:</p>
-<pre><code>sh &lt;(curl -sS https://linuxontab.com/local/tunnel-listen.sh) ARXN
-ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@localhost</code></pre>
-  <p>That's it — you're SSH'd into a Linux kernel running inside a browser tab.</p>
+# → tunnel ready — code: ARXN</code></pre>
+  <p>By default this exposes ports <strong>22</strong> (SSH/SFTP), <strong>8080</strong> (~/public HTTP), <strong>22000</strong> (Syncthing sync), and <strong>8384</strong> (Syncthing GUI). Pass explicit port numbers to change the set: <code>tunnel-up.sh 22 8080 3000</code>.</p>
+
+  <h3 style="font-size:16px; color:var(--fg);">3. Connect from your host — two approaches</h3>
+
+  <p style="margin-bottom:8px;"><strong>Option A — helper script (easiest, requires websocat on your host)</strong></p>
+  <p>The helper downloads <code>websocat</code>, looks up the pairing code on the relay, and opens a local TCP port that forwards to the guest. Install <code>websocat</code> once (<code>brew install websocat</code> on Mac, <code>apt install websocat</code> on Linux), then:</p>
+<pre><code># opens localhost:2222 → guest port 22
+sh &lt;(curl -sS https://linuxontab.com/local/tunnel-listen.sh) ARXN
+
+# SSH
+ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@localhost
+
+# SCP / rsync
+scp -P 2222 -o StrictHostKeyChecking=no ./myfile root@localhost:/root/
+rsync -avz -e 'ssh -p 2222 -o StrictHostKeyChecking=no' ./folder/ root@localhost:/root/folder/</code></pre>
+  <p style="color:var(--mut); font-size:13px;">The script auto-selects the fastest relay endpoint and keeps the local port open until you Ctrl-C it. Run it in a dedicated terminal.</p>
+
+  <p style="margin-top:18px; margin-bottom:8px;"><strong>Option B — relay bridged ports (no local install needed)</strong></p>
+  <p>
+    The relay at <code>linuxontab-tunnel.fly.dev</code> also exposes each registered port directly as a WebSocket endpoint. Any WebSocket-capable TCP client can reach the guest with just the pairing code — no helper script, no local daemon:
+  </p>
+<pre><code># Direct WebSocket endpoints (one per port):
+wss://linuxontab-tunnel.fly.dev/port/client?code=ARXN&amp;port=22
+wss://linuxontab-tunnel.fly.dev/port/client?code=ARXN&amp;port=8080
+
+# HTTP ports are also proxied over plain HTTPS (no client-side tooling at all):
+https://linuxontab-tunnel.fly.dev/port/http/ARXN/8080/
+
+# Check registered ports + connection status:
+curl https://linuxontab-tunnel.fly.dev/port/status?code=ARXN</code></pre>
+  <p style="color:var(--mut); font-size:13px;">This is the approach used internally by <code>tunnel-listen.sh</code> — it just wraps the WS endpoint in a local TCP listener via websocat. If you have a tool that speaks WebSocket natively (Cloudflare Tunnel, custom proxy, etc.) you can talk to the relay directly without any local helper.</p>
+
+  <h3 style="font-size:16px; color:var(--fg);">4. SFTP with FileZilla</h3>
+  <p>Once the helper script is running (port 2222 open on localhost), connect with any SFTP client:</p>
+  <ol style="padding-left:20px; line-height:2;">
+    <li>Open FileZilla → <strong>File › Site Manager › New Site</strong></li>
+    <li>Protocol: <strong>SFTP – SSH File Transfer Protocol</strong></li>
+    <li>Host: <code>localhost</code> &nbsp;·&nbsp; Port: <code>2222</code></li>
+    <li>Logon type: <strong>Normal</strong> &nbsp;·&nbsp; User: <code>root</code> &nbsp;·&nbsp; Password: the one you set in step 1</li>
+    <li>Click <strong>Connect</strong> — accept the host key warning (the guest key is ephemeral)</li>
+  </ol>
+  <p>You can now drag-and-drop files between your host and the in-browser Linux VM. The guest filesystem is fully writable; files land in the running VM and persist if you save a snapshot.</p>
+  <p style="color:var(--mut); font-size:13px;">Any other SFTP client works the same way: Cyberduck, WinSCP, <code>sftp -P 2222 root@localhost</code> in a terminal, etc.</p>
+
+  <h3 style="font-size:16px; color:var(--fg);">5. Embed LinuxOnTab in your own page</h3>
+  <p>Drop a floating terminal on any web page by pointing an <code>&lt;iframe&gt;</code> at the shell URL with PiP enabled and a <code>?browser=</code> URL set to your own site. The terminal floats above your content; your page is visible in the background iframe.</p>
+<pre><code>&lt;!-- minimal embed — floating terminal, your page in the background --&gt;
+&lt;iframe
+  src="https://linuxontab.com/shell/?pip=1&amp;pipx=20&amp;pipy=50&amp;pipw=600&amp;piph=400
+       &amp;browser=https://YOUR-SITE.com"
+  style="position:fixed;inset:0;width:100%;height:100%;border:0;z-index:9999"
+  allow="cross-origin-isolated"
+&gt;&lt;/iframe&gt;</code></pre>
+  <p>Key parameters:</p>
+  <ul style="padding-left:20px; line-height:1.9; font-size:14px;">
+    <li><code>pip=1</code> — enable Picture-in-Picture mode (floating terminal + browser overlay)</li>
+    <li><code>pipx</code> / <code>pipy</code> — initial position of the terminal frame in px from top-left</li>
+    <li><code>pipw</code> / <code>piph</code> — initial width / height of the terminal frame in px</li>
+    <li><code>browser=URL</code> — URL loaded in the background browser overlay (your page, a demo, docs…)</li>
+    <li><code>postboot=URL</code> — script or command to run in the guest after boot (e.g. auto-install your CLI)</li>
+    <li><code>#postboot=export KEY=value</code> — hash fragment form: injects secrets that never hit server logs</li>
+  </ul>
+  <p style="color:var(--mut); font-size:13px;">Users can drag the terminal window, resize it, or press <kbd>Ctrl-Alt-F2</kbd> / <kbd>Ctrl-Alt-F3</kbd> to show/hide the browser overlay. See the <a href="#urls">URL parameters reference</a> above for the full list of options.</p>
 </section>
 
 <section id="faq" class="container">
