@@ -3168,6 +3168,35 @@
         'chmod 0777 /mnt/host/public /mnt/host/following /mnt/host/following_new /mnt/host/social_following 2>/dev/null || true\n' +
         'chmod 0777 /mnt/host/vfs/public /mnt/host/vfs/following /mnt/host/vfs/following_new /mnt/host/vfs/social_following 2>/dev/null || true\n' +
         // ----------------------------------------------------------------
+        // Network init: write /etc/profile.d/01net-lot.sh so every
+        // interactive login shell configures eth0 + lo automatically
+        // without requiring host-side injection timing to succeed.
+        // Idempotent: early return if 192.168.86.100 is already assigned.
+        // On snapshot restore the NE2K driver must re-emit net0-mac so the
+        // fresh WispNetworkAdapter learns the guest MAC — eth0 bounce is
+        // critical and is included here. Also seeds /etc/network/interfaces
+        // for OpenRC `networking` (required by docker and other services).
+        // ----------------------------------------------------------------
+        'cat > /etc/profile.d/01net-lot.sh <<\\__NET_LOT_EOF__\n' +
+        '# LinuxOnTab network init — runs on interactive login, idempotent.\n' +
+        'ip addr show eth0 2>/dev/null | grep -q 192.168.86.100 && return\n' +
+        '[ -f /etc/network/interfaces ] || { mkdir -p /etc/network 2>/dev/null; printf \'%s\\n\' \'auto lo\' \'iface lo inet loopback\' \'\' \'auto eth0\' \'iface eth0 inet manual\' > /etc/network/interfaces; }\n' +
+        'killall -q udhcpc 2>/dev/null\n' +
+        'ip link set eth0 down 2>/dev/null\n' +
+        'sleep 1\n' +
+        'for _i in 1 2 3 4 5; do ip link set eth0 up 2>/dev/null; sleep 1; _st=$(cat /sys/class/net/eth0/operstate 2>/dev/null); [ "$_st" != "down" ] && break; done\n' +
+        'ip addr flush dev eth0 2>/dev/null\n' +
+        'ip addr add 192.168.86.100/24 dev eth0\n' +
+        'ip route replace default via 192.168.86.1 dev eth0 2>/dev/null\n' +
+        'arp -d 192.168.86.1 2>/dev/null\n' +
+        'arp -s 192.168.86.1 52:54:00:01:02:03\n' +
+        'ifconfig lo 127.0.0.1 up 2>/dev/null || ip link set lo up 2>/dev/null\n' +
+        'printf \'nameserver 1.1.1.1\\nnameserver 1.0.0.1\\n\' > /etc/resolv.conf\n' +
+        'echo "[net] eth0 configured (operstate=$_st, retries=$_i)"\n' +
+        'unset _i _st\n' +
+        '__NET_LOT_EOF__\n' +
+        'chmod +x /etc/profile.d/01net-lot.sh\n' +
+        // ----------------------------------------------------------------
         // Node TUI workarounds. Several common Node CLIs (anything using
         // @clack/prompts, ink, listr2, …) crash with
         //   TypeError [ERR_INVALID_ARG_VALUE]: Received NaN
@@ -3412,41 +3441,17 @@
         'echo "[time] $(date -u +%FT%TZ)" || ' +
         'echo "[time] sync failed — TLS may fail until clock is set" >&2\n';
 
-      // Seed /etc/network/interfaces so Alpine's OpenRC `networking`
-      // service can start. We configure eth0 imperatively via `ip` (below)
-      // so the file would otherwise be missing — `ifquery` then fails to
-      // parse it and `service networking start` errors out, which in turn
-      // blocks every OpenRC service that declares `need net` (most
-      // notably `docker`). The `inet manual` stanza is a no-op for
-      // ifup but satisfies ifquery, leaving our static config intact.
-      const ifacesSeedCmd =
-        '[ -f /etc/network/interfaces ] || { mkdir -p /etc/network 2>/dev/null; ' +
-        'printf "%s\\n" "auto lo" "iface lo inet loopback" "" "auto eth0" "iface eth0 inet manual" > /etc/network/interfaces; }\n';
-
+      // Network init runs via /etc/profile.d/01net-lot.sh (written by the
+      // 9p module above, baked into snapshots). Both `net` and `dhcp` modules
+      // simply source that file — one short line instead of a multi-command
+      // block, which eliminates UART buffer overflows and timing races.
+      // The profile.d script handles both snapshot-restore (eth0 bounce +
+      // static IP) and fresh-boot paths identically, and is idempotent.
       const restoreNetSegment =
-        ifacesSeedCmd +
-        'killall -q udhcpc 2>/dev/null\n' +
-        'ip link set eth0 down 2>/dev/null\n' +
-        'sleep 1\n' +
-        'for i in 1 2 3 4 5; do ip link set eth0 up 2>/dev/null; sleep 1; st=$(cat /sys/class/net/eth0/operstate 2>/dev/null); fl=$(cat /sys/class/net/eth0/flags 2>/dev/null); [ "$st" != "down" ] && break; done\n' +
-        'ip addr flush dev eth0 2>/dev/null\n' +
-        'ip addr add 192.168.86.100/24 dev eth0\n' +
-        'ip route replace default via 192.168.86.1 dev eth0 2>/dev/null\n' +
-        'arp -d 192.168.86.1 2>/dev/null\n' +
-        'arp -s 192.168.86.1 52:54:00:01:02:03\n' +
-        // v86 NE2K driver does NOT bring up lo automatically; many services
-        // (syncthing port probe, sshd 127.0.0.1 listeners, unbound) fail
-        // with EADDRNOTAVAIL until 127.0.0.1 is configured on lo.
-        'ifconfig lo 127.0.0.1 up 2>/dev/null || ip link set lo up 2>/dev/null\n' +
-        'printf "nameserver 1.1.1.1\\nnameserver 1.0.0.1\\n" > /etc/resolv.conf\n' +
-        'echo "[net] eth0 operstate=$st flags=$fl (retries=$i)"\n';
+        '. /etc/profile.d/01net-lot.sh 2>/dev/null || true\n';
 
       const dhcpSegment =
-        ifacesSeedCmd +
-        'ip link set eth0 up 2>/dev/null\n' +
-        'ifconfig lo 127.0.0.1 up 2>/dev/null || ip link set lo up 2>/dev/null\n' +
-        'udhcpc -i eth0 -q -n -f -T 2 -t 3 >/dev/null 2>&1\n' +
-        'printf "nameserver 1.1.1.1\\nnameserver 1.0.0.1\\n" > /etc/resolv.conf\n';
+        '. /etc/profile.d/01net-lot.sh 2>/dev/null || true\n';
 
       // Re-create the `lot` tmux session if the snapshot was saved
       // before it was started (or it died). Defensive: snapshots from

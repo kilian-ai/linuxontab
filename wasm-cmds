@@ -9,3 +9,5 @@ class H(http.server.SimpleHTTPRequestHandler):
     def log_message(self, f, *a): pass
 http.server.HTTPServer(('', 8001), H).serve_forever()
 " 
+
+cd ~/.ai/LinuxOnTab-kernel && ./serve.sh 8765
