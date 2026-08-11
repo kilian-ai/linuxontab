@@ -144,6 +144,13 @@
   .cta.secondary:hover { background:#161a1f; }
   .badges { margin-top:22px; color:var(--mut); font-size:13px; display:flex; gap:18px; justify-content:center; flex-wrap:wrap; }
   .badges span::before { content:"●"; color:var(--accent); margin-right:6px; }
+  .announce { display:flex; gap:10px 12px; align-items:center; justify-content:center; flex-wrap:wrap; padding:9px 16px; background:#0d1512; border-bottom:1px solid var(--line); color:#c4cad2; font-size:13.5px; text-align:center; }
+  .announce:hover { text-decoration:none; background:#0f1a15; }
+  .announce .tag { background:var(--accent); color:#0b0d10; font-weight:700; font-size:11px; letter-spacing:.4px; padding:2px 8px; border-radius:999px; }
+  .announce .go { color:var(--accent); font-weight:600; white-space:nowrap; }
+  .cta.v2 { background:transparent; color:var(--accent); border:1px solid #2c6b47; }
+  .cta.v2:hover { background:#0f1a15; border-color:var(--accent); }
+  .cta.v2 .v2tag { background:var(--accent); color:#0b0d10; font-weight:700; font-size:11px; letter-spacing:.4px; padding:1px 7px; border-radius:999px; }
   .badges a.badge-notify { color:var(--mut); border-bottom:1px dashed var(--line); padding-bottom:1px; transition:color .15s; }
   .badges a.badge-notify:hover { color:var(--accent); text-decoration:none; border-bottom-color:var(--accent); }
   section { padding:56px 24px; border-bottom:1px solid var(--line); }
@@ -202,6 +209,16 @@
 </head>
 <body>
 
+<!-- Links to the live 2.0 deploy. next.linuxontab.com is attached to the Pages
+     project "linuxontab2" but needs a CNAME (next → linuxontab2.pages.dev) to
+     resolve; once that DNS record exists, swap these two hrefs to
+     https://next.linuxontab.com/. -->
+<a class="announce" href="https://linuxontab2.pages.dev/">
+  <span class="tag">NEW · 2.0</span>
+  We deleted the x86 emulator — the Linux kernel is now native WebAssembly.
+  <span class="go">Try the preview →</span>
+</a>
+
 <header class="site">
   <a href="/" style="color:inherit"><div class="brand"><span class="glyph">_$</span> LinuxOnTab</div></a>
   <nav>
@@ -226,6 +243,7 @@
   <div class="cta-row">
     <a class="cta" href="./shell/?pip=1&amp;pipx=20&amp;pipy=50&amp;pipw=600&amp;piph=400&amp;browser=https://linuxontab.com">Launch Linux (in window) →</a>
     <a class="cta secondary" href="./shell/" target="_blank" rel="noopener">Launch Linux (new tab)</a>
+    <a class="cta v2" href="https://linuxontab2.pages.dev/"><span class="v2tag">2.0</span> Try the WebAssembly preview →</a>
     <a class="cta secondary" href="#what">How it works</a>
   </div>
   <div class="badges">
