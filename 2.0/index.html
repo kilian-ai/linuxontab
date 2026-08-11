@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LinuxOnTab 2.0 — Real Linux, now native WebAssembly</title>
+<meta name="description" content="LinuxOnTab 2.0 deletes the x86 emulator: the Linux kernel itself is compiled to WebAssembly, and real Unix programs — mc, tmux, nano, python3, clang — run natively in a browser tab.">
+<meta name="theme-color" content="#0D1420">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://linuxontab.com/2.0/">
+<meta property="og:title" content="LinuxOnTab 2.0 — we deleted the x86 emulator">
+<meta property="og:description" content="The Linux kernel, compiled to WebAssembly. No x86 emulation. Real Unix programs running natively in a browser tab.">
+<link rel="canonical" href="https://linuxontab.com/2.0/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%230b0d10'/%3E%3Ctext x='8' y='42' font-family='ui-monospace,Menlo,monospace' font-size='28' fill='%234ade80'%3E_%24%3C/text%3E%3C/svg%3E">
+<style>
+  :root{
+    /* light "paper terminal" (base) */
+    --bg:#F3F5F8; --panel:#FFFFFF; --screen:#0D1420;
+    --ink:#101720; --dim:#5A6B7B; --line:#DDE4EC;
+    --green:#12905A; --green-soft:#E4F5EC;
+    --amber:#B4620C; --amber-soft:#FBEEDD;
+    --code:#0B1220; --code-ink:#CBD5E1;
+    --shadow:0 1px 2px rgba(16,23,32,.05),0 12px 30px rgba(16,23,32,.06);
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#080B11; --panel:#0F141C; --screen:#070A0F;
+      --ink:#CBD5E1; --dim:#67788B; --line:#1B2431;
+      --green:#3FE07E; --green-soft:#0F2A1D;
+      --amber:#F5B14C; --amber-soft:#2A1F0C;
+      --code:#0A0E15; --code-ink:#C6D2E0;
+      --shadow:0 1px 0 rgba(255,255,255,.02),0 20px 50px rgba(0,0,0,.5);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#080B11; --panel:#0F141C; --screen:#070A0F;
+    --ink:#CBD5E1; --dim:#67788B; --line:#1B2431;
+    --green:#3FE07E; --green-soft:#0F2A1D;
+    --amber:#F5B14C; --amber-soft:#2A1F0C;
+    --code:#0A0E15; --code-ink:#C6D2E0;
+    --shadow:0 1px 0 rgba(255,255,255,.02),0 20px 50px rgba(0,0,0,.5);
+  }
+  :root[data-theme="light"]{
+    --bg:#F3F5F8; --panel:#FFFFFF; --screen:#0D1420;
+    --ink:#101720; --dim:#5A6B7B; --line:#DDE4EC;
+    --green:#12905A; --green-soft:#E4F5EC;
+    --amber:#B4620C; --amber-soft:#FBEEDD;
+    --code:#0B1220; --code-ink:#CBD5E1;
+    --shadow:0 1px 2px rgba(16,23,32,.05),0 12px 30px rgba(16,23,32,.06);
+  }
+
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0}
+  .page{
+    background:var(--bg); color:var(--ink);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.62; font-size:16px;
+    -webkit-font-smoothing:antialiased; padding:0 18px;
+  }
+  .mono{font-family:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,"Liberation Mono",monospace}
+  .wrap{max-width:760px; margin:0 auto}
+
+  a{color:var(--green); text-decoration:none}
+  a:hover{text-decoration:underline; text-underline-offset:3px}
+  :focus-visible{outline:2px solid var(--green); outline-offset:2px; border-radius:4px}
+
+  /* ── masthead (newsletter bar) ── */
+  .masthead{
+    display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:16px 2px; border-bottom:1px solid var(--line); flex-wrap:wrap;
+  }
+  .brand{display:flex; align-items:center; gap:10px; font-weight:650}
+  .brand .sig{color:var(--green)}
+  .masthead .meta{font-size:12.5px; color:var(--dim); letter-spacing:.02em}
+  .masthead .meta a{color:var(--dim); text-decoration:underline; text-underline-offset:2px}
+
+  .eyebrow{
+    font-size:12px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--dim); font-weight:600;
+  }
+  .accent{color:var(--green)}
+  .amber{color:var(--amber)}
+
+  /* ── hero ── */
+  .hero{padding:44px 0 8px}
+  .kicker{display:inline-flex; align-items:center; gap:8px; margin-bottom:20px}
+  .kicker .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 4px var(--green-soft)}
+  h1{
+    font-size:clamp(2rem,6.4vw,3.35rem); line-height:1.04; letter-spacing:-.02em;
+    font-weight:750; margin:0 0 16px; text-wrap:balance;
+  }
+  h1 .strike{color:var(--dim); text-decoration:line-through; text-decoration-thickness:2px; text-decoration-color:var(--amber)}
+  .lede{font-size:clamp(1.05rem,2.4vw,1.22rem); color:var(--ink); max-width:60ch; margin:0 0 26px}
+  .lede .q{color:var(--dim)}
+
+  /* terminal screen */
+  .term{
+    border:1px solid var(--line); border-radius:12px; overflow:hidden;
+    background:var(--screen); box-shadow:var(--shadow); margin:6px 0 4px;
+  }
+  .term .bar{
+    display:flex; align-items:center; gap:8px; padding:10px 14px;
+    background:linear-gradient(var(--panel),var(--panel)); border-bottom:1px solid var(--line);
+  }
+  .term .bar .lights{display:flex; gap:6px}
+  .term .bar .lights i{width:11px;height:11px;border-radius:50%;display:block;opacity:.85}
+  .l1{background:#E5533B}.l2{background:#E0A82E}.l3{background:#3FB863}
+  .term .bar .name{margin-left:6px; font-size:12px; color:var(--dim)}
+  .screen{
+    padding:18px 18px 20px; color:#D7E2EE; font-size:13.5px; line-height:1.7;
+    min-height:210px; white-space:pre-wrap;
+  }
+  .screen .p{color:var(--green)}
+  .screen .g{color:#7F8EA0}
+  .screen .ok{color:var(--green)}
+  .screen .em{color:var(--amber)}
+  .screen b{color:#EAF1F8; font-weight:600}
+  .cursor{display:inline-block; width:8px; height:1.05em; transform:translateY(2px);
+    background:var(--green); animation:blink 1.05s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  .cta{display:flex; gap:12px; flex-wrap:wrap; margin:26px 0 6px}
+  .btn{
+    display:inline-flex; align-items:center; gap:8px; padding:12px 18px; border-radius:9px;
+    font-weight:600; font-size:15px; border:1px solid transparent; cursor:pointer;
+  }
+  .btn.primary{background:var(--green); color:#05130B}
+  .btn.primary:hover{text-decoration:none; filter:brightness(1.05)}
+  :root[data-theme="dark"] .btn.primary,@media(prefers-color-scheme:dark){.btn.primary{color:#05130B}}
+  .btn.ghost{border-color:var(--line); color:var(--ink); background:var(--panel)}
+  .btn.ghost:hover{text-decoration:none; border-color:var(--green)}
+  .btn .k{font-size:12px; color:inherit; opacity:.7}
+
+  /* ── generic section ── */
+  .sec{padding:44px 0; border-top:1px solid var(--line)}
+  .sec h2{font-size:clamp(1.35rem,3.4vw,1.95rem); line-height:1.12; letter-spacing:-.015em;
+    margin:6px 0 10px; font-weight:720; text-wrap:balance}
+  .sec p.intro{color:var(--dim); max-width:62ch; margin:0 0 22px}
+
+  /* the shift: two cards */
+  .shift{display:grid; grid-template-columns:1fr 1fr; gap:14px}
+  .card{
+    border:1px solid var(--line); border-radius:12px; background:var(--panel);
+    padding:18px; box-shadow:var(--shadow);
+  }
+  .card .tag{font-size:11.5px; letter-spacing:.12em; text-transform:uppercase; font-weight:700}
+  .card.old .tag{color:var(--dim)}
+  .card.new .tag{color:var(--amber)}
+  .card h3{margin:8px 0 8px; font-size:1.06rem; letter-spacing:-.01em}
+  .card p{margin:0; color:var(--dim); font-size:.95rem}
+  .card .stack{margin-top:12px; font-size:12px; color:var(--ink); display:flex; flex-wrap:wrap; gap:6px}
+  .chip{border:1px solid var(--line); border-radius:999px; padding:3px 9px; color:var(--dim)}
+  .card.new .chip{border-color:color-mix(in srgb,var(--green) 40%,var(--line))}
+  .arrow{display:flex; align-items:center; justify-content:center; color:var(--green); font-weight:700; margin:2px 0}
+
+  /* app catalog */
+  .grid{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+  .app{
+    border:1px solid var(--line); border-radius:11px; background:var(--panel); padding:15px 15px 13px;
+  }
+  .app .top{display:flex; align-items:center; justify-content:space-between; gap:10px}
+  .app .nm{font-weight:650; letter-spacing:-.01em}
+  .app .ver{font-size:11px; color:var(--dim)}
+  .app .desc{color:var(--dim); font-size:.9rem; margin:5px 0 10px}
+  .app .run{
+    font-size:12px; color:var(--code-ink); background:var(--code); border:1px solid var(--line);
+    border-radius:7px; padding:7px 10px; display:flex; align-items:center; gap:8px; overflow-x:auto;
+  }
+  .app .run .d{color:var(--green); flex:none}
+  .live{display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--green); font-weight:700; letter-spacing:.04em}
+  .live::before{content:""; width:7px;height:7px;border-radius:50%;background:var(--green); box-shadow:0 0 0 3px var(--green-soft)}
+
+  /* under the hood */
+  .pillars{display:grid; grid-template-columns:1fr 1fr; gap:12px}
+  .pillar{border-left:2px solid var(--green); padding:2px 0 2px 16px}
+  .pillar h4{margin:0 0 5px; font-size:1rem; letter-spacing:-.01em}
+  .pillar p{margin:0; color:var(--dim); font-size:.92rem}
+
+  /* comparison table */
+  .tablewrap{overflow-x:auto; border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow)}
+  table{border-collapse:collapse; width:100%; min-width:520px; font-size:14px; background:var(--panel)}
+  th,td{text-align:left; padding:13px 16px; border-bottom:1px solid var(--line); vertical-align:top}
+  thead th{font-size:11.5px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); font-weight:700}
+  thead th.v1{color:var(--dim)} thead th.v2{color:var(--green)}
+  tbody tr:last-child td{border-bottom:none}
+  td.k{color:var(--dim); white-space:nowrap; width:26%}
+  td.new{color:var(--ink)}
+  .badge{display:inline-block; font-size:11px; font-weight:700; letter-spacing:.03em; padding:2px 8px; border-radius:999px}
+  .badge.stable{background:var(--line); color:var(--dim)}
+  .badge.preview{background:var(--green-soft); color:var(--green); border:1px solid color-mix(in srgb,var(--green) 30%,transparent)}
+
+  /* next / list */
+  ul.clean{list-style:none; padding:0; margin:0; display:grid; gap:12px}
+  ul.clean li{display:flex; gap:12px; align-items:flex-start}
+  ul.clean li .mk{color:var(--amber); font-weight:700; flex:none; font-size:13px; margin-top:2px}
+  ul.clean li b{letter-spacing:-.01em}
+  ul.clean li span{color:var(--dim); font-size:.94rem}
+
+  /* layout spec */
+  .spec{counter-reset:step}
+  .spec .row{display:grid; grid-template-columns:auto 1fr; gap:16px; padding:14px 0; border-top:1px dashed var(--line)}
+  .spec .row:first-of-type{border-top:none}
+  .spec .n{counter-increment:step; font-weight:750; color:var(--green); min-width:26px}
+  .spec .n::before{content:counter(step,decimal-leading-zero)}
+  .spec .row h4{margin:0 0 3px; font-size:1rem; letter-spacing:-.01em}
+  .spec .row p{margin:0; color:var(--dim); font-size:.93rem}
+  .note{margin-top:18px; font-size:.9rem; color:var(--dim); border:1px solid var(--line); border-radius:10px; padding:14px 16px; background:var(--panel)}
+
+  /* cta band */
+  .band{border:1px solid var(--line); border-radius:14px; background:var(--panel); padding:28px; text-align:center; box-shadow:var(--shadow)}
+  .band h2{margin:0 0 8px; border:0}
+  .band p{color:var(--dim); margin:0 auto 20px; max-width:46ch}
+
+  /* footer */
+  footer{padding:34px 2px 48px; border-top:1px solid var(--line); color:var(--dim); font-size:13px}
+  footer .flinks{display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px}
+  footer a{color:var(--dim); text-decoration:underline; text-underline-offset:2px}
+  footer .fine{opacity:.8; max-width:60ch}
+
+  @media (max-width:620px){
+    .shift,.grid,.pillars{grid-template-columns:1fr}
+    .masthead .meta{display:none}
+    .hero{padding:32px 0 4px}
+  }
+  @media (prefers-reduced-motion: reduce){
+    .cursor{animation:none}
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+<div class="wrap">
+
+  <!-- masthead -->
+  <div class="masthead">
+    <div class="brand mono"><span class="sig">_$</span> LinuxOnTab</div>
+    <div class="meta mono"><a href="https://linuxontab.com/">← linuxontab.com</a> &nbsp;·&nbsp; <a href="https://linuxontab2.pages.dev/">Boot the preview →</a></div>
+  </div>
+
+  <!-- hero -->
+  <section class="hero">
+    <span class="kicker eyebrow mono"><span class="dot"></span> Release &nbsp;/&nbsp; 2.0 Technical Preview</span>
+    <h1>We deleted the <span class="strike">x86 emulator</span>.</h1>
+    <p class="lede">For two years, LinuxOnTab booted a real x86 kernel inside an emulated CPU. <b>2.0 throws the CPU emulator out.</b> <span class="q">We compiled the Linux kernel <i>itself</i> to WebAssembly — and now your programs are native wasm too.</span></p>
+
+    <div class="term">
+      <div class="bar mono">
+        <span class="lights"><i class="l1"></i><i class="l2"></i><i class="l3"></i></span>
+        <span class="name">linuxontab — 2.0 · wasm32</span>
+      </div>
+      <div class="screen mono" id="screen" aria-label="boot log"></div>
+    </div>
+
+    <div class="cta">
+      <a class="btn primary mono" href="https://linuxontab2.pages.dev/">Boot 2.0 preview <span class="k">↵</span></a>
+      <a class="btn ghost mono" href="https://linuxontab.com/">Stay on 1.0 (stable)</a>
+    </div>
+  </section>
+
+  <!-- the shift -->
+  <section class="sec">
+    <span class="eyebrow mono">What actually changed</span>
+    <h2>Same tab. A completely different engine.</h2>
+    <p class="intro">1.0 emulated a PC. 2.0 <i>is</i> the kernel — as WebAssembly. Removing the emulation layer is what let us start compiling real, full-screen Unix programs straight to wasm.</p>
+    <div class="shift">
+      <div class="card old">
+        <span class="tag mono">1.0 · today's stable</span>
+        <h3>x86, emulated</h3>
+        <p>Your browser runs <b>v86</b>, a full x86 CPU emulator. Inside it, a real x86 Linux kernel boots Alpine. Every instruction is x86 machine code, interpreted in the tab.</p>
+        <div class="stack mono"><span class="chip">v86</span><span class="chip">x86 kernel</span><span class="chip">Alpine · apk</span></div>
+      </div>
+      <div class="card new">
+        <span class="tag mono">2.0 · the preview</span>
+        <h3>WebAssembly, native</h3>
+        <p>No CPU emulator. The <b>Linux 6.1 kernel is compiled to wasm32</b>, and programs are compiled to wasm too. Your browser runs them directly; syscalls hit the wasm kernel — one Web Worker per process.</p>
+        <div class="stack mono"><span class="chip">wasm kernel</span><span class="chip">no x86</span><span class="chip">BusyBox · musl</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- now running -->
+  <section class="sec">
+    <span class="eyebrow mono">Now running <span class="live">live in the tab</span></span>
+    <h2>Real Unix programs, compiled to wasm.</h2>
+    <p class="intro">Not shims or reimplementations — the actual upstream sources, cross-compiled to WebAssembly and running on the wasm kernel. A sampling of what boots today:</p>
+    <div class="grid">
+
+      <div class="app">
+        <div class="top"><span class="nm">Midnight Commander</span><span class="ver mono">4.8.33</span></div>
+        <div class="desc">The blue two-pane file manager, in full color — with its built-in editor (F4).</div>
+        <div class="run mono"><span class="d">/ #</span> mc</div>
+      </div>
+
+      <div class="app">
+        <div class="top"><span class="nm">tmux</span><span class="ver mono">3.5a</span></div>
+        <div class="desc">Real terminal multiplexer: server, socket, panes — each pane a genuine <span class="mono">/dev/pts</span>.</div>
+        <div class="run mono"><span class="d">/ #</span> tmux new -s work</div>
+      </div>
+
+      <div class="app">
+        <div class="top"><span class="nm">GNU nano</span><span class="ver mono">8.3</span></div>
+        <div class="desc">The editor everyone reaches for. Colors, syntax, ^O to save — all working.</div>
+        <div class="run mono"><span class="d">/ #</span> nano notes.txt</div>
+      </div>
+
+      <div class="app">
+        <div class="top"><span class="nm">Python 3</span><span class="ver mono">+ pip</span></div>
+        <div class="desc">A full CPython, with <span class="mono">pip install</span> over the network. Bottle, Radicale, your scripts.</div>
+        <div class="run mono"><span class="d">/ #</span> python3 -m http.server</div>
+      </div>
+
+      <div class="app">
+        <div class="top"><span class="nm">C / Clang</span><span class="ver mono">self-hosting</span></div>
+        <div class="desc"><span class="mono">clang · wasm-ld · wasm-opt</span> run <i>inside</i> the guest — it can compile its own programs.</div>
+        <div class="run mono"><span class="d">/ #</span> clang hello.c -o hello</div>
+      </div>
+
+      <div class="app">
+        <div class="top"><span class="nm">zsh · ash · hush</span><span class="ver mono">5.9 · BusyBox</span></div>
+        <div class="desc">Three shells now, including full <b>zsh 5.9</b> — pipelines, functions, <span class="mono">$()</span> and subshells all correct.</div>
+        <div class="run mono"><span class="d">/ #</span> zsh</div>
+      </div>
+
+      <div class="app">
+        <div class="top"><span class="nm">SQLite · jq · curl · git</span><span class="ver mono">tools</span></div>
+        <div class="desc">The daily toolbox — real HTTPS, real repos, real queries — over WispSlirp networking.</div>
+        <div class="run mono"><span class="d">/ #</span> curl -s api… | jq .</div>
+      </div>
+
+      <div class="app">
+        <div class="top"><span class="nm">claw</span><span class="ver mono">LLM REPL</span></div>
+        <div class="desc">A chat-with-tools REPL that talks to real model APIs from inside the tab.</div>
+        <div class="run mono"><span class="d">/ #</span> claw -p anthropic</div>
+      </div>
+
+    </div>
+    <p class="intro" style="margin:18px 0 0; font-size:.9rem">Plus <b>lotfm</b> (a native two-pane file manager), <b>xeyes / X11</b> (Xvfb + x11vnc), OpenSSL, zlib, Node, and a growing package tree.</p>
+  </section>
+
+  <!-- under the hood -->
+  <section class="sec">
+    <span class="eyebrow mono">Under the hood</span>
+    <h2>What makes 2.0 possible.</h2>
+    <div class="pillars">
+      <div class="pillar"><h4>Kernel → WebAssembly</h4><p>Linux 6.1 built as a <span class="mono">.wasm</span> module. No x86 layer between your program and the kernel.</p></div>
+      <div class="pillar"><h4>Real processes</h4><p><span class="mono">fork()</span> and <span class="mono">vfork()</span> via an asyncify thunk; one Web Worker per task, single CPU token.</p></div>
+      <div class="pillar"><h4>Real terminals</h4><p>Pseudo-terminals (<span class="mono">/dev/pts</span>), ncursesw, and <span class="mono">TERM=xterm-256color</span> — so full-screen TUIs actually render.</p></div>
+      <div class="pillar"><h4>Self-hosting toolchain</h4><p>Clang, wasm-ld and wasm-opt run in the guest. LinuxOnTab can build the programs it ships.</p></div>
+      <div class="pillar"><h4>Networking</h4><p>WispSlirp (TCP-over-WebSocket) gives curl, git and pip a real route to the internet.</p></div>
+      <div class="pillar"><h4>Persistence</h4><p>Your filesystem is saved to the browser via a block-delta overlay — snapshots survive reloads.</p></div>
+    </div>
+  </section>
+
+  <!-- comparison -->
+  <section class="sec">
+    <span class="eyebrow mono">1.0 vs 2.0</span>
+    <h2>Where each one fits.</h2>
+    <p class="intro">2.0 is a technical preview and 1.0 stays the stable default — they're different tools, and for now both live at linuxontab.com.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th></th><th class="v1">1.0 · v86</th><th class="v2">2.0 · wasm</th></tr></thead>
+        <tbody>
+          <tr><td class="k">Engine</td><td>x86 CPU emulator (v86)</td><td class="new">Kernel compiled to wasm — no emulation</td></tr>
+          <tr><td class="k">Programs</td><td>x86 binaries, from Alpine <span class="mono">apk</span></td><td class="new">Native wasm binaries (musl)</td></tr>
+          <tr><td class="k">Userland</td><td>Alpine Linux</td><td class="new">BusyBox + musl libc</td></tr>
+          <tr><td class="k">Syscalls</td><td>into an emulated x86 kernel</td><td class="new">straight to the wasm kernel</td></tr>
+          <tr><td class="k">Best for</td><td>the widest package set, today</td><td class="new">closer to the metal, lighter, the future</td></tr>
+          <tr><td class="k">Status</td><td><span class="badge stable">Stable · default</span></td><td><span class="badge preview">Technical preview</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- what's next -->
+  <section class="sec">
+    <span class="eyebrow mono">On the workbench</span>
+    <h2>What we're compiling next.</h2>
+    <ul class="clean">
+      <li><span class="mk mono">»</span><div><b>Rust on the guest.</b> <span>The standard library already compiles for wasm; Rust binaries instantiate and run through a new WALI bridge. Cargo-built TUIs are close.</span></div></li>
+      <li><span class="mk mono">»</span><div><b>A real X desktop.</b> <span>xeyes and the VNC path work today; a full Xvfb session is in progress.</span></div></li>
+      <li><span class="mk mono">»</span><div><b>More of the tree.</b> <span>Every library we port (glib, libevent, ncurses…) unlocks the next wave of programs.</span></div></li>
+    </ul>
+  </section>
+
+  <!-- cta band -->
+  <section class="sec">
+    <div class="band">
+      <h2>Boot the future in a tab.</h2>
+      <p>No install, no server, no Docker — and now, no emulator. Open 2.0, type <span class="mono">mc</span>, and watch a real file manager paint itself in your browser.</p>
+      <div class="cta" style="justify-content:center">
+        <a class="btn primary mono" href="https://linuxontab2.pages.dev/">Launch 2.0 preview</a>
+        <a class="btn ghost mono" href="https://github.com/kilian-ai/linuxontab">Read the source</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- footer -->
+  <footer class="wrap">
+    <div class="flinks mono">
+      <a href="https://linuxontab.com/">linuxontab.com</a>
+      <a href="https://linuxontab2.pages.dev/">Boot 2.0</a>
+      <a href="https://github.com/kilian-ai/linuxontab">GitHub</a>
+    </div>
+    <p class="fine">2.0 is a technical preview — expect sharp edges, and tell us what breaks. — the LinuxOnTab team</p>
+  </footer>
+
+</div>
+</div>
+
+<script>
+(function(){
+  var screen = document.getElementById('screen');
+  if(!screen) return;
+  var lines = [
+    {t:'$ ', c:'p', b:'linuxontab --boot 2.0', nl:true},
+    {t:'[ 0.00 ] ', c:'g', b:'starting LinuxOnTab 2.0 (wasm32)', nl:true},
+    {t:'[ 0.01 ] ', c:'g', b:'kernel: Linux 6.1 compiled to WebAssembly ', em:'— no x86 emulation', nl:true},
+    {t:'[ 0.38 ] ', c:'g', b:'userland: BusyBox + musl · ncurses · ptys · real fork()', nl:true},
+    {t:'[ 0.51 ] ', c:'g', b:'net: WispSlirp up · fs: overlay restored', nl:true},
+    {t:'[ ok ]   ', c:'ok', b:'welcome. try: ', mono:'mc · tmux · nano · python3 · clang', nl:true},
+    {t:'/ # ', c:'p', b:'', cursor:true}
+  ];
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function esc(s){var d=document.createElement('div'); d.textContent=s; return d.innerHTML;}
+  function render(full){
+    var html='';
+    for(var i=0;i<lines.length;i++){
+      var L=lines[i];
+      var visible = full ? true : (i<state.line || (i===state.line));
+      if(i>state.line && !full) break;
+      html += '<span class="'+L.c+'">'+esc(L.t)+'</span>';
+      var body = L.b;
+      var shown = (i<state.line||full) ? body : body.slice(0,state.ch);
+      html += '<b>'+esc(shown)+'</b>';
+      if((i<state.line||full)){
+        if(L.em) html+=' <span class="em">'+esc(L.em)+'</span>';
+        if(L.mono) html+='<span class="ok">'+esc(L.mono)+'</span>';
+      }
+      if(L.cursor && (i<=state.line||full)) html+='<span class="cursor"></span>';
+      if(L.nl) html+='\n';
+    }
+    screen.innerHTML=html;
+  }
+  var state={line:0, ch:0};
+  if(reduce){ state.line=lines.length; render(true); return; }
+
+  function tick(){
+    var L=lines[state.line];
+    if(!L){ return; }
+    if(state.ch < L.b.length){
+      state.ch += 1; render(false);
+      setTimeout(tick, 14 + Math.random()*22);
+    } else {
+      state.line += 1; state.ch = 0; render(false);
+      if(state.line < lines.length) setTimeout(tick, 190);
+      else render(true);
+    }
+  }
+  setTimeout(tick, 260);
+})();
+</script>
+</body>
+</html>

@@ -209,11 +209,9 @@
 </head>
 <body>
 
-<!-- Links to the live 2.0 deploy. next.linuxontab.com is attached to the Pages
-     project "linuxontab2" but needs a CNAME (next → linuxontab2.pages.dev) to
-     resolve; once that DNS record exists, swap these two hrefs to
-     https://next.linuxontab.com/. -->
-<a class="announce" href="https://linuxontab2.pages.dev/">
+<!-- The 2.0 preview landing page lives at /2.0/ (bootable app is at
+     https://linuxontab2.pages.dev/, linked from that page). -->
+<a class="announce" href="/2.0/">
   <span class="tag">NEW · 2.0</span>
   We deleted the x86 emulator — the Linux kernel is now native WebAssembly.
   <span class="go">Try the preview →</span>
@@ -243,7 +241,7 @@
   <div class="cta-row">
     <a class="cta" href="./shell/?pip=1&amp;pipx=20&amp;pipy=50&amp;pipw=600&amp;piph=400&amp;browser=https://linuxontab.com">Launch Linux (in window) →</a>
     <a class="cta secondary" href="./shell/" target="_blank" rel="noopener">Launch Linux (new tab)</a>
-    <a class="cta v2" href="https://linuxontab2.pages.dev/"><span class="v2tag">2.0</span> Try the WebAssembly preview →</a>
+    <a class="cta v2" href="/2.0/"><span class="v2tag">2.0</span> Try the WebAssembly preview →</a>
     <a class="cta secondary" href="#what">How it works</a>
   </div>
   <div class="badges">
