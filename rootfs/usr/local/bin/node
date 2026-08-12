@@ -1,0 +1,275 @@
+#!/bin/sh
+# node — QuickJS wrapper providing a Node.js-compatible CLI with CommonJS require().
+# exec replaces this process so fork depth stays at 2.
+case "$1" in
+    --version|-v)
+        echo "v20.0.0-quickjs-2024.01.13"
+        exit 0
+        ;;
+    --help|-h)
+        cat << 'HELPEOF'
+Usage: node [options] [script.js] [arguments]
+
+  node                 start interactive REPL
+  node script.js       run a script
+  node -e 'code'       evaluate inline code
+  node --version       show version
+
+Engine: QuickJS 2024-01-13 (ES2023, CommonJS require() supported)
+HELPEOF
+        exit 0
+        ;;
+esac
+
+# CommonJS require() shim.
+# qjs is invoked with --std so globalThis.std and globalThis.os are pre-populated.
+# This runs as a -e global eval (not a module) so no import statements needed.
+SHIM='
+(function() {
+  var _std = globalThis.std;
+  var _os  = globalThis.os;
+  var _cache = {};
+
+  function _readFile(p) {
+    var f = _std.open(p, "r");
+    if (!f) return null;
+    var s = f.readAsString();
+    f.close();
+    return s;
+  }
+
+  function _stat(p) { var r = _os.stat(p); return r[1] === 0 ? r[0] : null; }
+  function _isFile(p) { var s = _stat(p); return s !== null && (s.mode & 0xF000) === 0x8000; }
+  function _isDir(p)  { var s = _stat(p); return s !== null && (s.mode & 0xF000) === 0x4000; }
+
+  function _normPath(p) {
+    var a = p[0] === "/";
+    var parts = p.split("/");
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      var s = parts[i];
+      if (s === "" || s === ".") continue;
+      if (s === "..") { if (out.length > 0) out.pop(); }
+      else out.push(s);
+    }
+    return (a ? "/" : "") + out.join("/");
+  }
+
+  function _tryExt(p) {
+    if (_isFile(p))         return p;
+    if (_isFile(p+".js"))   return p+".js";
+    if (_isFile(p+".json")) return p+".json";
+    return null;
+  }
+
+  function _resolveDir(p) {
+    var pj = _readFile(p+"/package.json");
+    if (pj) {
+      try {
+        var main = JSON.parse(pj).main;
+        if (main) {
+          var mp = p+"/"+main;
+          var r = _isFile(mp) ? mp : (_isFile(mp+".js") ? mp+".js" : null);
+          if (r) return r;
+        }
+      } catch(e) {}
+    }
+    if (_isFile(p+"/index.js")) return p+"/index.js";
+    if (_isFile(p+"/index.json")) return p+"/index.json";
+    return null;
+  }
+
+  function _resolve(req, fromDir) {
+    if (req[0] === "." || req[0] === "/") {
+      var p = _normPath((req[0] === "/") ? req : fromDir+"/"+req);
+      var r = _tryExt(p);
+      if (r) return r;
+      if (_isDir(p)) return _resolveDir(p);
+      return null;
+    }
+    var dir = fromDir;
+    for (;;) {
+      var nm = dir+"/node_modules/"+req;
+      if (_isDir(nm)) { var r2 = _resolveDir(nm); if (r2) return r2; }
+      var r3 = _tryExt(nm);
+      if (r3) return r3;
+      var parent = dir.replace(/\/[^\/]*$/, "");
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return null;
+  }
+
+  function _requireAbs(abs) {
+    abs = _normPath(abs);
+    if (_cache[abs]) return _cache[abs].exports;
+    var src = _readFile(abs);
+    if (src === null) throw new Error("Cannot find module: "+abs);
+    var mod = { exports: {}, filename: abs, id: abs, loaded: false };
+    _cache[abs] = mod;
+    var dir = abs.replace(/\/[^\/]*$/, "");
+    if (abs.slice(-5) === ".json") { mod.exports = JSON.parse(src); mod.loaded = true; return mod.exports; }
+    var wrapped = "(function(require,module,exports,__filename,__dirname){\n"+src+"\n})";
+    var fn = eval(wrapped);
+    fn(function(r){ return _requireFrom(r, dir); }, mod, mod.exports, abs, dir);
+    mod.loaded = true;
+    return mod.exports;
+  }
+
+  function _readProcLine(path) {
+    var f = _std.open(path, "r"); if (!f) return "";
+    var s = f.readAsString(); f.close(); return s;
+  }
+
+  var _builtins = {
+    "os": {
+      hostname: function() {
+        var s = _readProcLine("/proc/sys/kernel/hostname");
+        return s.replace(/\s+$/, "") || "localhost";
+      },
+      platform: function() { return "linux"; },
+      arch:     function() { return "wasm32"; },
+      uptime:   function() {
+        var s = _readProcLine("/proc/uptime");
+        return parseFloat(s.split(" ")[0]) || 0;
+      },
+      freemem:  function() {
+        var s = _readProcLine("/proc/meminfo");
+        var m = s.match(/MemFree:\s+(\d+)/);
+        return m ? parseInt(m[1]) * 1024 : 0;
+      },
+      totalmem: function() {
+        var s = _readProcLine("/proc/meminfo");
+        var m = s.match(/MemTotal:\s+(\d+)/);
+        return m ? parseInt(m[1]) * 1024 : 0;
+      },
+      cpus:     function() { return []; },
+      networkInterfaces: function() { return {}; },
+      tmpdir:   function() { return "/tmp"; },
+      homedir:  function() { return "/root"; },
+      type:     function() { return "Linux"; },
+      release:  function() { return "6.1.0"; },
+      version:  function() { return "#1 WASM32"; },
+      endianness: function() { return "LE"; },
+      EOL: "\n",
+    },
+    "path": {
+      sep: "/", delimiter: ":",
+      join: function() {
+        var parts = [].slice.call(arguments);
+        return _normPath(parts.join("/")) || ".";
+      },
+      resolve: function() {
+        var parts = [].slice.call(arguments);
+        var p = parts[0][0] === "/" ? parts[0] : _cwd + "/" + parts[0];
+        for (var i = 1; i < parts.length; i++) {
+          p = parts[i][0] === "/" ? parts[i] : p + "/" + parts[i];
+        }
+        return _normPath(p) || "/";
+      },
+      dirname: function(p) { return p.replace(/\/[^\/]*$/, "") || "/"; },
+      basename: function(p, ext) {
+        var b = p.replace(/.*\//, "");
+        return (ext && b.slice(-ext.length) === ext) ? b.slice(0, -ext.length) : b;
+      },
+      extname: function(p) { var m = p.match(/(\.[^.\/]*)$/); return m ? m[1] : ""; },
+      isAbsolute: function(p) { return p[0] === "/"; },
+      normalize: _normPath,
+      relative: function(from, to) {
+        var f = _normPath(from).split("/"); var t = _normPath(to).split("/");
+        while (f.length && t.length && f[0] === t[0]) { f.shift(); t.shift(); }
+        return f.map(function(){ return ".."; }).concat(t).join("/") || ".";
+      },
+    },
+  };
+
+  function _requireFrom(req, fromDir) {
+    if (_builtins[req]) return _builtins[req];
+    var abs = _resolve(req, fromDir);
+    if (!abs) throw new Error("Cannot find module: "+req+" (from "+fromDir+")");
+    return _requireAbs(abs);
+  }
+
+  var _cwdBuf = new ArrayBuffer(4096);
+  var _cwdRes = _os.getcwd(_cwdBuf, 4096);
+  var _cwdLen = Array.isArray(_cwdRes) ? _cwdRes[0] : _cwdRes;
+  if (_cwdLen < 0) _cwdLen = 0;
+  var _cwdArr = new Uint8Array(_cwdBuf, 0, _cwdLen);
+  var _cwd = "";
+  for (var _i = 0; _i < _cwdLen; _i++) {
+    if (_cwdArr[_i] === 0) break;
+    _cwd += String.fromCharCode(_cwdArr[_i]);
+  }
+
+  globalThis.require = function(r) { return _requireFrom(r, _cwd); };
+  globalThis.require.resolve = function(r) {
+    var abs = _resolve(r, _cwd);
+    if (!abs) throw new Error("Cannot find module: "+r);
+    return abs;
+  };
+  globalThis.module = { exports: {}, id: ".", loaded: false };
+  globalThis.exports = globalThis.module.exports;
+  globalThis.__filename = "";
+  globalThis.__dirname = _cwd;
+
+  globalThis.process = {
+    argv: (typeof scriptArgs !== "undefined") ? ["node"].concat(scriptArgs.slice(0)) : ["node"],
+    env: {},
+    exit: function(c){ _std.exit(c||0); },
+    cwd: function(){ return _cwd; },
+    version: "v20.0.0",
+    versions: { node: "20.0.0", v8: "11.3.244.8" },
+    platform: "linux",
+    arch: "wasm32",
+    stdout: { write: function(s){ _std.out.puts(s); } },
+    stderr: { write: function(s){ _std.err.puts(s); } },
+    hrtime: function(){ var t = _os.now(); return [Math.floor(t/1000)|0, ((t%1000)*1e6)|0]; },
+  };
+
+  function _fmt(x) {
+    if (x === null) return "null";
+    if (x === undefined) return "undefined";
+    if (typeof x === "object") { try { return JSON.stringify(x, null, 2); } catch(e) { return String(x); } }
+    return String(x);
+  }
+  globalThis.console = {
+    log:   function(){ _std.out.puts([].slice.call(arguments).map(_fmt).join(" ")+"\n"); },
+    error: function(){ _std.err.puts([].slice.call(arguments).map(_fmt).join(" ")+"\n"); },
+    warn:  function(){ _std.err.puts("[warn] "+[].slice.call(arguments).map(_fmt).join(" ")+"\n"); },
+    info:  function(){ _std.out.puts([].slice.call(arguments).map(_fmt).join(" ")+"\n"); },
+    dir:   function(x){ _std.out.puts(_fmt(x)+"\n"); },
+  };
+
+  globalThis.setTimeout  = function(fn){ fn(); return 0; };
+  globalThis.clearTimeout  = function(){};
+  globalThis.setInterval   = function(){ return 0; };
+  globalThis.clearInterval = function(){};
+  globalThis.global = globalThis;
+})();
+'
+
+if [ $# -eq 0 ]; then
+    exec qjs --std
+fi
+
+case "$1" in
+    -e|--eval)
+        shift
+        # qjs only honours the last -e flag; concatenate shim + user code.
+        exec qjs --std -e "${SHIM}
+${1}"
+        ;;
+    -*)
+        exec qjs --std -e "$SHIM" "$@"
+        ;;
+    *)
+        _script="$1"; shift
+        case "$_script" in
+            /*) _abs="$_script" ;;
+            *)  _abs="$PWD/$_script" ;;
+        esac
+        # Concatenate shim + require call into a single -e argument.
+        exec qjs --std -e "${SHIM}
+require('${_abs}');" -- "$@"
+        ;;
+esac

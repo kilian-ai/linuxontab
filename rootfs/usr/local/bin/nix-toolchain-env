@@ -1,0 +1,43 @@
+#!/bin/sh
+# Emit env exports for LinuxOnTab guest package builds.
+# Usage:
+#   . /usr/local/bin/nix-toolchain-env
+# or:
+#   eval "$(/usr/local/bin/nix-toolchain-env --print)"
+
+SYSROOT=/nix/store/lot-musl-sysroot
+CLANG=/usr/local/bin/clang
+WASM_LD=/usr/local/bin/wasm-ld
+WASM_OPT=/usr/local/bin/wasm-opt
+RESOURCE_DIR=/usr/local/lib/clang/19
+# Required flags: WASM clang needs explicit -isystem and -resource-dir for
+# wasm32-unknown-unknown + musl sysroot (--sysroot alone doesn't inject paths).
+CFLAGS_WASM="-target wasm32-unknown-unknown -fno-exceptions -isystem ${SYSROOT}/include -resource-dir ${RESOURCE_DIR}"
+LDFLAGS_WASM="--no-entry --import-memory --export-memory --export-table --shared-memory --max-memory=268435456"
+
+if [ "${1:-}" = "--print" ]; then
+  echo "export LOT_CLANG=$CLANG"
+  echo "export LOT_SYSROOT=$SYSROOT"
+  echo "export LOT_WASM_LD=$WASM_LD"
+  echo "export LOT_WASM_OPT=$WASM_OPT"
+  echo "export LOT_RESOURCE_DIR=$RESOURCE_DIR"
+  echo "export LOT_CFLAGS='$CFLAGS_WASM'"
+  echo "export LOT_LDFLAGS='$LDFLAGS_WASM'"
+  echo "export PATH=/usr/local/bin:$PATH"
+  exit 0
+fi
+
+export LOT_CLANG="$CLANG"
+export LOT_SYSROOT="$SYSROOT"
+export LOT_WASM_LD="$WASM_LD"
+export LOT_WASM_OPT="$WASM_OPT"
+export LOT_RESOURCE_DIR="$RESOURCE_DIR"
+export LOT_CFLAGS="$CFLAGS_WASM"
+export LOT_LDFLAGS="$LDFLAGS_WASM"
+export PATH="/usr/local/bin:$PATH"
+
+echo "nix-toolchain-env: configured LOT_CLANG=$LOT_CLANG"
+echo "nix-toolchain-env: configured LOT_SYSROOT=$LOT_SYSROOT"
+echo "nix-toolchain-env: configured LOT_WASM_LD=$LOT_WASM_LD"
+echo "nix-toolchain-env: configured LOT_WASM_OPT=$LOT_WASM_OPT"
+echo "nix-toolchain-env: configured LOT_CFLAGS='$LOT_CFLAGS'"

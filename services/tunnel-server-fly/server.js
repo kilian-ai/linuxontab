@@ -24,8 +24,18 @@ import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import crypto from 'node:crypto';
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, WebSocket } from 'ws';
 import { URL } from 'node:url';
+
+// HYBRID: the guest↔relay WebSocket pool now lives on Cloudflare (a Durable
+// Object at tunnel.linuxontab.com), because Fly's 443 HTTP proxy drops those
+// long-lived browser WS with code 1006 under load. This Fly process is reduced
+// to a TCP-ingress shim: it keeps the public net.Server listeners (Fly's TCP
+// proxy forwards external :PORT → container :PORT) and, per inbound connection,
+// opens a server-side WS to CF's /port/client (stable, CF-terminated) and pipes
+// bytes. The browser pools its guest WS directly on CF. Set LOT_CF_RELAY_WS to
+// override (e.g. the *.workers.dev URL before the custom domain is mapped).
+const CF_RELAY_WS = process.env.LOT_CF_RELAY_WS || 'wss://tunnel.linuxontab.com';
 
 const PORT = parseInt(process.env.PORT || '8787', 10);
 // RAW_PORT is a second listener exposed via [[services]] TCP proxy so guest
@@ -143,6 +153,17 @@ function wsBuffered(ws) {
   return (ws && ws._socket && ws._socket.writableLength) || 0;
 }
 
+function closePeerWithFallback(ws, code = 1000, reason = 'peer disconnected') {
+  if (!ws) return;
+  try { ws.close(code, String(reason)); } catch (_) {}
+  setTimeout(() => {
+    // Give SSH enough time to flush exit-status/channel-close before force close.
+    if (ws.readyState !== 3) {
+      try { ws.terminate(); } catch (_) {}
+    }
+  }, 10000);
+}
+
 function applyBackpressure(srcWs, dstWs) {
   if (!dstWs || dstWs.readyState !== 1) return;
   if (wsBuffered(dstWs) <= BP_HIGH) return;
@@ -252,6 +273,10 @@ class PortSession {
 
     ws.on('message', (data, isBinary) => {
       this.touch();
+      if (!isBinary) {
+        const text = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
+        if (text === '__ping__' || text === '__connected__') return;
+      }
       const buf = isBinary ? data : Buffer.from(data);
       // Route to in-flight HTTP proxy call bound to this ws, if any.
       const call = this.proxyCalls.get(ws);
@@ -301,7 +326,7 @@ class PortSession {
             `peerBuffered=${wsBuffered(peer)}`);
         }
         this.pairs.delete(peer);
-        try { peer.close(code || 1000, String(reason || 'peer disconnected')); } catch (_) {}
+        closePeerWithFallback(peer, code || 1000, String(reason || 'peer disconnected'));
       }
       this.pairs.delete(ws);
     });
@@ -359,6 +384,10 @@ class PortSession {
     guest.__pairRole = 'guest';
     console.log(`[pair ${pairId}] ${this.code}:${port} client+guest paired`);
 
+    // Tell the browser-side guest bridge that a client has arrived so it can
+    // lazily inject SYN into the in-browser TCP stack (injectConnect).
+    try { guest.send('__connected__'); } catch (_) {}
+
     // Flush any pre-pair buffered bytes from the dequeued guest. Defer with
     // setImmediate so the client WS open frame is fully delivered before we
     // start sending data — synchronous ws.send() right after handleUpgrade
@@ -404,7 +433,7 @@ class PortSession {
             `peerBuffered=${wsBuffered(peer)}`);
         }
         this.pairs.delete(peer);
-        try { peer.close(code || 1000, String(reason || 'peer disconnected')); } catch (_) {}
+        closePeerWithFallback(peer, code || 1000, String(reason || 'peer disconnected'));
       }
       this.pairs.delete(ws);
     });
@@ -852,12 +881,14 @@ const tcpListeners   = new Map();         // publicPort → net.Server
 const TCP_ASSIGN_TTL_MS = 60 * 60 * 1000; // 1h default
 
 function tcpEvictDeadAssignments() {
-  // Drop assignments whose code's session no longer exists. Run before
-  // every allocation + on each incoming TCP connection so a stale slot
-  // from a restarted/expired code never blocks a fresh expose.
+  // HYBRID: sessions live on CF, not here, so we can't check them locally.
+  // Evict on TTL only. A stale code whose CF session is gone simply fails to
+  // pair (CF returns 503 → bridgeTcpToCf closes), and the slot frees on TTL or
+  // when the same code re-exposes (idempotent reuse in /port/expose).
+  const now = Date.now();
   for (const [p, a] of tcpAssignments) {
-    if (!getSession(a.code)) {
-      console.log(`[tcp-pool] evicting stale slot :${p} (code=${a.code} session gone)`);
+    if (now > a.expiresAt) {
+      console.log(`[tcp-pool] evicting expired slot :${p} (code=${a.code})`);
       tcpAssignments.delete(p);
     }
   }
@@ -891,36 +922,18 @@ function tcpAssignSlot(code, internalPort, preferPort, ttlMs) {
 }
 
 function bridgeTcpToWs(sock, ws, pairId) {
-  // ── Time-based upload throttle ────────────────────────────────────────
-  // The Fly HTTP proxy (port 443, wss://) stalls when upload data accumulates
-  // faster than v86/websocat drains it (~200 KB/s).  The WISP output queue
-  // (cap 2048 frames × 16 KB = 32 MB) absorbs data silently — ws.send()
-  // returns immediately, giving Node zero backpressure signal.  Ping/pong
-  // end-to-end confirmation doesn't work because the ping gets stuck in the
-  // same deep queue and the pong never emerges within 30 s.
-  //
-  // Fix: after BURST_BYTES are sent, pause the Mac TCP sock for a scaled
-  // PAUSE_MS so the pipeline drains before the next burst.
-  // scaledPause = BURST_MS × (burstPending / BURST_BYTES) keeps throughput
-  // constant (= BURST_BYTES/BURST_MS) regardless of SSH chunk size.
-  //
-  //   BURST_BYTES=32 KB, BURST_MS=500 ms → ~64 KB/s (below v86's ~100 KB/s drain rate)
-  //
-  // How we know drain rate ≈ 100 KB/s: at 128 KB/s we saw close at t=39s
-  // (t_fill=9s, 30s Fly proxy write timeout, buffer≈256KB: 256/(128-100)=9s).
-  // At 64 KB/s: t_fill = 256/(64-100) = negative → buffer never fills. ✓
-  const BURST_BYTES = 32 * 1024;
-  const BURST_MS    = 500;
-
-  let _burstPending = 0;
-  let _burstTimer   = null;
-  // ────────────────────────────────────────────────────────────────────────
+  // Flow control is end-to-end via the browser's __pause__/__resume__ signals
+  // (see onWsMsg). The old blind time-based throttle here is gone: it can't see
+  // the real bottleneck (the browser's inject queue — wsBuffered stays ~0
+  // because the browser reads the WS fast but injects into the guest slowly),
+  // so it both capped throughput and destabilized connections with fixed 1s
+  // pauses. The OOM guard in sock.on('data') remains as an absolute last resort.
 
   // tcp → ws  (client bytes to guest)
   let _totalSent = 0;
   let _statsTimer = setInterval(() => {
     if (closed) { clearInterval(_statsTimer); return; }
-    console.log(`[tcp-bridge ${pairId}] stats: totalSent=${_totalSent} wsBuffered=${wsBuffered(ws)} sockPaused=${sock.isPaused?.()} burstTimer=${_burstTimer != null}`);
+    console.log(`[tcp-bridge ${pairId}] stats: totalSent=${_totalSent} wsBuffered=${wsBuffered(ws)} sockPaused=${sock.isPaused?.()} flowPaused=${!!sock.__flowPaused}`);
   }, 5000);
   sock.on('data', (chunk) => {
     if (ws.readyState !== 1) return;
@@ -930,32 +943,24 @@ function bridgeTcpToWs(sock, ws, pairId) {
       return;
     }
     _totalSent += chunk.length;
-    // Time-based upload throttle: accumulate burstPending and pause for a
-    // scaled interval so effective throughput ≈ BURST_BYTES/BURST_MS.
-    _burstPending += chunk.length;
-    if (_burstPending >= BURST_BYTES && !_burstTimer && !sock.__bpPaused) {
-      try { sock.pause(); } catch (_) {}
-      const scaledPause = Math.round(BURST_MS * _burstPending / BURST_BYTES);
-      console.log(`[tcp-bridge ${pairId}] burst-pause: sent=${_burstPending} wsBuffered=${wsBuffered(ws)} pause=${scaledPause}ms`);
-      _burstTimer = setTimeout(() => {
-        _burstTimer = null;
-        _burstPending = 0;
-        if (!sock.__bpPaused) try { sock.resume(); } catch (_) {}
-      }, scaledPause);
-    }
-    // OOM guard: absolute last-resort for multi-GB transfers.
+    // Flow control is now end-to-end: the browser sends __pause__/__resume__
+    // (handled in onWsMsg) based on its actual inject-queue depth, pacing this
+    // socket to exactly the guest's drain rate. The old blind time-based
+    // throttle (64 KB/s regardless of wsBuffered) both capped throughput and
+    // destabilized the connection with ~1s pauses even when nothing was backed
+    // up — replaced. The OOM guard below stays as an absolute last resort.
     if (wsBuffered(ws) > 16 * 1024 * 1024 && !sock.__bpPaused) {
       sock.__bpPaused = true;
       try { sock.pause(); } catch (_) {}
       const tick = setInterval(() => {
         if (sock.destroyed || ws.readyState !== 1) {
           clearInterval(tick); sock.__bpPaused = false;
-          if (!_burstTimer) { try { sock.resume(); } catch (_) {} }
+          if (!sock.__flowPaused) { try { sock.resume(); } catch (_) {} }
           return;
         }
         if (wsBuffered(ws) <= 8 * 1024 * 1024) {
           clearInterval(tick); sock.__bpPaused = false;
-          if (!_burstTimer) { try { sock.resume(); } catch (_) {} }
+          if (!sock.__flowPaused) { try { sock.resume(); } catch (_) {} }
         }
       }, 50);
     }
@@ -968,7 +973,22 @@ function bridgeTcpToWs(sock, ws, pairId) {
   // no-op for tcp bridges).
   const onWsMsg = (data, isBinary) => {
     if (sock.destroyed) return;
-    const buf = isBinary ? data : Buffer.from(data);
+    // Tunnel payload is ALWAYS binary. Text frames are control messages —
+    // they must NOT be written into the TCP byte stream (forwarding e.g.
+    // "__ping__" every 5s corrupted SFTP framing: "Packet too big").
+    // Two of them ARE end-to-end backpressure signals: the browser can only
+    // INJECT into the guest at the slirp rate (~15-60 KB/s), but it reads the
+    // WS fast, so Node's wsBuffered stays ~0 and the relay has NO backpressure
+    // signal — it would overrun the browser's inject queue and break the
+    // connection. So the page sends __pause__/__resume__ based on its queue
+    // depth, and we pace the client TCP socket to match.
+    if (!isBinary) {
+      const s = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
+      if (s === '__pause__')  { sock.__flowPaused = true;  try { sock.pause(); } catch (_) {} return; }
+      if (s === '__resume__') { sock.__flowPaused = false; if (!sock.__bpPaused) try { sock.resume(); } catch (_) {} return; }
+      return; // __ping__, __connected__, other control frames
+    }
+    const buf = data;
     const ok = sock.write(buf);
     if (!ok) {
       const innerSock = ws._socket;
@@ -1005,6 +1025,80 @@ function bridgeTcpToWs(sock, ws, pairId) {
   ws.on('error', (e) => closePair('ws', e.message));
 }
 
+// Bridge a public TCP socket to a CF /port/client WebSocket. CF pops a guest
+// from the browser pool, sends it __connected__, and splices bytes. We pipe
+// TCP<->WS with control-frame filtering (text frames are never TCP data) and
+// honor the browser's __pause__/__resume__ backpressure by pausing the socket.
+function bridgeTcpToCf(sock, code, internalPort, publicPort, pairId) {
+  const url = `${CF_RELAY_WS}/port/client?code=${encodeURIComponent(code)}&port=${internalPort}`;
+  const cfws = new WebSocket(url, { perMessageDeflate: false });
+  cfws.binaryType = 'nodebuffer';
+  let open = false, closed = false;
+  const preOpen = [];              // TCP bytes that arrived before the WS opened
+
+  const closeBoth = (origin, info) => {
+    if (closed) return;
+    closed = true;
+    console.log(`[cf-bridge ${pairId}] :${publicPort} → ${code}:${internalPort} closed by ${origin}${info ? ' ' + info : ''}`);
+    try { sock.destroy(); } catch (_) {}
+    try { cfws.close(); } catch (_) {}
+  };
+
+  cfws.on('open', () => {
+    open = true;
+    console.log(`[cf-bridge ${pairId}] :${publicPort} → ${code}:${internalPort} paired (remote=${sock.remoteAddress}:${sock.remotePort})`);
+    for (const c of preOpen) { try { cfws.send(c); } catch (_) {} }
+    preOpen.length = 0;
+    try { sock.resume(); } catch (_) {}
+  });
+
+  cfws.on('message', (data, isBinary) => {
+    if (sock.destroyed) return;
+    if (!isBinary) {
+      // Control frames — never write these into the TCP byte stream.
+      const s = Buffer.isBuffer(data) ? data.toString('utf8') : String(data);
+      if (s === '__pause__')  { try { sock.pause();  } catch (_) {} return; }
+      if (s === '__resume__') { try { sock.resume(); } catch (_) {} return; }
+      return; // __ping__, __connected__, etc.
+    }
+    const ok = sock.write(data);
+    if (!ok) {
+      // TCP send buffer full — pause the CF WS read side by pausing its socket.
+      const inner = cfws._socket;
+      if (inner && !cfws.__paused) {
+        cfws.__paused = true;
+        try { inner.pause(); } catch (_) {}
+        sock.once('drain', () => { cfws.__paused = false; try { inner.resume(); } catch (_) {} });
+      }
+    }
+  });
+
+  cfws.on('close', (c, r) => closeBoth('ws', `code=${c} ${String(r || '').slice(0, 40)}`));
+  cfws.on('error', (e) => closeBoth('ws', 'err=' + (e && e.message)));
+
+  sock.on('data', (chunk) => {
+    if (closed) return;
+    if (!open) { preOpen.push(chunk); return; }
+    try { cfws.send(chunk); } catch (e) { closeBoth('tcp', 'send=' + e.message); return; }
+    // Fly→CF backpressure: if the WS send buffer grows, pause the TCP read.
+    if (cfws.bufferedAmount > 8 * 1024 * 1024 && !sock.__cfPaused) {
+      sock.__cfPaused = true;
+      try { sock.pause(); } catch (_) {}
+      const iv = setInterval(() => {
+        if (closed || cfws.bufferedAmount <= 2 * 1024 * 1024) {
+          clearInterval(iv); sock.__cfPaused = false;
+          if (!closed) try { sock.resume(); } catch (_) {}
+        }
+      }, 50);
+    }
+  });
+  sock.on('close', () => closeBoth('tcp'));
+  sock.on('error', (e) => closeBoth('tcp', e.message));
+
+  // Don't blast TCP bytes into a not-yet-open WS: pause until 'open' flushes.
+  try { sock.pause(); } catch (_) {}
+}
+
 function startTcpPool() {
   for (const publicPort of TCP_PORTS) {
     const srv = net.createServer(async (sock) => {
@@ -1014,71 +1108,23 @@ function startTcpPool() {
       sock.setNoDelay(true);
       sock.setTimeout(0);
       const a = tcpAssignments.get(publicPort);
-      if (!a) { try { sock.destroy(); } catch (_) {} return; }
+      if (!a) {
+        // Silent no-assignment closes made reconnect failures undebuggable.
+        console.log(`[tcp-bridge :${publicPort}] no assignment for this port — rejecting (remote=${sock.remoteAddress})`);
+        try { sock.destroy(); } catch (_) {} return;
+      }
       if (Date.now() > a.expiresAt) {
+        console.log(`[tcp-bridge :${publicPort}] assignment for code=${a.code} EXPIRED — rejecting`);
         tcpAssignments.delete(publicPort);
         try { sock.destroy(); } catch (_) {}
         return;
       }
-      const session = getSession(a.code);
-      if (!session) {
-        // Stale slot — code's session is gone. Evict so the next
-        // /port/expose can claim this port.
-        console.log(`[tcp-bridge :${publicPort}] no session for code=${a.code} — evicting slot`);
-        tcpAssignments.delete(publicPort);
-        try { sock.destroy(); } catch (_) {}
-        return;
-      }
-      // Retry picking a guest bridge for up to 3s (200ms intervals).
-      // Bridges reconnect with a 1s respawn delay; without this wait the
-      // TCP client gets an immediate RST if it happens to connect during the
-      // brief reconnect window.
-      let guest = session.pickFreshGuest(a.internalPort);
-      if (!guest) {
-        await new Promise((resolve) => {
-          let tries = 0;
-          const iv = setInterval(() => {
-            tries++;
-            guest = session.pickFreshGuest(a.internalPort);
-            if (guest || tries >= 15) { clearInterval(iv); resolve(); }
-          }, 200);
-        });
-      }
-      if (!guest) {
-        console.log(`[tcp-bridge :${publicPort}] no guest bridge for ${a.code}:${a.internalPort} after retry`);
-        try { sock.destroy(); } catch (_) {}
-        return;
-      }
-      // TCP client may have given up during the await wait.
-      if (sock.destroyed) {
-        // Return the guest to the pool by not claiming it.
-        return;
-      }
+      // HYBRID: the guest pool lives on CF. Open a server-side WS to CF's
+      // /port/client (which pops a fresh guest from the browser's pool, sends
+      // it __connected__, and splices bytes) and pipe this TCP socket through
+      // it. CF owns the pairing + pool; Fly is just the TCP door.
       const pairId = Math.random().toString(36).slice(2, 8);
-      console.log(`[tcp-bridge ${pairId}] :${publicPort} → ${a.code}:${a.internalPort} paired ` +
-        `(remote=${sock.remoteAddress}:${sock.remotePort})`);
-
-      // Claim the guest WS so other consumers (HTTP proxy / /port/client)
-      // skip it. proxyCalls.feed must be a no-op so it doesn't try to
-      // parse our bytes as HTTP — bridgeTcpToWs handles bytes via its
-      // own 'message' listener.
-      session.proxyCalls.set(guest, { feed: () => {}, settle: () => {} });
-
-      // Flush any pre-pair buffered bytes (e.g. ngircd's NOTICE banner).
-      const pre = session.guestBuffer.get(guest);
-      if (pre && pre.length) {
-        session.guestBuffer.delete(guest);
-        for (const d of pre) { try { sock.write(d); } catch (_) {} }
-      }
-
-      bridgeTcpToWs(sock, guest, pairId);
-
-      // Unclaim when done. Don't close the guest WS from here —
-      // bridgeTcpToWs only closes it on WS-side errors; on TCP close,
-      // websocat will naturally exit when sshd closes its local TCP.
-      const cleanup = () => { session.proxyCalls.delete(guest); };
-      sock.once('close', cleanup);
-      guest.once('close', cleanup);
+      bridgeTcpToCf(sock, a.code, a.internalPort, publicPort, pairId);
     });
     srv.on('error', (e) => console.log(`[tcp-pool] :${publicPort} error: ${e.message}`));
     srv.listen(publicPort, '0.0.0.0', () => {
@@ -1159,13 +1205,11 @@ const server = http.createServer(async (req, res) => {
     if (!code) return sendJson(res, { error: 'missing code' }, 400);
     const internalPort = parsePort(body.port);
     if (!internalPort) return sendJson(res, { error: 'missing/invalid port' }, 400);
-    const s = getSession(code);
-    if (!s) return sendJson(res, { error: 'code not found' }, 404);
-    if (s.registeredPorts.size > 0 && !s.registeredPorts.has(internalPort)) {
-      return sendJson(res, { error: 'port not registered for this code' }, 400);
-    }
-    // Drop any stale (dead-session) slots first so the matching-port
-    // preference works after a tunnel restart (old code → new code).
+    // HYBRID: the code's session lives on CF, not here, so we cannot (and must
+    // not) require a local Fly session. We just record the public-port→code
+    // assignment; if the code is bogus, inbound TCP simply fails to pair at CF
+    // (bridgeTcpToCf gets a 503/close). Optionally verify the code exists on CF
+    // to give a clean early error, but don't hard-depend on it.
     tcpEvictDeadAssignments();
     // Reuse existing assignment for this (code, port) if present so
     // repeat calls are idempotent.

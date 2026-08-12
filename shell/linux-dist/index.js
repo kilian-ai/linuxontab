@@ -113,8 +113,8 @@ export class Machine extends EventEmitter {
         const boot_console_close = () => {
             this.#boot_console_writer.close();
         };
-        const spawn_worker = (fn, arg, name, user_module, user_memory) => {
-            console.log('[SPAWN_WORKER] name=' + name + ' fn=' + fn);
+        const spawn_worker = (fn, arg, name, user_module, user_memory, fork_bufPtr = null, fork_retPtr = null) => {
+            console.log('[SPAWN_WORKER] name=' + name + ' fn=' + fn + ' fork=' + (fork_bufPtr != null));
             const worker = new Worker(new URL("./worker.js", import.meta.url), {
                 type: "module",
                 name,
@@ -123,13 +123,16 @@ export class Machine extends EventEmitter {
             worker.onmessage = (event) => {
                 switch (event.data.type) {
                     case "spawn_worker":
-                        spawn_worker(event.data.fn, event.data.arg, event.data.name, event.data.user_module, event.data.user_memory);
+                        spawn_worker(event.data.fn, event.data.arg, event.data.name, event.data.user_module, event.data.user_memory, event.data.fork_bufPtr ?? null, event.data.fork_retPtr ?? null);
                         break;
                     case "boot_console_write":
                         boot_console_write(event.data.message);
                         break;
                     case "boot_console_close":
                         boot_console_close();
+                        break;
+                    case "log":
+                        console.log(event.data.msg);
                         break;
                     case "run_on_main":
                         console.log('[RUN_ON_MAIN] fn=' + event.data.fn + ' arg=' + event.data.arg);
@@ -150,6 +153,8 @@ export class Machine extends EventEmitter {
                 memory: this.#memory,
                 parent_user_module: user_module,
                 parent_user_memory: user_memory,
+                fork_bufPtr,
+                fork_retPtr,
             });
         };
         const unavailable = () => {

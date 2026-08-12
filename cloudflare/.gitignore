@@ -1,0 +1,7 @@
+# Build artifact assembled by build-publish.sh (copied from ../shell).
+public/
+
+# Wrangler local state / caches.
+.wrangler/
+node_modules/
+.dev.vars

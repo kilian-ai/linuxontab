@@ -16,7 +16,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STAGING="$SCRIPT_DIR/rootfs"
 OUTPUT="$SCRIPT_DIR/shell/linux-dist/rootfs.ext4"
-SIZE=64M
+SIZE=512M
 
 # Locate mke2fs — prefer Homebrew e2fsprogs (macOS), fall back to system mke2fs (Linux)
 if [ -x /opt/homebrew/opt/e2fsprogs/sbin/mke2fs ]; then
@@ -46,9 +46,24 @@ echo "[build-rootfs] output:  $OUTPUT"
 WASM_OPT="${WASM_OPT:-/opt/homebrew/bin/wasm-opt}"
 if [ -x "$WASM_OPT" ]; then
   echo "[build-rootfs] applying wasm-opt --asyncify to staging WASM binaries..."
+  # Binaries that must NOT be re-asyncified (already patched + asyncified):
+  WASM_OPT_SKIP="sbin/dropbear usr/lib/sftp-server usr/libexec/sftp-server sbin/sshd usr/local/libexec/sftp-server usr/local/libexec/sshd-session usr/local/bin/wasm-opt usr/local/bin/wasm-ld usr/local/bin/wasm-ld.real usr/local/bin/wasm-opt usr/local/bin/hello_test usr/local/bin/fork_test usr/local/bin/sqlite3 bin/busybox sbin/tcplisten sbin/dropbearkey sbin/ws-proxy usr/local/bin/mininetd usr/local/bin/wsbridge usr/local/bin/cpp_test usr/local/bin/clang usr/local/bin/vnc-server usr/local/bin/python3.11 usr/local/bin/python3 usr/local/bin/python usr/local/bin/Xvfb usr/local/bin/Xvfb.bak-patch3-nop usr/local/bin/xeyes usr/local/bin/x11vnc usr/bin/xkbcomp bin/Xvfb bin/qjs bin/wasm3 bin/syncthing.wasm usr/local/bin/mc bin/hush-tick usr/local/bin/lotfm usr/local/bin/nano usr/local/bin/rgtest usr/local/bin/tmux"
   find "$STAGING" -type f | while read -r f; do
     # Quick magic-byte check: WASM files start with \0asm
     if [ "$(head -c 4 "$f" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "0061736d" ]; then
+      # Skip files in the exclusion list (checked by suffix match against STAGING path)
+      _rel="${f#$STAGING/}"
+      _skip=0
+      # Toolchain trees: crt*.o / libc.so are linker inputs, not executables —
+      # asyncifying them destroys their linking sections and breaks in-guest cc.
+      case "$_rel" in nix/store/*) _skip=1;; sysroot/*) _skip=1;; esac
+      for _sx in $WASM_OPT_SKIP; do
+        case "$_rel" in "$_sx") _skip=1; break;; esac
+      done
+      if [ "$_skip" = "1" ]; then
+        echo "  asyncify-skip (pre-patched): $f"
+        continue
+      fi
       echo "  asyncify: $f"
       # Preserve the original execute bits across the transform.
       _perms=$(stat -c "%a" "$f" 2>/dev/null || stat -f "%Lp" "$f" 2>/dev/null || echo "755")

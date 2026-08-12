@@ -22,7 +22,9 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 echo "root:root" | /bin/busybox chpasswd 2>/dev/null || true
 
 # Start SSH daemon (dropbear) if available
-if [ -x /usr/sbin/dropbear ]; then
+if [ -x /sbin/dropbear ]; then
+  /sbin/dropbear -R -p 22 2>/dev/null || true
+elif [ -x /usr/sbin/dropbear ]; then
   /usr/sbin/dropbear -R -p 22 2>/dev/null || true
 fi
 

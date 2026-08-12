@@ -1,5 +1,5 @@
 #!/bin/sh
-# clawlite — minimalist multi-provider LLM REPL
+# clawlite - minimalist multi-provider LLM REPL
 # Pure POSIX sh + curl + jq. No Node, no npm, no TUI lib.
 #
 # Usage:
@@ -66,7 +66,11 @@
 #
 # ----------------------------------------------------------------------
 
-set -u
+# Some minimal /bin/sh implementations in guest images reject `set -u`.
+# Enable nounset only when the current shell supports it.
+if (set -u) 2>/dev/null; then
+  set -u
+fi
 
 CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/clawlite"
 DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/clawlite"
@@ -78,14 +82,15 @@ mkdir -p "$SESS_DIR" "$INST_DIR"
 
 if [ ! -f "$CFG_FILE" ]; then
   cat > "$CFG_FILE" <<'EOF'
-# clawlite config — sourced as POSIX shell.
+# clawlite config - sourced as POSIX shell.
 PROVIDER=openai
 MODEL_OPENAI=gpt-5.5
 MODEL_ANTHROPIC=claude-sonnet-4-5
 OPENAI_BASE_URL=https://api.openai.com/v1
 ANTHROPIC_BASE_URL=https://api.anthropic.com/v1
 # Shell tool calling: model can run commands via <shell>...</shell> blocks.
-TOOLS=1
+# Keep shell tool-calls off by default in minimal guest shells.
+TOOLS=0
 TOOL_MAX_ITERS=50
 TOOL_OUTPUT_LIMIT=8192
 # Shell tool calls run without confirmation by default. Set CLAW_YOLO=0
@@ -119,7 +124,7 @@ fi
 : "${ANTHROPIC_BASE_URL:=https://api.anthropic.com/v1}"
 : "${OPENAI_API_KEY:=}"
 : "${ANTHROPIC_API_KEY:=}"
-: "${TOOLS:=1}"
+: "${TOOLS:=0}"
 : "${TOOL_MAX_ITERS:=50}"
 : "${TOOL_OUTPUT_LIMIT:=8192}"
 : "${CLAW_YOLO:=1}"
@@ -145,6 +150,7 @@ while [ $# -gt 0 ]; do
     -p) PROVIDER="$2"; shift 2 ;;
     --no-memory) NO_MEMORY=1; shift ;;
     --no-instructions) NO_INST=1; shift ;;
+    --tools) TOOLS=1; shift ;;
     --no-tools) TOOLS=0; shift ;;
     --yolo) CLAW_YOLO=1; shift ;;
     --confirm|--no-yolo) CLAW_YOLO=0; shift ;;
@@ -210,19 +216,19 @@ You can execute shell commands by emitting blocks of the form:
 command here
 </shell>
 
-## CRITICAL RULE — one command per block, one line per command
+## CRITICAL RULE - one command per block, one line per command
 
 Use ONE <shell> block per logical command. Do NOT pack multiple unrelated
 commands into a single block. The block content is passed verbatim to
-`sh -c`. There is NO automatic separator between commands — if you run
+`sh -c`. There is NO automatic separator between commands - if you run
 `printf 'a\n'ls` you will get "sh: lsthink: not found".
 
-WRONG (concatenation bug — DO NOT DO THIS):
+WRONG (concatenation bug - DO NOT DO THIS):
 <shell>
 printf 'PWD: '; pwdprintf 'Files:\n'; ls
 </shell>
 
-RIGHT — use a separate block for each step:
+RIGHT - use a separate block for each step:
 <shell>
 printf 'PWD: '; pwd
 </shell>
@@ -233,8 +239,8 @@ printf 'Files:\n'; ls
 If you must combine commands inside one block, always separate them with a
 NEWLINE (preferred) or a semicolon, NEVER by adjacency:
 
-  pwd; printf 'done\n'   ← correct (semicolon)
-  pwd                    ← correct (each on its own line)
+  pwd; printf 'done\n'   <- correct (semicolon)
+  pwd                    <- correct (each on its own line)
   printf 'done\n'
 
 ## Other rules
@@ -274,7 +280,7 @@ render_markdown() {
 
 # Tiny built-in markdown -> ANSI renderer. Handles:
 # headings, fenced code, bullets, **bold**, *italic*, `inline code`,
-# [text](url) → text (url, dim).
+# [text](url) -> text (url, dim).
 md_awk_render() {
   awk '
     BEGIN {
@@ -403,7 +409,10 @@ compact_call() {
   body="$(mktemp)"; resp="$(mktemp)"
   case "$PROVIDER" in
     openai)
-      [ -z "$OPENAI_API_KEY" ] && { rm -f "$body" "$resp"; return 1; }
+      if [ -z "$OPENAI_API_KEY" ]; then
+        rm -f "$body" "$resp"
+        return 1
+      fi
       jq -n --arg model "$(active_model)" --arg sys "$sys_prompt" --arg user "$user_msg" '{
         model:$model, stream:false,
         messages:[{role:"system",content:$sys},{role:"user",content:$user}]
@@ -415,7 +424,10 @@ compact_call() {
       jq -r '.choices[0].message.content // empty' "$resp" 2>/dev/null
       ;;
     anthropic)
-      [ -z "$ANTHROPIC_API_KEY" ] && { rm -f "$body" "$resp"; return 1; }
+      if [ -z "$ANTHROPIC_API_KEY" ]; then
+        rm -f "$body" "$resp"
+        return 1
+      fi
       jq -n --arg model "$(active_model)" --arg sys "$sys_prompt" --arg user "$user_msg" '{
         model:$model, stream:false, max_tokens:2048,
         system:$sys, messages:[{role:"user",content:$user}]
@@ -433,11 +445,9 @@ compact_call() {
   return $rc
 }
 
-USER_COMPACT_PROMPT='You are a memory compactor. The user gave the following messages to an assistant in past sessions. Most are one-off requests and should be discarded. Extract ONLY content that is overarching and worth remembering forever: explicit rules, persistent preferences, durable facts about the user or their environment, naming conventions, project context that future turns will need.
+USER_COMPACT_PROMPT='Compact user history into durable rules only. Output markdown bullets under heading "## Session rules and persistent info". If nothing qualifies, output exactly NONE.'
 
-Output a markdown bulleted list under a heading "## Session rules and persistent info". Use short imperative bullets. Quote exact phrasing for hard rules. If nothing in the input qualifies, output exactly the single word: NONE'
-
-ASSIST_COMPACT_PROMPT='You are a memory compactor. Summarize the following past assistant replies into a brief journal entry capturing: key facts produced, decisions made, files/commands of lasting relevance, and notable outcomes. Skip routine acknowledgments and conversational filler. Output markdown under a heading "## Journal entry (<UTC timestamp>)". Be terse — 5 to 15 bullets. If nothing is worth journaling, output exactly NONE.'
+ASSIST_COMPACT_PROMPT='Compact assistant history into brief journal bullets under heading "## Journal entry (<UTC timestamp>)". If nothing qualifies, output exactly NONE.'
 
 # Compact overflow lines from $1 (jsonl) using $2 as the system prompt and
 # append result to $3 (target file). Trim $1 to last $4 lines on success.
@@ -500,6 +510,18 @@ stream_curl() {
   fi
 }
 
+looks_like_json() {
+  case "$1" in
+    \{*|\[* ) return 0 ;;
+    * ) return 1 ;;
+  esac
+}
+
+raw_file_looks_json() {
+  first_char="$(tr -d ' \t\r\n' < "$1" | head -c 1)"
+  [ "$first_char" = "{" ] || [ "$first_char" = "[" ]
+}
+
 # ----------------------------------------------------------------------
 # Provider: OpenAI (Chat Completions, streaming SSE)
 # ----------------------------------------------------------------------
@@ -539,14 +561,16 @@ send_openai() {
         "data: [DONE]") break ;;
         "data: "*)
           chunk="${line#data: }"
-          delta="$(printf '%s' "$chunk" | jq -r '.choices[0].delta.content // empty' 2>/dev/null)"
-          if [ -n "$delta" ]; then
-            printf '%s' "$delta"
-            printf '%s' "$delta" >> "$reply_file"
-            echo 1 > "${reply_file}.saw"
+          if looks_like_json "$chunk"; then
+            delta="$(printf '%s' "$chunk" | jq -r '.choices[0].delta.content // empty' 2>/dev/null || true)"
+            if [ -n "$delta" ]; then
+              printf '%s' "$delta"
+              printf '%s' "$delta" >> "$reply_file"
+              echo 1 > "${reply_file}.saw"
+            fi
+            err="$(printf '%s' "$chunk" | jq -r '.error.message // empty' 2>/dev/null || true)"
+            [ -n "$err" ] && printf '\n[openai error: %s]\n' "$err" >&2
           fi
-          err="$(printf '%s' "$chunk" | jq -r '.error.message // empty' 2>/dev/null)"
-          [ -n "$err" ] && printf '\n[openai error: %s]\n' "$err" >&2
           ;;
       esac
     done
@@ -555,7 +579,10 @@ send_openai() {
   # error (HTTP 400/401/etc). Show it.
   [ -f "${reply_file}.saw" ] && saw_data=1
   if [ "$saw_data" = 0 ]; then
-    msg="$(jq -r '.error.message // .error // empty' "$raw_acc" 2>/dev/null)"
+    msg=""
+    if raw_file_looks_json "$raw_acc"; then
+      msg="$(jq -r '.error.message // .error // empty' "$raw_acc" 2>/dev/null || true)"
+    fi
     if [ -n "$msg" ]; then
       printf '[openai error] %s\n' "$msg" >&2
     else
@@ -612,20 +639,25 @@ send_anthropic() {
       case "$line" in
         "data: "*)
           chunk="${line#data: }"
-          delta="$(printf '%s' "$chunk" | jq -r 'select(.type=="content_block_delta") | .delta.text // empty' 2>/dev/null)"
-          if [ -n "$delta" ]; then
-            printf '%s' "$delta"
-            printf '%s' "$delta" >> "$reply_file"
-            echo 1 > "${reply_file}.saw"
+          if looks_like_json "$chunk"; then
+            delta="$(printf '%s' "$chunk" | jq -r 'select(.type=="content_block_delta") | .delta.text // empty' 2>/dev/null || true)"
+            if [ -n "$delta" ]; then
+              printf '%s' "$delta"
+              printf '%s' "$delta" >> "$reply_file"
+              echo 1 > "${reply_file}.saw"
+            fi
+            err="$(printf '%s' "$chunk" | jq -r 'select(.type=="error") | .error.message // empty' 2>/dev/null || true)"
+            [ -n "$err" ] && printf '\n[anthropic error: %s]\n' "$err" >&2
           fi
-          err="$(printf '%s' "$chunk" | jq -r 'select(.type=="error") | .error.message // empty' 2>/dev/null)"
-          [ -n "$err" ] && printf '\n[anthropic error: %s]\n' "$err" >&2
           ;;
       esac
     done
   echo
   if [ ! -f "${reply_file}.saw" ]; then
-    msg="$(jq -r '.error.message // .error // empty' "$raw_acc" 2>/dev/null)"
+    msg=""
+    if raw_file_looks_json "$raw_acc"; then
+      msg="$(jq -r '.error.message // .error // empty' "$raw_acc" 2>/dev/null || true)"
+    fi
     if [ -n "$msg" ]; then
       printf '[anthropic error] %s\n' "$msg" >&2
     else
@@ -714,8 +746,13 @@ run_tool_loop() {
       fi
       out_file="$(mktemp)"
       if [ "$run_it" = 1 ]; then
-        sh -c "$cmd" >"$out_file" 2>&1
-        ec=$?
+        if printf '%s' "$cmd" | grep -q '<<'; then
+          printf '%s\n' "[blocked: heredoc tool command is disabled in clawlite guest mode]" > "$out_file"
+          ec=2
+        else
+          sh -c "$cmd" >"$out_file" 2>&1
+          ec=$?
+        fi
       else
         echo "[skipped by user]" > "$out_file"
         ec=-1
@@ -757,7 +794,11 @@ send() {
   if [ "$TOOLS" = 1 ]; then
     out_path="$(mktemp)"
     REPLY_OUT="$out_path"
-    send_provider "$1" || { rm -f "$out_path"; REPLY_OUT=""; return 1; }
+    if ! send_provider "$1"; then
+      rm -f "$out_path"
+      REPLY_OUT=""
+      return 1
+    fi
     REPLY_OUT=""
     run_tool_loop "$out_path"
     rc=$?
@@ -778,7 +819,7 @@ handle_slash() {
     /help)       usage ;;
     /reset)
       : > "$USER_LOG"; : > "$ASSIST_LOG"
-      echo "(session reset: $SESSION  — instruction rules + journal kept)"
+      echo "(session reset: $SESSION  - instruction rules + journal kept)"
       ;;
     /list)
       ls -1 "$SESS_DIR" 2>/dev/null \
@@ -850,7 +891,7 @@ handle_slash() {
     "/yolo "*)
       n="${cmd#/yolo }"
       case "$n" in
-        on|1|true)  CLAW_YOLO=1; echo "(yolo: on — shell tools run without confirm)" ;;
+        on|1|true)  CLAW_YOLO=1; echo "(yolo: on - shell tools run without confirm)" ;;
         off|0|false) CLAW_YOLO=0; echo "(yolo: off)" ;;
         *) echo "(usage: /yolo on|off)" ;;
       esac
@@ -874,7 +915,7 @@ handle_slash() {
       build_system_prompt
       ;;
     /paste)
-      echo "(multi-line — end with a single line containing only EOF)"
+      echo "(multi-line - end with a single line containing only EOF)"
       buf=""
       while IFS= read -r ln; do
         [ "$ln" = "EOF" ] && break
@@ -912,9 +953,23 @@ printf 'clawlite  provider=%s  model=%s  session=%s  tools=%s%s  win=u%s/a%s%s\n
   "$([ "$JOURNAL" = 1 ] && echo ' journal' || echo '')"
 printf '(/help for commands, /exit to quit)\n'
 
+# Some tiny /bin/sh variants can run scripts but do not provide a working
+# interactive `read` builtin. Detect that early and direct users to one-shot mode.
+can_interactive_read=1
+if ! (printf 'x\n' | { IFS= read -r __claw_probe; [ "${__claw_probe:-}" = "x" ]; }) >/dev/null 2>&1; then
+  can_interactive_read=0
+fi
+if [ "$can_interactive_read" != 1 ]; then
+  echo "clawlite: interactive mode unavailable in this shell; use one-shot: claw \"your prompt\"" >&2
+  exit 1
+fi
+
 while :; do
   printf '\n> '
-  IFS= read -r line || { echo; break; }
+  if ! IFS= read -r line; then
+    echo
+    break
+  fi
   [ -z "$line" ] && continue
   case "$line" in
     /*)

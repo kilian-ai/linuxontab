@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""curl — python-backed HTTPS shim for the LinuxOnTab wasm guest.
+
+The real curl 8.13.0 binary is installed as `curl-real` but its socket path
+times out in this guest (exit 28 on every transfer). python3's urllib, by
+contrast, does working HTTPS here (openssl + /etc/ssl/cert.pem over the WISP
+relay) — proven by npm/pip installs. So `curl` is this shim, implementing the
+subset that clawlite.sh (and typical API clients) actually use:
+
+    curl [-s] [-S] [-N] [-L] [-H 'Header: v']... [-X METHOD]
+         [-d DATA | --data-binary @FILE | --data-binary DATA] URL
+
+Streaming (-N) writes the response to stdout in small chunks as it arrives, so
+Server-Sent Events (OpenAI/Anthropic streaming) flow through a `curl | awk`
+pipeline as they arrive instead of buffering to the end.
+
+Not a full curl — no multipart, cookies, or -I. Bypass to the real binary with
+`curl-real` if you need those (network permitting).
+"""
+import sys
+import urllib.request
+import urllib.error
+
+
+def main(argv):
+    headers = {}
+    data = None
+    method = None
+    url = None
+    silent = False
+    outfile = None
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in ("-s", "--silent"):
+            silent = True
+        elif a in ("-S", "--show-error", "-N", "--no-buffer"):
+            pass
+        elif a in ("-L", "--location"):
+            pass                 # urllib follows redirects by default
+        elif a in ("-H", "--header"):
+            i += 1
+            h = argv[i]
+            if ":" in h:
+                k, v = h.split(":", 1)
+                headers[k.strip()] = v.strip()
+        elif a in ("-X", "--request"):
+            i += 1
+            method = argv[i]
+        elif a in ("-d", "--data", "--data-binary", "--data-raw"):
+            i += 1
+            val = argv[i]
+            if val.startswith("@"):
+                with open(val[1:], "rb") as f:
+                    data = f.read()
+            else:
+                data = val.encode()
+        elif a in ("-o", "--output"):
+            i += 1
+            outfile = argv[i]
+        elif a.startswith("-"):
+            pass                 # ignore unknown flags
+        else:
+            url = a
+        i += 1
+
+    if not url:
+        sys.stderr.write("curl: no URL specified\n")
+        return 2
+
+    if method is None:
+        method = "POST" if data is not None else "GET"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            out = open(outfile, "wb") if outfile else sys.stdout.buffer
+            while True:
+                chunk = r.read(4096)     # small reads -> incremental SSE flush
+                if not chunk:
+                    break
+                out.write(chunk)
+                out.flush()
+        if outfile:
+            out.close()
+        return 0
+    except urllib.error.HTTPError as e:
+        body = e.read()          # APIs put JSON errors in the body
+        if body:
+            sys.stdout.buffer.write(body)
+            sys.stdout.buffer.flush()
+        if not silent:
+            sys.stderr.write("curl: HTTP %s\n" % e.code)
+        return 22
+    except Exception as e:
+        if not silent:
+            sys.stderr.write("curl: (%s) %s\n" % (type(e).__name__, e))
+        return 7
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

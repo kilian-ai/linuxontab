@@ -23,6 +23,13 @@
   #bar button:disabled { opacity:0.4; cursor:not-allowed; }
   #bar .stat { color:#888; margin-left:auto; font-size:11px; }
   #bar .tag { font-size:10px; color:#7ab8f5; background:#1a2a3d; border:1px solid #2a3a50; border-radius:3px; padding:1px 6px; letter-spacing:.04em; }
+  #dl-progress { display:inline-flex; align-items:center; gap:8px; }
+  #dl-track { width:130px; height:8px; background:#0e1217; border:1px solid #3a424d; border-radius:999px; overflow:hidden; }
+  #dl-fill { display:block; height:100%; width:0%; background:#4ade80; transition:width .12s linear; }
+  #dl-progress.indet #dl-fill { width:35%; animation:dl-slide 1.1s ease-in-out infinite; }
+  @keyframes dl-slide { 0%{ transform:translateX(-120%); } 100%{ transform:translateX(370%); } }
+  #dl-label { color:#8a929e; font-size:11px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  @media (prefers-reduced-motion: reduce){ #dl-progress.indet #dl-fill { animation:none; } }
 
   /* ── terminal ── */
   #term { flex:1; min-height:0; padding:6px 8px; background:#0b0d10; }
@@ -31,6 +38,31 @@
   #term .xterm-viewport::-webkit-scrollbar { width:10px; }
   #term .xterm-viewport::-webkit-scrollbar-track { background:#0b0d10; }
   #term .xterm-viewport::-webkit-scrollbar-thumb { background:#2a3240; border-radius:5px; }
+
+  /* ── browser output mode (cgi-like rendering) ── */
+  #cgi-view { flex:1; min-height:0; display:flex; flex-direction:column; padding:6px 8px; gap:6px; background:#0b0d10; }
+  #cgi-view[hidden] { display:none; }
+  #cgi-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:12px; }
+  #cgi-toolbar input { background:#161a1f; color:#ddd; border:1px solid #2a2f36; border-radius:4px; padding:4px 8px; font:inherit; min-width:240px; flex:1; }
+  #cgi-toolbar button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
+  #cgi-toolbar button:hover:not(:disabled) { background:#2d343d; }
+  #cgi-toolbar .cgi-meta { color:#7a8392; }
+  #cgi-frame { flex:1; min-height:180px; border:1px solid #2a2f36; border-radius:4px; background:#fff; }
+  #cgi-text-wrap { flex:1; min-height:0; overflow:auto; border:1px solid #2a2f36; border-radius:4px; background:#0b0d10; }
+  #cgi-text { margin:0; padding:8px 10px; white-space:pre-wrap; word-break:break-word; color:#d5d8dc; font-size:12px; line-height:1.45; }
+
+  /* ── X display panel ── */
+  #x-view { flex:1; min-height:0; display:flex; flex-direction:column; background:#111; }
+  #x-view[hidden] { display:none; }
+  #x-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:4px 8px; font-size:12px; background:#0b0d10; border-bottom:1px solid #2a2f36; flex-shrink:0; }
+  #x-toolbar button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
+  #x-toolbar button:hover:not(:disabled) { background:#2d343d; }
+  #x-toolbar button:disabled { opacity:0.4; cursor:not-allowed; }
+  #x-status { color:#7a8392; flex:1; }
+  #x-canvas-wrap { flex:1; overflow:auto; display:flex; align-items:center; justify-content:center; }
+  /* cursor is set by the server via rfb_set_cursor (ServerCutText marker);
+     "default" is just the starting shape, not a fixed one */
+  #x-canvas { display:block; image-rendering:pixelated; cursor:default; }
 
   /* ── lot-bridge panel ── */
   #lot-bridge-panel { position:absolute; right:0; top:36px; bottom:0; width:480px; max-width:60vw; display:flex; flex-direction:column; background:#0b0d10; border-left:1px solid #2a2f36; z-index:50; box-shadow:-4px 0 12px rgba(0,0,0,0.5); }
@@ -119,6 +151,27 @@
   #tunnels-log .tl-err { color:#f87171; }
   #tunnels-log .tl-info { color:#7a8392; }
 
+  /* ── storage panel ── */
+  #storage-panel { position:absolute; right:0; top:36px; bottom:0; width:460px; max-width:60vw; display:flex; flex-direction:column; background:#0b0d10; border-left:1px solid #2a2f36; z-index:50; box-shadow:-4px 0 12px rgba(0,0,0,0.5); }
+  #storage-panel[hidden] { display:none; }
+  #storage-hdr { display:flex; gap:8px; align-items:center; padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; }
+  #storage-hdr button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
+  #storage-hdr button:hover:not(:disabled) { background:#2d343d; }
+  #storage-hdr button:disabled { opacity:0.4; cursor:not-allowed; }
+  #storage-body { flex:1; min-height:0; overflow:auto; padding:12px 14px; display:flex; flex-direction:column; gap:10px; font-size:12px; }
+  #storage-summary { background:#161a1f; border:1px solid #2a2f36; border-radius:6px; padding:10px 12px; display:grid; grid-template-columns:120px 1fr; row-gap:5px; column-gap:8px; }
+  #storage-summary .k { color:#7a8392; text-transform:uppercase; letter-spacing:.05em; font-size:10px; }
+  #storage-summary .v { color:#d5d8dc; word-break:break-all; }
+  #storage-actions { display:flex; gap:6px; flex-wrap:wrap; }
+  #storage-actions button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:4px 10px; font:inherit; cursor:pointer; }
+  #storage-actions button:hover:not(:disabled) { background:#2d343d; }
+  #storage-actions #storage-reset { background:#450a0a; border-color:#7f1d1d; color:#fecaca; }
+  #storage-actions #storage-reset:hover:not(:disabled) { background:#7f1d1d; }
+  #storage-log { font-size:11px; line-height:1.45; max-height:260px; overflow:auto; background:#0b0d10; border:1px solid #2a2f36; border-radius:4px; padding:8px; font-family:'Menlo','Monaco','Consolas',monospace; }
+  #storage-log .ok { color:#4ade80; }
+  #storage-log .err { color:#f87171; }
+  #storage-log .info { color:#7a8392; }
+
   .hint { color:#6b7380; }
   .ok { color:#4ade80; }
   .err { color:#f87171; }
@@ -165,12 +218,65 @@
     <button id="boot">boot</button>
     <button id="reset" disabled>reset</button>
     <button id="break" disabled title="send Ctrl-C to the guest">break</button>
+    <button id="output-mode" title="toggle terminal/browser output mode">output: terminal</button>
     <span id="status" class="hint">not booted</span>
+    <span id="dl-progress" hidden><span id="dl-track"><span id="dl-fill"></span></span><span id="dl-label" class="hint"></span></span>
     <span class="stat" style="margin-left:auto"></span>
+    <button id="storage-btn">storage</button>
     <button id="tunnels" disabled>tunnels</button>
     <button id="lot-bridge-btn" disabled>lot-bridge</button>
+    <button id="x-display-btn" disabled>X display</button>
   </div>
   <div id="term"></div>
+  <div id="x-view" hidden>
+    <div id="x-toolbar">
+      <b>X display</b>
+      <span id="x-status">disconnected — boot guest, run: vnc-server</span>
+      <button id="x-connect">connect :5900</button>
+      <button id="x-disconnect" disabled>disconnect</button>
+    </div>
+    <div id="x-canvas-wrap">
+      <canvas id="x-canvas" width="640" height="480"></canvas>
+    </div>
+  </div>
+  <div id="cgi-view" hidden>
+    <div id="cgi-toolbar">
+      <b>browser output</b>
+      <span id="cgi-meta" class="cgi-meta">raw console output</span>
+      <input id="cgi-cmd" type="text" placeholder="run in guest shell (e.g. /usr/local/bin/my-cgi-script)" spellcheck="false" autocomplete="off">
+      <button id="cgi-run">run</button>
+      <button id="cgi-clear">clear</button>
+    </div>
+    <iframe id="cgi-frame" hidden sandbox="allow-same-origin allow-forms allow-scripts"></iframe>
+    <div id="cgi-text-wrap"><pre id="cgi-text"></pre></div>
+  </div>
+
+  <!-- ── storage panel ── -->
+  <div id="storage-panel" hidden>
+    <div id="storage-hdr">
+      <b>persistent fs</b>
+      <button id="storage-refresh">refresh</button>
+      <button id="storage-close" style="margin-left:auto">close</button>
+    </div>
+    <div id="storage-body">
+      <div class="hint" style="font-size:11px">Block-delta overlay stored in IndexedDB. Base image updates auto-isolate old overlays.</div>
+      <div id="storage-summary">
+        <div class="k">state</div><div class="v" id="storage-state">not booted</div>
+        <div class="k">base hash</div><div class="v" id="storage-base">-</div>
+        <div class="k">persisted blocks</div><div class="v" id="storage-blocks">-</div>
+        <div class="k">pending blocks</div><div class="v" id="storage-pending">-</div>
+        <div class="k">last write</div><div class="v" id="storage-updated">-</div>
+      </div>
+      <div id="storage-actions">
+        <button id="storage-save">save now</button>
+        <button id="storage-export">export snapshot</button>
+        <button id="storage-import">import snapshot</button>
+        <button id="storage-reset">clear all persisted fs</button>
+      </div>
+      <input id="storage-import-file" type="file" accept="application/json,.json" hidden>
+      <div id="storage-log"></div>
+    </div>
+  </div>
 
   <!-- ── lot-bridge panel ── -->
   <div id="lot-bridge-panel" hidden>
@@ -180,11 +286,13 @@
       <button id="lb-close" style="margin-left:auto">close</button>
     </div>
     <div id="lb-body">
-      <label><span>relay URL</span>
-        <input id="lb-relay" type="text" value="https://linuxontab-tunnel.fly.dev" spellcheck="false" autocomplete="off" />
-      </label>
+      <div style="font-size:11px;color:#7d8590;margin-bottom:8px;line-height:1.5">
+        WS pool + pairing: <b>tunnel.linuxontab.com</b> (Cloudflare)<br>
+        Public TCP ingress: <b>linuxontab-tunnel.fly.dev</b> (Fly)<br>
+        Start registers on CF and exposes a public port on Fly automatically.
+      </div>
       <label><span>ports (space-separated)</span>
-        <input id="lb-ports" type="text" value="22 8080" spellcheck="false" autocomplete="off" />
+        <input id="lb-ports" type="text" value="22" spellcheck="false" autocomplete="off" />
       </label>
       <div id="lb-actions">
         <button id="lb-start">start</button>
@@ -270,21 +378,96 @@ class WispSlirp {
   #wsReady = false;
   #wsQueue = [];
   #reconnectTimer = null;
+  #lastWispRx = 0;        // Date.now() of the last byte received over the WISP WS
+  #lastWispTx = 0;        // Date.now() of the last byte sent over the WISP WS
+  #watchdogTimer = null;  // periodic half-open-socket detector
+  #wsDown = false;        // guards against double reconnect
   #streamId = 1;
   #streams = new Map();   // id → { onData, onClose }
   #tcpConns = new Map();  // guestSrcPort → TcpConn
   #guestMac = null;
   #dnsCache = new Map();    // ipStr → hostname (from snooped DNS responses)
   #serverConns = new Map();  // 'guestPort:remotePort' → InboundConn (injected inbound TCP)
+  #injectedGuestPorts = new Set(); // guest server ports we've injected to (22, ...)
+  #serverNextPort = 30000;
 
   backend = {
     send: frame => this.#onGuestFrame(frame),
     receive: null,  // set by NetworkDevice constructor
   };
 
+  // Debug snapshot of live connection/sender state (used from the console to
+  // diagnose stalled transfers without poking private fields).
+  stats() {
+    const conns = [];
+    for (const [port, c] of this.#tcpConns) {
+      conns.push({
+        port, streamId: c.streamId,
+        sendQueue: c.sendQueue ? c.sendQueue.length : 0,
+        unacked: c.unacked ? c.unacked.length : 0,
+        sndUna: c.sndUna, mySeq: c.mySeq, sndWnd: c.sndWnd,
+        dupAcks: c.dupAcks, rto: !!c.rtoTimer,
+      });
+    }
+    return {
+      wsReady: this.#wsReady, wsDown: this.#wsDown,
+      lastRxAgo: Date.now() - this.#lastWispRx, lastTxAgo: Date.now() - this.#lastWispTx,
+      streams: this.#streams.size, tcpConns: conns, serverConns: this.#serverConns.size,
+    };
+  }
+
   constructor(url = 'wss://linuxontab-net.fly.dev/wisp') {
     this.#url = url;
     this.#connectWisp();
+    // Half-open-socket watchdog: the WISP WS can silently stop passing data
+    // without firing onclose/onerror (idle relay / proxy timeout), which left
+    // the guest cut off from the internet with no reconnect. Detect it and
+    // force a fresh connection. See #wispWatchdog. Disable with ?nowatchdog.
+    if (!new URLSearchParams(location.search).has('nowatchdog')) {
+      this.#watchdogTimer = setInterval(() => this.#wispWatchdog(), 5000);
+    }
+  }
+
+  // Fires every 5 s. A healthy WISP link that has traffic in flight keeps
+  // receiving *something* (peer data, or the relay's CONTINUE flow-control
+  // frames). If we've been actively SENDING but have received nothing for a
+  // while, with connections still open, the socket is half-dead — recycle it.
+  // A genuinely idle link never trips this (no recent TX), so idle-but-healthy
+  // connections are left alone.
+  #wispWatchdog() {
+    if (!this.#wsReady || this.#wsDown) return;
+    const now = Date.now();
+    const STALL_MS = 15000;
+    const haveTraffic = this.#streams.size > 0 || this.#tcpConns.size > 0;
+    if (haveTraffic &&
+        (now - this.#lastWispRx) > STALL_MS &&
+        (now - this.#lastWispTx) < STALL_MS) {
+      this.#handleWispDown('watchdog: sent within ' +
+        Math.round((now - this.#lastWispTx) / 1000) + 's but no RX for ' +
+        Math.round((now - this.#lastWispRx) / 1000) + 's');
+    }
+  }
+
+  // Single idempotent teardown+reconnect path, used by both the socket's own
+  // close/error events and the watchdog.
+  #handleWispDown(reason) {
+    if (this.#wsDown) return;
+    this.#wsDown = true;
+    this.#wsReady = false;
+    console.log('[WISP] down —', reason);
+    if (this.#ws) {
+      this.#ws.onclose = this.#ws.onerror = this.#ws.onmessage = null;
+      try { this.#ws.close(); } catch (_) {}
+    }
+    this.#streams.clear();
+    this.#tcpConns.clear();
+    if (!this.#reconnectTimer) {
+      this.#reconnectTimer = setTimeout(() => {
+        this.#reconnectTimer = null;
+        this.#wsDown = false;
+        this.#connectWisp();
+      }, 1000);
+    }
   }
 
   // ── WISP connection ────────────────────────────────────────────────────────
@@ -294,24 +477,20 @@ class WispSlirp {
     this.#ws.onopen = () => {
       console.log('[WISP] WebSocket open');
       this.#wsReady = true;
+      this.#wsDown = false;
+      this.#lastWispRx = Date.now();   // fresh — don't let the watchdog trip immediately
+      this.#lastWispTx = Date.now();
       for (const pkt of this.#wsQueue) this.#ws.send(pkt);
       this.#wsQueue = [];
     };
     this.#ws.onmessage = ev => this.#onWispMsg(new Uint8Array(ev.data));
-    this.#ws.onclose = this.#ws.onerror = (ev) => {
-      console.log('[WISP] WebSocket closed/error', ev?.code, ev?.reason);
-      this.#wsReady = false;
-      this.#streams.clear();
-      this.#tcpConns.clear();
-      if (!this.#reconnectTimer)
-        this.#reconnectTimer = setTimeout(() => {
-          this.#reconnectTimer = null; this.#connectWisp();
-        }, 2000);
-    };
+    this.#ws.onclose = this.#ws.onerror = (ev) =>
+      this.#handleWispDown('ws ' + (ev?.type || 'close') + ' code=' + (ev?.code ?? '?'));
   }
 
   #wispSend(buf) {
-    if (this.#wsReady) this.#ws.send(buf); else this.#wsQueue.push(buf);
+    if (this.#wsReady) { this.#lastWispTx = Date.now(); this.#ws.send(buf); }
+    else this.#wsQueue.push(buf);
   }
 
   #wispConnect(host, port) {
@@ -350,13 +529,14 @@ class WispSlirp {
   }
 
   #onWispMsg(buf) {
+    this.#lastWispRx = Date.now();   // any WISP frame (data or CONTINUE) = link alive
     if (buf.length < 5) return;
     const type = buf[0];
     const id = new DataView(buf.buffer, buf.byteOffset).getUint32(1, true);
     const payload = buf.slice(5);
     if (type === 0x02) {
       const s = this.#streams.get(id);
-      if (s?.onData) { console.log('[WISP] DATA sid='+id+' len='+payload.length); s.onData(payload); }
+      if (s?.onData) { if (window.__netdebug) console.log('[WISP] DATA sid='+id+' len='+payload.length); s.onData(payload); }
       else console.log('[WISP] DATA sid='+id+' — no handler!');
     } else if (type === 0x04) {
       const reason = payload.length > 0 ? payload[0] : -1;
@@ -434,8 +614,10 @@ class WispSlirp {
     const srcPort = dv.getUint16(0, false);
     const dstPort = dv.getUint16(2, false);
     const seq     = dv.getUint32(4, false);
+    const ackNum  = dv.getUint32(8, false);
     const dataOff = ((tcp[12] >> 4) & 0xf) * 4;
     const flags   = tcp[13];
+    const wnd     = dv.getUint16(14, false);
     const data    = tcp.slice(dataOff);
     const [SYN, ACK, FIN, RST, PSH] = [0x02, 0x10, 0x01, 0x04, 0x08];
 
@@ -444,10 +626,11 @@ class WispSlirp {
     if (flags & RST) {
       const conn = this.#tcpConns.get(srcPort);
       if (conn?.wispId) this.#wispClose(conn.wispId);
+      if (conn) this.#clearRtoOut(conn);
       this.#tcpConns.delete(srcPort);
       // Also check server-side injected connections
       const sconnR = this.#serverConns.get(srcPort + ':' + dstPort);
-      if (sconnR?.relayWs) sconnR.relayWs.close();
+      if (sconnR) { this.#clearRto(sconnR); if (sconnR.relayWs) sconnR.relayWs.close(); }
       this.#serverConns.delete(srcPort + ':' + dstPort);
       return;
     }
@@ -457,54 +640,99 @@ class WispSlirp {
     {
       const skey = srcPort + ':' + dstPort;
       const sc = this.#serverConns.get(skey);
-      if (sc || (srcPort === 22 || dstPort === 22)) console.log('[HTCP] ' + srcPort + ':' + dstPort + ' flags=0x' + flags.toString(16) + ' datalen=' + data.length + ' sc=' + !!sc);
+      // Orphaned injected connection: the client already tore down and we
+      // deleted the serverConn, but the guest is still sending (FIN, or data +
+      // FIN, or retransmits) from its server port. With no response it hangs in
+      // FIN_WAIT1 forever → sshd-session + 4-tuple leak that accumulates under
+      // repeated/concurrent connections. RST it so the guest closes cleanly.
+      // Guard on injectedGuestPorts + no outbound conn on this port so we never
+      // touch a guest-initiated outbound connection.
+      if (!sc && !(flags & SYN) && this.#injectedGuestPorts.has(srcPort) &&
+          !this.#tcpConns.has(srcPort)) {
+        const ackForGuest = (seq + data.length + ((flags & FIN) ? 1 : 0)) >>> 0;
+        this.#sendRstRaw(dstIp, dstPort, srcPort, ackNum, ackForGuest);
+        return;
+      }
+      // Per-packet log gated: unconditional logging at bulk rates stalls the
+      // main thread until the WISP watchdog kills a healthy link (?netdebug).
+      if (window.__netdebug && (sc || (srcPort === 22 || dstPort === 22))) console.log('[HTCP] ' + srcPort + ':' + dstPort + ' flags=0x' + flags.toString(16) + ' datalen=' + data.length + ' sc=' + !!sc);
       if (sc) {
         if ((flags & SYN) && (flags & ACK)) {
           // Complete 3-way handshake
           sc.guestSeq = (seq + 1) >>> 0;
           sc.mySeq    = (sc.mySeq + 1) >>> 0;  // our SYN counted as 1 byte
-          const ack = new Uint8Array(20);
-          const adv = new DataView(ack.buffer);
-          adv.setUint16(0, sc.srcPort, false);
-          adv.setUint16(2, sc.dstPort, false);
-          adv.setUint32(4, sc.mySeq,    false);
-          adv.setUint32(8, sc.guestSeq, false);
-          ack[12] = 0x50; ack[13] = 0x10;  // ACK
-          adv.setUint16(14, 65535, false);
-          this.#tcpChecksum(ack, new Uint8Array(sc.srcIp), new Uint8Array(sc.dstIp));
-          this.#sendIpv4(new Uint8Array(sc.srcIp), new Uint8Array(sc.dstIp), 6, ack);
+          if (sc.synTimer) { clearInterval(sc.synTimer); sc.synTimer = null; }
+          // Initialise the flow-control sender: our SYN is now ACKed, so
+          // sndUna == mySeq; adopt the guest's advertised receive window.
+          sc.sndUna  = sc.mySeq;
+          sc.sndWnd  = wnd || 65535;
+          this.#sendPureAck(sc);
           sc.handshakeDone = true;
-          console.log('[INJECT] handshake complete →', sc.dstIp[3] + ':' + sc.dstPort, 'pendingData=' + sc.pendingData.length + ' (held until guest sends first)');
-          // Do NOT drain pendingData here — hold until guest sends its banner first
+          if (window.__netdebug) console.log('[INJECT] handshake complete →', sc.dstIp[3] + ':' + sc.dstPort, 'flushing buffered=' + sc.pendingData.length);
+          // Drain any client bytes buffered before TCP handshake completion.
+          for (const d of sc.pendingData) this.#injectDataToGuest(sc, d);
+          sc.pendingData = [];
         } else if (flags & FIN) {
-          sc.guestSeq = (seq + 1) >>> 0;
-          if (sc.relayWs && sc.relayWs.readyState < 2) sc.relayWs.close();
-          this.#serverConns.delete(skey);
-        } else if ((flags & ACK) && data.length > 0) {
-          // Guest sending SSH/data → relay WebSocket → Mac client
-          sc.guestSeq = (seq + data.length) >>> 0;
-          console.log('[INJECT] data len=' + data.length + ' rs=' + sc.relayWs?.readyState);
-          if (sc.relayWs && sc.relayWs.readyState === WebSocket.OPEN) {
-            sc.relayWs.send(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-            // First data from guest (e.g. SSH banner) — now safe to flush buffered client data
-            if (!sc.guestSentFirst) {
-              sc.guestSentFirst = true;
-              console.log('[INJECT] guest sent first — flushing ' + sc.pendingData.length + ' buffered client chunks');
-              for (const d of sc.pendingData) this.#injectDataToGuest(sc, d);
-              sc.pendingData = [];
+          // A FIN segment can ALSO carry the final data payload (FIN+PSH+ACK,
+          // flags 0x19) — a server that closes right after its response (e.g.
+          // Connection: close) coalesces the last bytes with the FIN. Forward
+          // that data BEFORE closing, else the tail of every download that
+          // ends this way is silently dropped (broke the 721 KB JS bundle:
+          // browser received one MSS short of the full file → module won't
+          // parse). Mirror the ACK-branch's in-order-forward logic, then let
+          // the FIN consume its own sequence slot.
+          this.#processGuestAck(sc, ackNum, wnd);
+          if (data.length > 0) {
+            const seqDiff = (seq - sc.guestSeq) | 0;
+            let fresh = null;
+            if (seqDiff === 0) {
+              fresh = data;
+            } else if (seqDiff < 0 && seqDiff + data.length > 0) {
+              fresh = data.slice(-seqDiff);
+            }
+            if (fresh && fresh.length > 0) {
+              sc.guestSeq = (sc.guestSeq + fresh.length) >>> 0;
+              if (sc.relayWs && sc.relayWs.readyState === WebSocket.OPEN) {
+                sc.relayWs.send(fresh.buffer.slice(fresh.byteOffset, fresh.byteOffset + fresh.byteLength));
+              }
             }
           }
-          // ACK back to guest
-          const ack = new Uint8Array(20);
-          const adv = new DataView(ack.buffer);
-          adv.setUint16(0, sc.srcPort, false);
-          adv.setUint16(2, sc.dstPort, false);
-          adv.setUint32(4, sc.mySeq,    false);
-          adv.setUint32(8, sc.guestSeq, false);
-          ack[12] = 0x50; ack[13] = 0x10;
-          adv.setUint16(14, 65535, false);
-          this.#tcpChecksum(ack, new Uint8Array(sc.srcIp), new Uint8Array(sc.dstIp));
-          this.#sendIpv4(new Uint8Array(sc.srcIp), new Uint8Array(sc.dstIp), 6, ack);
+          sc.guestSeq = (sc.guestSeq + 1) >>> 0;  // FIN occupies one sequence number
+          this.#sendPureAck(sc);          // ack data+FIN so the guest can close cleanly
+          this.#clearRto(sc);
+          if (sc.relayWs && sc.relayWs.readyState < 2) sc.relayWs.close();
+          this.#serverConns.delete(skey);
+        } else if (flags & ACK) {
+          // Every ACK-bearing segment advances our send window / clears
+          // retransmit state, even pure ACKs (data.length === 0) for our
+          // uploaded bytes — which the old code ignored entirely.
+          this.#processGuestAck(sc, ackNum, wnd);
+          if (data.length > 0) {
+            // Guest → relay → Mac. Forward only NEW in-order bytes; a full
+            // duplicate or a gap must NOT be forwarded or it corrupts the
+            // client's SSH stream. CRITICAL: a retransmit may PARTIALLY
+            // overlap (seq < guestSeq but seq+len > guestSeq) — e.g. when our
+            // ACK was lost and the guest resends from an older snd_una with
+            // coalesced data. Trim the already-seen prefix and forward the
+            // fresh tail; dropping the whole segment (as before) made the
+            // guest resend the same segment forever → downloads deadlocked.
+            const seqDiff = (seq - sc.guestSeq) | 0;
+            let fresh = null;
+            if (seqDiff === 0) {
+              fresh = data;
+            } else if (seqDiff < 0 && seqDiff + data.length > 0) {
+              fresh = data.slice(-seqDiff);   // skip already-delivered prefix
+            }
+            if (fresh && fresh.length > 0) {
+              sc.guestSeq = (sc.guestSeq + fresh.length) >>> 0;
+              if (sc.relayWs && sc.relayWs.readyState === WebSocket.OPEN) {
+                sc.relayWs.send(fresh.buffer.slice(fresh.byteOffset, fresh.byteOffset + fresh.byteLength));
+              }
+            }
+            // Always (re-)ACK our current rcv position; a dup-ACK on a gap
+            // prompts the guest to retransmit the missing segment.
+            this.#sendPureAck(sc);
+          }
         }
         return;
       }
@@ -540,7 +768,11 @@ class WispSlirp {
       const s = this.#streams.get(wispId);
       if (s) {
         s.onData  = chunk => this.#tcpToGuest(conn, chunk);
-        s.onClose = () => { this.#tcpSendFin(conn); this.#tcpConns.delete(srcPort); };
+        // The relay CLOSEs the WISP stream the moment ITS side finished pumping
+        // — the windowed sender may still hold megabytes for the guest. FINing
+        // here discarded that backlog (guest saw a seq gap it could never fill
+        // and the transfer truncated/hung). Defer the FIN until fully drained.
+        s.onClose = () => { conn.peerClosed = true; this.#finishIfDrainedOut(conn); };
       }
       this.#tcpSynAck(conn, seq);
       return;
@@ -553,31 +785,53 @@ class WispSlirp {
       if (conn.wispId) this.#wispClose(conn.wispId);
       conn.guestSeq = (seq + 1) >>> 0;
       this.#tcpSendFin(conn);
+      this.#clearRtoOut(conn);
       this.#tcpConns.delete(srcPort);
       return;
     }
 
-    if ((flags & ACK) && data.length > 0) {
-      // Only forward new data (skip retransmits where seq < expected guestSeq)
-      const seqDiff = (seq - conn.guestSeq) | 0;  // signed 32-bit
-      if (seqDiff >= 0) {
-        conn.guestSeq = (seq + data.length) >>> 0;
-        if (conn.wispId) {
-          this.#wispData(conn.wispId, data);
-        } else if (conn.httpBuf !== undefined) {
-          // Local HTTP proxy: accumulate request bytes
-          const combined = new Uint8Array(conn.httpBuf.length + data.length);
-          combined.set(conn.httpBuf); combined.set(data, conn.httpBuf.length);
-          conn.httpBuf = combined;
-          const reqStr = new TextDecoder().decode(conn.httpBuf);
-          if (reqStr.includes('\r\n\r\n') && !conn.httpHandled) {
-            conn.httpHandled = true;
-            this.#handleLocalHttp(conn, reqStr).catch(console.error);
+    if (flags & ACK) {
+      // Reliable peer→guest delivery: the guest's ACKs (including pure ACKs,
+      // which the old data.length>0 guard dropped) slide our send window and
+      // drive retransmission of anything the guest's RX ring lost.
+      this.#processGuestAckOut(conn, ackNum, wnd);
+
+      if (data.length > 0) {
+        // Guest → peer data. Only forward new bytes (skip retransmits where
+        // seq < expected guestSeq).
+        const seqDiff = (seq - conn.guestSeq) | 0;  // signed 32-bit
+        if (seqDiff >= 0) {
+          conn.guestSeq = (seq + data.length) >>> 0;
+          if (conn.wispId) {
+            this.#wispData(conn.wispId, data);
+          } else if (conn.httpBuf !== undefined) {
+            // Local HTTP proxy: accumulate request bytes
+            const combined = new Uint8Array(conn.httpBuf.length + data.length);
+            combined.set(conn.httpBuf); combined.set(data, conn.httpBuf.length);
+            conn.httpBuf = combined;
+            const reqStr = new TextDecoder().decode(conn.httpBuf);
+            // Wait for the FULL body before dispatching. GET/HEAD have none, but
+            // POST (used by the /_v8/ evaluator to ship a script) arrives across
+            // several segments — handling at the first \r\n\r\n truncated it.
+            if (reqStr.includes('\r\n\r\n') && !conn.httpHandled) {
+              let headEnd = -1;
+              for (let i = 0; i + 3 < conn.httpBuf.length; i++) {
+                if (conn.httpBuf[i] === 13 && conn.httpBuf[i+1] === 10 &&
+                    conn.httpBuf[i+2] === 13 && conn.httpBuf[i+3] === 10) { headEnd = i + 4; break; }
+              }
+              const clm = /content-length:\s*(\d+)/i.exec(reqStr.slice(0, reqStr.indexOf('\r\n\r\n')));
+              const need = clm ? parseInt(clm[1], 10) : 0;
+              const have = headEnd >= 0 ? conn.httpBuf.length - headEnd : 0;
+              if (headEnd >= 0 && have >= need) {
+                conn.httpHandled = true;
+                this.#handleLocalHttp(conn, reqStr).catch(console.error);
+              }
+            }
           }
         }
+        // ACK the guest's data so it doesn't retransmit.
+        this.#tcpAck(conn);
       }
-      // Always ACK so guest doesn't retransmit
-      this.#tcpAck(conn);
     }
   }
 
@@ -596,6 +850,7 @@ class WispSlirp {
   //   export https_proxy=http://192.168.86.1/    # wget tunnels via CONNECT
   // …or just use http://example.com/ — the host browser does the real TLS
   // via fetch(), so HTTPS-grade transport security is preserved end-to-end.
+  // (see evalInPageV8 below the class — the /_v8/eval backend)
   async #handleLocalHttp(conn, reqStr) {
     const lines = reqStr.split('\r\n');
     const firstLine = lines[0] || '';
@@ -612,6 +867,56 @@ class WispSlirp {
         break;
       }
     }
+    // ── /_v8/eval: run guest JavaScript in the PAGE's real JS engine ────────
+    // The guest can't host V8 (no JIT, no mmap on wasm32), but the page IS a
+    // V8. `node-v8` in the guest bundles a script + its require()d modules and
+    // POSTs the blob here; we evaluate it in a dedicated Worker (isolation, and
+    // a long-running script can't freeze the page/kernel) and return whatever
+    // it printed. Real modern JS semantics at native speed, no engine port.
+    // Match origin-form (/_v8/eval) AND absolute-form
+    // (http://192.168.86.1/_v8/eval, which is what a client sends when
+    // http_proxy is set) — otherwise the request falls through to the generic
+    // proxy path and the caller hangs waiting for a response that never comes.
+    let __v8path = target || '';
+    try { if (/^https?:\/\//i.test(__v8path)) __v8path = new URL(__v8path).pathname; } catch (_) {}
+    if (__v8path === '/_v8/eval') {
+      const sep = reqStr.indexOf('\r\n\r\n');
+      const raw = sep >= 0 ? reqStr.slice(sep + 4) : '';
+      let job = null;
+      try { job = JSON.parse(raw); } catch (_) { job = { code: raw }; }
+      // Reply "started" at once and hand the output back later over the guest's
+      // fs-agent socket. Answering immediately keeps the guest client single-
+      // threaded: it just serves agent calls until the final {op:"done"}.
+      const body = new TextEncoder().encode('started\n');
+      (async () => {
+        let out;
+        try {
+          out = await evalInPageV8(job.code || '', {
+            agentPort: job.agentPort || 0,
+            cwd: job.cwd || '/',
+            argv: job.argv || [],
+            timeoutMs: 120000,
+          });
+        } catch (e) {
+          out = 'node-v8: ' + (e?.message || e) + '\n';
+        }
+        if (job.agentPort) {
+          try { await guestAgentCall(job.agentPort, { op: 'done', args: { out } }); }
+          catch (e) { console.error('[node-v8] output delivery failed', e); }
+        }
+      })();
+      const hdr = new TextEncoder().encode(
+        'HTTP/1.0 200 OK\r\nContent-Length: ' + body.length +
+        '\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n');
+      const respBytes = new Uint8Array(hdr.length + body.length);
+      respBytes.set(hdr); respBytes.set(body, hdr.length);
+      await this.#tcpToGuest(conn, respBytes);
+      await new Promise(r => setTimeout(r, 50));
+      this.#tcpSendFin(conn);
+      this.#tcpConns.delete(conn.srcPort);
+      return;
+    }
+
     // Resolve target → absolute URL
     const GW = '192.168.86.1';
     let url;
@@ -647,12 +952,22 @@ class WispSlirp {
         : 'https://linuxontab.com';
       url = base + target;
     }
-    console.log('[HTTP-GW]', method, url);
+    let fetchUrl = url;
+    try {
+      const u = new URL(url);
+      const sameOriginHost = (u.hostname === window.location.hostname);
+      // Cross-origin direct fetches fail CORS in the browser; relay proxy fixes this.
+      if (!sameOriginHost && (u.protocol === 'http:' || u.protocol === 'https:')) {
+        fetchUrl = 'https://relay.linuxontab.com/cors?url=' + encodeURIComponent(url);
+      }
+    } catch (_) {}
+
+    console.log('[HTTP-GW]', method, url, 'via', fetchUrl);
     let respBytes;
     try {
       // Pass through method; for now only GET/HEAD have no body — sufficient
       // for wget/curl downloads. POST bodies could be added later.
-      const resp = await fetch(url, { method: method || 'GET', redirect: 'follow' });
+      const resp = await fetch(fetchUrl, { method: method || 'GET', redirect: 'follow' });
       const body = new Uint8Array(await resp.arrayBuffer());
       const status = resp.status + ' ' + (resp.statusText || 'OK');
       const ctype  = resp.headers.get('content-type') || 'application/octet-stream';
@@ -723,32 +1038,170 @@ class WispSlirp {
     this.#sendIpv4(new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp), 6, t);
   }
 
-  async #tcpToGuest(conn, data) {
-    console.log('[TCP] toGuest len='+data.length+' mySeq='+conn.mySeq+' guestSeq='+conn.guestSeq+' hasReceive='+(!!this.backend.receive));
-    const MSS = 1400;
-    // Yield to the browser event loop every N chunks so a large response
-    // (e.g. 1.7 MB sqlite3 tarball) doesn't block rendering / keep the guest
-    // kernel from draining the RX ring.
-    const YIELD_EVERY = 8;            // ~11 KB between yields
-    let i = 0;
-    for (let off = 0; off < data.length; off += MSS) {
-      const chunk = data.slice(off, Math.min(off + MSS, data.length));
-      const t = new Uint8Array(20 + chunk.length);
-      const dv = new DataView(t.buffer);
-      dv.setUint16(0, conn.dstPort, false);
-      dv.setUint16(2, conn.srcPort, false);
-      dv.setUint32(4, conn.mySeq, false);
-      dv.setUint32(8, conn.guestSeq, false);
-      t[12] = 0x50; t[13] = 0x18;  // PSH+ACK
-      dv.setUint16(14, 65535, false);
-      t.set(chunk, 20);
-      conn.mySeq = (conn.mySeq + chunk.length) >>> 0;
-      this.#tcpChecksum(t, new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp));
-      this.#sendIpv4(new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp), 6, t);
-      if (++i % YIELD_EVERY === 0) {
-        await new Promise(r => setTimeout(r, 0));
+  // Deliver server/peer data to the guest (peer → guest, outbound connections).
+  //
+  // Previously this blasted every MSS segment with an ever-advancing seq, no
+  // window, and no retransmission — and #handleTcp ignored the guest's pure
+  // ACKs (data.length>0 guard). A bulk download (BitTorrent piece, large HTTP
+  // body) then overran the guest's virtio RX ring; the first dropped segment
+  // left a gap the guest dup-ACKed forever while we kept sending past it, so
+  // the connection stalled with 80–150 KB sent-but-never-acked (measured).
+  // This is the SAME failure the injected/tunnel direction already fixed with
+  // a windowed sender + RTO — now mirrored here (…Out variants; framing is
+  // reversed: TCP src = peer = conn.dstPort/dstIp, dst = guest).
+  //
+  // Returns a promise that resolves once everything queued has been ACKed, so
+  // callers that FIN after delivery (the gateway HTTP proxy) still wait for a
+  // complete transfer.
+  #tcpToGuest(conn, data) {
+    if (conn.sendQueue === undefined) {
+      conn.sendQueue = new Uint8Array(0);
+      conn.unacked   = [];
+      conn.rtoTimer  = null;
+      conn.dupAcks   = 0;
+      conn.sndUna    = conn.mySeq;   // no data sent yet
+      conn.sndWnd    = conn.sndWnd || 65535;
+      conn.drainResolve = null;      // single shared drain promise (gateway awaits it)
+    }
+    if (data && data.length) {
+      if (conn.sendQueue.length) {
+        const merged = new Uint8Array(conn.sendQueue.length + data.length);
+        merged.set(conn.sendQueue); merged.set(data, conn.sendQueue.length);
+        conn.sendQueue = merged;
+      } else {
+        conn.sendQueue = data.slice();
       }
     }
+    // Event-driven hole repair (see #injectDataToGuest): new WISP data may be
+    // the only event firing while hidden-tab timers are throttled.
+    if (conn.unacked.length && conn.unacked[0].t &&
+        Date.now() - conn.unacked[0].t > 400)
+      this.#retransmitAllUnackedOut(conn, 'stale');
+    this.#pumpSendOut(conn);
+    // Resolve when everything queued is ACKed. One shared promise per conn so a
+    // continuous download (thousands of onData calls) can't accumulate waiters.
+    if (conn.sendQueue.length === 0 && conn.unacked.length === 0) return Promise.resolve();
+    if (!conn.drainPromise) conn.drainPromise = new Promise(r => { conn.drainResolve = r; });
+    return conn.drainPromise;
+  }
+
+  #pumpSendOut(conn) {
+    const MSS = 1400;
+    // Small burst window. At 48 KB the initial 36-segment blast was lost almost
+    // entirely inside the guest (every segment landed only via its RTO
+    // retransmit → ~1 KB/s stop-and-wait). Short trains survive, so keep few
+    // segments in flight and let ACK-clocking pace the stream.
+    // Overridable for live tuning: window.__cwndOut (bytes).
+    const CWND = (window.__cwndOut | 0) || 4 * MSS;
+    for (;;) {
+      if (conn.sendQueue.length === 0) break;
+      const inflight  = (conn.mySeq - conn.sndUna) >>> 0;
+      const usableWnd = Math.min(conn.sndWnd || MSS, CWND);
+      if (inflight >= usableWnd) break;          // window full — wait for ACKs
+      const room = usableWnd - inflight;
+      const n = Math.min(MSS, conn.sendQueue.length, room);
+      if (n <= 0) break;
+      const chunk = conn.sendQueue.slice(0, n);
+      conn.sendQueue = conn.sendQueue.slice(n);
+      const segSeq = conn.mySeq;
+      this.#sendDataSegOut(conn, segSeq, chunk);
+      conn.mySeq = (conn.mySeq + n) >>> 0;
+      conn.unacked.push({ seq: segSeq, data: chunk, t: Date.now() });
+    }
+    this.#armRtoOut(conn);
+    this.#checkDrainOut(conn);
+  }
+
+  // Emit one PSH+ACK data segment to the guest (also used for retransmits).
+  // Framing is peer → guest: TCP src = peer (dstPort/dstIp), dst = guest.
+  #sendDataSegOut(conn, segSeq, chunk) {
+    const t  = new Uint8Array(20 + chunk.length);
+    const dv = new DataView(t.buffer);
+    dv.setUint16(0, conn.dstPort, false);
+    dv.setUint16(2, conn.srcPort, false);
+    dv.setUint32(4, segSeq,        false);
+    dv.setUint32(8, conn.guestSeq, false);
+    t[12] = 0x50; t[13] = 0x18;  // PSH+ACK
+    dv.setUint16(14, 65535, false);
+    t.set(chunk, 20);
+    this.#tcpChecksum(t, new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp));
+    this.#sendIpv4(new Uint8Array(conn.dstIp), new Uint8Array(conn.srcIp), 6, t);
+  }
+
+  // Process a guest ACK for peer→guest data: slide sndUna, drop acked segments,
+  // fast-retransmit on 3 dup-ACKs, adopt the window, push more.
+  #processGuestAckOut(conn, ackNum, wnd) {
+    if (conn.sendQueue === undefined) return;   // nothing ever sent this way
+    conn.sndWnd = wnd || conn.sndWnd;
+    const advanced = (ackNum - conn.sndUna) | 0;  // signed
+    if (advanced > 0) {
+      conn.sndUna = ackNum >>> 0;
+      conn.unacked = conn.unacked.filter(
+        seg => (((seg.seq + seg.data.length) - ackNum) | 0) > 0
+      );
+      conn.dupAcks = 0;
+      this.#clearRtoOut(conn);       // progress — restart the timer fresh
+    } else if (advanced === 0 && conn.unacked.length) {
+      conn.dupAcks = (conn.dupAcks || 0) + 1;
+      if (conn.dupAcks >= 3) {       // fast retransmit, go-back-N (see inbound)
+        conn.dupAcks = 0;
+        this.#retransmitAllUnackedOut(conn, 'dupack');
+      }
+    }
+    this.#pumpSendOut(conn);
+  }
+
+  #armRtoOut(conn) {
+    if (conn.rtoTimer || conn.unacked.length === 0) return;
+    conn.rtoTimer = setTimeout(() => {
+      conn.rtoTimer = null;
+      if (conn.unacked.length === 0) return;
+      // Go-back-N: one (possibly throttled) fire repairs the whole hole.
+      // Single-segment-per-RTO recovery is what turned guest burst loss
+      // into the ~1 KB/s stop-and-wait / bulk-download stalls.
+      this.#retransmitAllUnackedOut(conn, 'rto');
+      this.#armRtoOut(conn);
+    }, 250);
+  }
+
+  // Outbound-direction twin of #retransmitAllUnacked.
+  #retransmitAllUnackedOut(conn, why) {
+    if (conn.unacked.length === 0) return;
+    const now = Date.now();
+    if (conn._lastGbnT && now - conn._lastGbnT < 150) return;
+    conn._lastGbnT = now;
+    for (const seg of conn.unacked)
+      this.#sendDataSegOut(conn, seg.seq, seg.data);
+    if (window.__slirpdbg)
+      console.log('[OUT-GBN] ' + why + ' resent=' + conn.unacked.length +
+        ' from=' + conn.unacked[0].seq);
+  }
+
+  #clearRtoOut(conn) {
+    if (conn && conn.rtoTimer) { clearTimeout(conn.rtoTimer); conn.rtoTimer = null; }
+  }
+
+  #checkDrainOut(conn) {
+    if (conn.drainResolve &&
+        conn.sendQueue.length === 0 && conn.unacked.length === 0) {
+      const r = conn.drainResolve;
+      conn.drainResolve = null;
+      conn.drainPromise = null;
+      r();
+    }
+    this.#finishIfDrainedOut(conn);
+  }
+
+  // Graceful close for outbound conns whose WISP stream already closed: only
+  // FIN the guest once every queued byte has been sent AND acked.
+  #finishIfDrainedOut(conn) {
+    if (!conn.peerClosed || conn.finSent) return;
+    if ((conn.sendQueue && conn.sendQueue.length) ||
+        (conn.unacked && conn.unacked.length)) return;
+    conn.finSent = true;
+    this.#tcpSendFin(conn);
+    this.#clearRtoOut(conn);
+    this.#tcpConns.delete(conn.srcPort);
   }
 
   // ── UDP / DNS ─────────────────────────────────────────────────────────────
@@ -831,7 +1284,7 @@ class WispSlirp {
     frame.set(dstMac, 0); frame.set(srcMac, 6);
     frame[12] = ethertype >> 8; frame[13] = ethertype & 0xff;
     frame.set(payload, 14);
-    console.log('[ETH] inject et=0x'+ethertype.toString(16)+' len='+frame.length+' hasReceive='+(!!this.backend.receive));
+    if (window.__netdebug) console.log('[ETH] inject et=0x'+ethertype.toString(16)+' len='+frame.length+' hasReceive='+(!!this.backend.receive));
     if (this.backend.receive) this.backend.receive(frame);
     else console.log('[ETH] DROPPED — backend.receive not set!');
   }
@@ -879,7 +1332,16 @@ class WispSlirp {
   //   guest:guestPort → #handleTcp (server branch) → relayWs.send → Mac
   injectConnect(guestPort, relayWs) {
     const remoteIp   = new Uint8Array([10, 0, 2, 100]);  // fake external client
-    const remotePort = 20000 + (Math.random() * 10000 | 0);
+    // Use monotonic ports to avoid 4-tuple reuse collisions with guest TIME_WAIT.
+    let remotePort = this.#serverNextPort;
+    for (let i = 0; i < 1000; i++) {
+      const keyTry = guestPort + ':' + remotePort;
+      if (!this.#serverConns.has(keyTry)) break;
+      remotePort += 1;
+      if (remotePort > 60000) remotePort = 30000;
+    }
+    this.#serverNextPort = remotePort + 1;
+    if (this.#serverNextPort > 60000) this.#serverNextPort = 30000;
     const myIsn = (Math.random() * 0x80000000 | 0) >>> 0;
     const key = guestPort + ':' + remotePort;
     const conn = {
@@ -890,60 +1352,271 @@ class WispSlirp {
       dstIp:  [...WispSlirp.GUEST_IP],
       dstPort: guestPort,
       handshakeDone: false,
-      guestSentFirst: false,  // true after guest sends first data (e.g. SSH banner)
       pendingData: [],
+      synRetries: 0,
+      synTimer: null,
+      // Flow-control sender state (Mac → guest direction):
+      sndUna:    myIsn,             // oldest unacknowledged seq
+      sndWnd:    65535,             // guest's advertised receive window
+      sendQueue: new Uint8Array(0), // bytes accepted from relay, not yet sent
+      unacked:   [],                // [{seq, data}] segments awaiting guest ACK
+      rtoTimer:  null,              // retransmit timer handle
     };
     this.#serverConns.set(key, conn);
-    // Send SYN from remoteIp:remotePort → guest:guestPort
-    const syn = new Uint8Array(20);
-    const dv  = new DataView(syn.buffer);
-    dv.setUint16(0, remotePort, false);
-    dv.setUint16(2, guestPort,  false);
-    dv.setUint32(4, myIsn, false);
-    syn[12] = 0x50; syn[13] = 0x02;  // data-offset=5, SYN
-    new DataView(syn.buffer).setUint16(14, 65535, false);
-    this.#tcpChecksum(syn, remoteIp, new Uint8Array(WispSlirp.GUEST_IP));
-    this.#sendIpv4(remoteIp, new Uint8Array(WispSlirp.GUEST_IP), 6, syn);
-    console.log('[INJECT] SYN →', guestPort, 'key', key);
+    this.#injectedGuestPorts.add(guestPort);
+    const sendSyn = () => {
+      // SYN with an MSS option. Without it the guest falls back to the RFC-879
+      // default MSS of 536 bytes for everything it SENDS us (downloads), which
+      // ~tripled the segment count and crushed download throughput. Advertise
+      // 1400 so the guest sends full-size segments. Options add 4 bytes, so the
+      // data offset becomes 6 (24-byte header).
+      const syn = new Uint8Array(24);
+      const dv  = new DataView(syn.buffer);
+      dv.setUint16(0, remotePort, false);
+      dv.setUint16(2, guestPort,  false);
+      dv.setUint32(4, myIsn, false);
+      syn[12] = 0x60; syn[13] = 0x02;  // data-offset=6 (24 bytes), SYN
+      dv.setUint16(14, 65535, false);  // our advertised receive window
+      // MSS option: kind=2, len=4, value=1400
+      syn[20] = 0x02; syn[21] = 0x04; dv.setUint16(22, 1400, false);
+      this.#tcpChecksum(syn, remoteIp, new Uint8Array(WispSlirp.GUEST_IP));
+      this.#sendIpv4(remoteIp, new Uint8Array(WispSlirp.GUEST_IP), 6, syn);
+      conn.synRetries += 1;
+      if (window.__netdebug) console.log('[INJECT] SYN[' + conn.synRetries + '] →', guestPort, 'key', key);
+    };
+    sendSyn();
+    // Retry SYN in case the initial inject races boot/tunnel readiness.
+    conn.synTimer = setInterval(() => {
+      if (!this.#serverConns.has(key) || conn.handshakeDone) {
+        clearInterval(conn.synTimer);
+        conn.synTimer = null;
+        return;
+      }
+      if (conn.synRetries >= 6) {
+        clearInterval(conn.synTimer);
+        conn.synTimer = null;
+        console.log('[INJECT] SYN timeout key', key);
+        try { relayWs.close(); } catch (_) {}
+        this.#serverConns.delete(key);
+        return;
+      }
+      sendSyn();
+    }, 500);
     relayWs.binaryType = 'arraybuffer';
     relayWs.onmessage = (e) => {
+      let ctrl = '';
+      if (typeof e.data === 'string') {
+        ctrl = e.data.trim();
+      } else if (e.data instanceof ArrayBuffer && e.data.byteLength <= 32) {
+        try { ctrl = new TextDecoder().decode(new Uint8Array(e.data)).trim(); } catch (_) {}
+      } else if (ArrayBuffer.isView(e.data) && e.data.byteLength <= 32) {
+        try {
+          ctrl = new TextDecoder().decode(
+            new Uint8Array(e.data.buffer, e.data.byteOffset || 0, e.data.byteLength || 0)
+          ).trim();
+        } catch (_) {}
+      }
+      if (ctrl === '__ping__' || ctrl === '__connected__') return;
       const data = new Uint8Array(e.data instanceof ArrayBuffer ? e.data : e.data);
-      const hex = Array.from(data.slice(0, 32)).map(b => b.toString(16).padStart(2,'0')).join(' ');
-      const txt = typeof e.data === 'string' ? e.data.slice(0, 40) : '';
-      console.log('[RELAYWS] done=' + conn.handshakeDone + ' gsf=' + conn.guestSentFirst + ' len=' + data.length + (txt ? ' str="' + txt + '"' : ' hex=' + hex));
-      if (conn.handshakeDone && conn.guestSentFirst) {
-        // Guest sent first — safe to inject client data directly
+      if (window.__netdebug) {
+        const hex = Array.from(data.slice(0, 32)).map(b => b.toString(16).padStart(2,'0')).join(' ');
+        const txt = typeof e.data === 'string' ? e.data.slice(0, 40) : '';
+        console.log('[RELAYWS] done=' + conn.handshakeDone + ' len=' + data.length + (txt ? ' str="' + txt + '"' : ' hex=' + hex));
+      }
+      if (conn.handshakeDone) {
         this.#injectDataToGuest(conn, data);
       } else {
-        // Buffer until guest sends its banner first (avoids OpenSSH sending-first race)
+        // Buffer until TCP handshake completes.
         conn.pendingData.push(data);
       }
     };
     relayWs.onclose = () => {
       if (this.#serverConns.has(key)) {
-        this.#injectFinToGuest(conn);
+        if (conn.synTimer) { clearInterval(conn.synTimer); conn.synTimer = null; }
+        this.#injectRstToGuest(conn);
         this.#serverConns.delete(key);
       }
     };
   }
 
+  // Accept client bytes for the guest and drive the windowed sender. The old
+  // implementation blasted every 1400-byte segment out at once, ignoring the
+  // guest's receive window and never retransmitting — so a bulk transfer
+  // overran the guest's virtio RX ring, lost segments, and stalled forever.
   #injectDataToGuest(conn, data) {
-    const MSS = 1400;
-    for (let off = 0; off < data.length; off += MSS) {
-      const chunk = data.slice(off, Math.min(off + MSS, data.length));
-      const t  = new Uint8Array(20 + chunk.length);
-      const dv = new DataView(t.buffer);
-      dv.setUint16(0, conn.srcPort, false);
-      dv.setUint16(2, conn.dstPort, false);
-      dv.setUint32(4, conn.mySeq,    false);
-      dv.setUint32(8, conn.guestSeq, false);
-      t[12] = 0x50; t[13] = 0x18;  // PSH+ACK
-      new DataView(t.buffer).setUint16(14, 65535, false);
-      t.set(chunk, 20);
-      conn.mySeq = (conn.mySeq + chunk.length) >>> 0;
-      this.#tcpChecksum(t, new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp));
-      this.#sendIpv4(new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp), 6, t);
+    if (!data || data.length === 0) return;
+    if (conn.sendQueue.length) {
+      const merged = new Uint8Array(conn.sendQueue.length + data.length);
+      merged.set(conn.sendQueue);
+      merged.set(data, conn.sendQueue.length);
+      conn.sendQueue = merged;
+    } else {
+      conn.sendQueue = data.slice();
     }
+    // Event-driven hole repair: a fresh client message is often the ONLY
+    // event that fires while a hidden tab's timers are throttled. If the
+    // oldest unacked segment has been sitting longer than several RTTs, the
+    // guest is missing it — repair before (not instead of) pumping new data.
+    // 150 ms: the whole path is in-page — several times the worst healthy
+    // guest-poll roundtrip. (This threshold is the keepalive-repair chain's
+    // trigger: the guest server pushes an update after 300 ms of request
+    // silence, the client's answering request lands here, and a stale hole
+    // is repaired immediately — no browser timer involved.)
+    if (conn.unacked.length && conn.unacked[0].t &&
+        Date.now() - conn.unacked[0].t > 150)
+      this.#retransmitAllUnacked(conn, 'stale');
+    this.#pumpSend(conn);
+    // End-to-end backpressure: the guest drains this queue at the slirp rate
+    // (window-limited), but the relay feeds it as fast as the client uploads.
+    // The relay can't see this queue (it's browser-side; its wsBuffered stays
+    // ~0), so if we don't tell it to slow down the queue grows unbounded and
+    // the connection eventually breaks (the "large upload wedges" symptom).
+    // Pause the client above HIGH_WATER; #pumpSend resumes below LOW_WATER.
+    if (conn.sendQueue.length > 64 * 1024 && !conn._bpSent) {
+      conn._bpSent = true;
+      try { conn.relayWs.send('__pause__'); } catch (_) {}
+    }
+  }
+
+  // Send as much queued data as the window allows, in MSS-sized segments,
+  // keeping each segment for retransmission until the guest ACKs it.
+  #pumpSend(conn) {
+    const MSS = 1400;
+    // Cap in-flight bytes to the guest's advertised window AND a congestion
+    // window, so a burst can't overrun the guest's RX ring. Measured at 32 KB
+    // there was zero loss (rtoRexmit=0) while the guest advertised ~63 KB, so
+    // the cap — not loss or the guest — was throttling uploads. 48 KB uses more
+    // of the window without pushing the RX ring as hard as the full 63 KB.
+    const CWND = 48 * 1024;
+    for (;;) {
+      if (conn.sendQueue.length === 0) break;
+      const inflight = (conn.mySeq - conn.sndUna) >>> 0;
+      const usableWnd = Math.min(conn.sndWnd || MSS, CWND);
+      if (inflight >= usableWnd) break;               // window full — wait for ACKs
+      const room = usableWnd - inflight;
+      const n = Math.min(MSS, conn.sendQueue.length, room);
+      if (n <= 0) break;
+      const chunk = conn.sendQueue.slice(0, n);
+      conn.sendQueue = conn.sendQueue.slice(n);
+      const segSeq = conn.mySeq;
+      this.#sendDataSeg(conn, segSeq, chunk);
+      conn.mySeq = (conn.mySeq + n) >>> 0;
+      conn.unacked.push({ seq: segSeq, data: chunk, t: Date.now() });
+    }
+    this.#armRto(conn);
+    // Backpressure release: queue has drained below LOW_WATER, let the relay
+    // resume feeding the client (paired with the __pause__ in #injectDataToGuest).
+    if (conn._bpSent && conn.sendQueue.length < 16 * 1024) {
+      conn._bpSent = false;
+      try { conn.relayWs.send('__resume__'); } catch (_) {}
+    }
+  }
+
+  // Emit one PSH+ACK data segment (also used for retransmits).
+  #sendDataSeg(conn, segSeq, chunk) {
+    const t  = new Uint8Array(20 + chunk.length);
+    const dv = new DataView(t.buffer);
+    dv.setUint16(0, conn.srcPort, false);
+    dv.setUint16(2, conn.dstPort, false);
+    dv.setUint32(4, segSeq,        false);
+    dv.setUint32(8, conn.guestSeq, false);
+    t[12] = 0x50; t[13] = 0x18;  // PSH+ACK
+    dv.setUint16(14, 65535, false);
+    t.set(chunk, 20);
+    this.#tcpChecksum(t, new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp));
+    this.#sendIpv4(new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp), 6, t);
+  }
+
+  // Emit a bare ACK advertising our current receive position.
+  #sendPureAck(conn) {
+    const ack = new Uint8Array(20);
+    const adv = new DataView(ack.buffer);
+    adv.setUint16(0, conn.srcPort, false);
+    adv.setUint16(2, conn.dstPort, false);
+    adv.setUint32(4, conn.mySeq,    false);
+    adv.setUint32(8, conn.guestSeq, false);
+    ack[12] = 0x50; ack[13] = 0x10;  // ACK
+    adv.setUint16(14, 65535, false);
+    this.#tcpChecksum(ack, new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp));
+    this.#sendIpv4(new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp), 6, ack);
+  }
+
+  // Process a guest ACK: slide sndUna, drop fully-acked segments, adopt the
+  // new window, and push more queued data into the freed window.
+  #processGuestAck(conn, ackNum, wnd) {
+    conn.sndWnd = wnd || conn.sndWnd;
+    const advanced = (ackNum - conn.sndUna) | 0;  // signed
+    if (advanced > 0) {
+      conn.sndUna = ackNum >>> 0;
+      conn.unacked = conn.unacked.filter(
+        seg => (((seg.seq + seg.data.length) - ackNum) | 0) > 0
+      );
+      this.#clearRto(conn);   // progress made — restart the timer fresh
+      conn._dupAcks = 0;
+    } else if (advanced === 0 && wnd !== undefined) {
+      conn._dupAcks = (conn._dupAcks || 0) + 1;
+      // Fast retransmit, go-back-N. The guest tail-drops BURSTS of segments
+      // under load (socket backlog overflow while the app holds the socket
+      // busy), and a dup-ACK on this in-order lossless link definitively
+      // means a hole. Waiting for the RTO timer is catastrophic in a hidden
+      // tab (setTimeout throttled to 1s, then 1/min after 5 min): repairing
+      // one tinygram per fire turned a ~170-byte hole into a MINUTES-long
+      // "transport wedge" (the X-display freeze / bulk-stall family).
+      // Resending every unacked segment repairs the whole hole in one
+      // guest-poll roundtrip; the guest discards duplicates for free.
+      if (conn._dupAcks >= 2) {
+        conn._dupAcks = 0;
+        this.#retransmitAllUnacked(conn, 'dupack');
+      }
+    }
+    if (window.__slirpdbg) {
+      const inflight = (conn.mySeq - conn.sndUna) >>> 0;
+      console.log('[INJ-ACK] ack=' + (ackNum>>>0) + ' adv=' + advanced +
+        ' wnd=' + (wnd||0) + ' inflight=' + inflight + ' q=' + conn.sendQueue.length +
+        ' unacked=' + conn.unacked.length + ' dup=' + (conn._dupAcks||0) +
+        ' rexmit=' + (conn._rtoRexmit||0));
+    }
+    this.#pumpSend(conn);
+  }
+
+  #armRto(conn) {
+    if (conn.rtoTimer || conn.unacked.length === 0) return;
+    conn.rtoTimer = setTimeout(() => {
+      conn.rtoTimer = null;
+      if (conn.unacked.length === 0) return;
+      // Go-back-N: resend EVERYTHING unacked in one fire. Browser timer
+      // throttling makes RTO fires precious (1s hidden, 1/min after 5 min
+      // hidden) — one fire must repair the whole hole, not one segment.
+      if (window.__slirpdbg) {
+        const inflight = (conn.mySeq - conn.sndUna) >>> 0;
+        console.log('[INJ-RTO] rexmit n=' + conn.unacked.length +
+          ' inflight=' + inflight + ' wnd=' + (conn.sndWnd||0) + ' q=' + conn.sendQueue.length);
+      }
+      this.#retransmitAllUnacked(conn, 'rto');
+      this.#armRto(conn);
+    }, 100);  // 100 ms RTO — in-page path, RTT is a few guest polls; the
+              // guest discards duplicates for free, so aggressive is safe
+  }
+
+  // Resend every unacked segment (go-back-N), rate-limited per conn. Used by
+  // both fast-retransmit and RTO for the inbound (page→guest) sender; the
+  // guest silently discards duplicate segments, so over-sending is safe and
+  // the hole repairs in a single roundtrip.
+  #retransmitAllUnacked(conn, why) {
+    if (conn.unacked.length === 0) return;
+    const now = Date.now();
+    if (conn._lastGbnT && now - conn._lastGbnT < 60) return;
+    conn._lastGbnT = now;
+    conn._rtoRexmit = (conn._rtoRexmit || 0) + conn.unacked.length;
+    for (const seg of conn.unacked)
+      this.#sendDataSeg(conn, seg.seq, seg.data);
+    if (window.__slirpdbg)
+      console.log('[INJ-GBN] ' + why + ' resent=' + conn.unacked.length +
+        ' from=' + conn.unacked[0].seq);
+  }
+
+  #clearRto(conn) {
+    if (conn.rtoTimer) { clearTimeout(conn.rtoTimer); conn.rtoTimer = null; }
   }
 
   #injectFinToGuest(conn) {
@@ -959,7 +1632,339 @@ class WispSlirp {
     this.#tcpChecksum(t, new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp));
     this.#sendIpv4(new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp), 6, t);
   }
+
+  // Send an RST to the guest for an injected connection we no longer track
+  // (client already torn down). Without this, the guest's FIN/retransmits get
+  // no response and it sits in FIN_WAIT1 forever — a resource leak that piles
+  // up under repeated/concurrent connections and eventually strands sshd.
+  #sendRstRaw(clientIp, clientPort, guestPort, rstSeq, ackNum) {
+    const gip = new Uint8Array(WispSlirp.GUEST_IP);
+    const cip = new Uint8Array(clientIp);
+    const emit = () => {
+      const t  = new Uint8Array(20);
+      const dv = new DataView(t.buffer);
+      dv.setUint16(0, clientPort, false);  // src = fake client port
+      dv.setUint16(2, guestPort,  false);  // dst = guest server port
+      dv.setUint32(4, rstSeq >>> 0, false);
+      dv.setUint32(8, ackNum >>> 0, false);
+      t[12] = 0x50; t[13] = 0x14;          // RST+ACK
+      dv.setUint16(14, 0, false);
+      this.#tcpChecksum(t, cip, gip);
+      this.#sendIpv4(cip, gip, 6, t);
+    };
+    emit();
+    setTimeout(emit, 40);
+  }
+
+  #injectRstToGuest(conn) {
+    // The RST seq must equal the guest's rcv.nxt or the guest drops it as an
+    // out-of-window challenge (RFC 5961) and the sshd-session blocks in read()
+    // forever — the session leak. rcv.nxt == sndUna (everything below sndUna is
+    // ACKed, so that's the next byte the guest expects from us). Fall back to
+    // mySeq for connections without a flow-control sender (outbound conns).
+    const rstSeq = (conn.sndUna !== undefined) ? conn.sndUna : conn.mySeq;
+    // Stop any in-flight retransmits and drop queued data for this dead conn.
+    this.#clearRto(conn);
+    conn.unacked = [];
+    conn.sendQueue = new Uint8Array(0);
+    const emit = () => {
+      const t  = new Uint8Array(20);
+      const dv = new DataView(t.buffer);
+      dv.setUint16(0, conn.srcPort, false);
+      dv.setUint16(2, conn.dstPort, false);
+      dv.setUint32(4, rstSeq,       false);
+      dv.setUint32(8, conn.guestSeq, false);
+      t[12] = 0x50; t[13] = 0x14;  // RST+ACK
+      dv.setUint16(14, 0, false);
+      this.#tcpChecksum(t, new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp));
+      this.#sendIpv4(new Uint8Array(conn.srcIp), new Uint8Array(conn.dstIp), 6, t);
+    };
+    // Send a few times: a single RST can be lost in the guest's virtio RX ring
+    // when it is dropped under transfer load, which would re-strand the session.
+    emit();
+    setTimeout(emit, 40);
+    setTimeout(emit, 160);
+  }
 }
+
+// ── /_v8/eval backend: run guest JS in this page's engine ────────────────────
+// Why this exists: Node.js cannot be compiled for wasm32 (V8 emits native code
+// and needs mmap-backed heap cages; musl-wasm has neither). But the page is
+// already running a full JS engine, so the guest can borrow it — the same
+// "browser does what wasm can't" pattern used for HTTPS, TCP and media here.
+//
+// The code runs in a throwaway Worker: no DOM/page-state access, and an
+// infinite loop is terminated on timeout instead of wedging the main thread
+// (which also drives slirp and the kernel's IO).
+function evalInPageV8(code, opts = {}) {
+  const timeoutMs = opts.timeoutMs || 120000;
+  const agentPort = opts.agentPort || 0;   // guest fs-agent port (0 = no fs)
+  const cwd = opts.cwd || '/';
+  const argv = opts.argv || [];
+
+  // Shared control block: the Worker blocks in Atomics.wait while the main
+  // thread services an fs call against the guest (async), then notifies.
+  //   ctrl[0] = 0 pending / 1 ready, ctrl[1] = payload byte length
+  const SAB_DATA = 4 * 1024 * 1024;
+  let sab, ctrl, data;
+  try {
+    sab  = new SharedArrayBuffer(8 + SAB_DATA);
+    ctrl = new Int32Array(sab, 0, 2);
+    data = new Uint8Array(sab, 8);
+  } catch (e) {
+    // No SAB (COOP/COEP missing) — still allow pure-compute evaluation.
+    sab = null;
+  }
+
+  const bootstrap = `
+    let CTRL = null, DATA = null;
+    // Synchronous RPC into the guest: post, then block until the main thread
+    // fills the shared buffer. This is what lets fs.readFileSync be *sync*
+    // even though the underlying guest call is asynchronous.
+    function rpc(op, args) {
+      if (!CTRL) throw new Error('fs is unavailable (no SharedArrayBuffer / no guest agent)');
+      Atomics.store(CTRL, 0, 0);
+      self.postMessage({ __rpc: true, op: op, args: args });
+      Atomics.wait(CTRL, 0, 0);
+      const n = Atomics.load(CTRL, 1);
+      // TextDecoder rejects views backed by SharedArrayBuffer — copy out first.
+      const txt = new TextDecoder().decode(new Uint8Array(DATA.subarray(0, n)));
+      const r = JSON.parse(txt);
+      if (r.error) { const e = new Error(r.error); e.code = r.code || 'EIO'; throw e; }
+      return r.result;
+    }
+
+    const PATH = {
+      sep: '/',
+      normalize(p) {
+        const abs = p.startsWith('/');
+        const out = [];
+        for (const part of p.split('/')) {
+          if (!part || part === '.') continue;
+          if (part === '..') { if (out.length && out[out.length-1] !== '..') out.pop(); else if (!abs) out.push('..'); }
+          else out.push(part);
+        }
+        return (abs ? '/' : '') + out.join('/') || (abs ? '/' : '.');
+      },
+      join(...ps) { return PATH.normalize(ps.filter(Boolean).join('/')); },
+      resolve(...ps) {
+        let r = '';
+        for (const p of ps) r = p.startsWith('/') ? p : (r ? r + '/' + p : p);
+        return PATH.normalize(r.startsWith('/') ? r : (self.__cwd + '/' + r));
+      },
+      dirname(p) { const i = PATH.normalize(p).lastIndexOf('/'); return i <= 0 ? (p.startsWith('/') ? '/' : '.') : p.slice(0, i); },
+      basename(p, ext) { let b = PATH.normalize(p).split('/').pop() || ''; if (ext && b.endsWith(ext)) b = b.slice(0, -ext.length); return b; },
+      extname(p) { const b = PATH.basename(p); const i = b.lastIndexOf('.'); return i <= 0 ? '' : b.slice(i); },
+      isAbsolute(p) { return p.startsWith('/'); },
+      relative(a, b) { return b; },
+    };
+
+    // fs: every call is proxied into the guest, which owns the filesystem.
+    // Encoding note: file bytes cross as base64 so binary survives JSON.
+    const b64d = (s) => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+    const b64e = (u8) => { let s = ''; for (const b of u8) s += String.fromCharCode(b); return btoa(s); };
+    const FS = {
+      readFileSync(p, o) {
+        const enc = typeof o === 'string' ? o : (o && o.encoding);
+        const bytes = b64d(rpc('readFile', { path: PATH.resolve(p) }));
+        return enc ? new TextDecoder(enc === 'utf-8' ? 'utf-8' : 'utf-8').decode(bytes) : bytes;
+      },
+      writeFileSync(p, d, o) {
+        const u8 = typeof d === 'string' ? new TextEncoder().encode(d) : new Uint8Array(d);
+        rpc('writeFile', { path: PATH.resolve(p), data: b64e(u8) });
+      },
+      appendFileSync(p, d) {
+        const u8 = typeof d === 'string' ? new TextEncoder().encode(d) : new Uint8Array(d);
+        rpc('appendFile', { path: PATH.resolve(p), data: b64e(u8) });
+      },
+      existsSync(p) { try { return rpc('exists', { path: PATH.resolve(p) }); } catch (_) { return false; } },
+      readdirSync(p) { return rpc('readdir', { path: PATH.resolve(p) }); },
+      mkdirSync(p, o) { rpc('mkdir', { path: PATH.resolve(p), recursive: !!(o && o.recursive) }); },
+      unlinkSync(p) { rpc('unlink', { path: PATH.resolve(p) }); },
+      renameSync(a, b) { rpc('rename', { from: PATH.resolve(a), to: PATH.resolve(b) }); },
+      statSync(p) {
+        const s = rpc('stat', { path: PATH.resolve(p) });
+        return { size: s.size, mtimeMs: s.mtimeMs, isFile: () => s.isFile,
+                 isDirectory: () => s.isDir, mode: s.mode };
+      },
+      // Async variants map onto the sync ones (the guest call is quick).
+      readFile(p, o, cb) { cb = typeof o === 'function' ? o : cb;
+        try { cb(null, FS.readFileSync(p, typeof o === 'function' ? undefined : o)); } catch (e) { cb(e); } },
+      writeFile(p, d, o, cb) { cb = typeof o === 'function' ? o : cb;
+        try { FS.writeFileSync(p, d); cb(null); } catch (e) { cb(e); } },
+    };
+    FS.promises = {
+      readFile: async (p, o) => FS.readFileSync(p, o),
+      writeFile: async (p, d) => FS.writeFileSync(p, d),
+      readdir:   async (p) => FS.readdirSync(p),
+      mkdir:     async (p, o) => FS.mkdirSync(p, o),
+      stat:      async (p) => FS.statSync(p),
+    };
+
+    // http/https ride the PAGE's fetch — the browser already has real network,
+    // so this needs no guest round-trip and runs at full speed.
+    function httpGet(url, opts, cb) {
+      if (typeof opts === 'function') { cb = opts; opts = {}; }
+      const u = typeof url === 'string' ? url : (url.href || String(url));
+      const handlers = {};
+      const res = { statusCode: 0, headers: {}, setEncoding() {},
+                    on(ev, fn) { handlers[ev] = fn; return res; } };
+      fetch(u, { method: (opts && opts.method) || 'GET' }).then(async (r) => {
+        res.statusCode = r.status;
+        r.headers.forEach((v, k) => { res.headers[k] = v; });
+        const body = await r.text();
+        if (cb) cb(res);
+        if (handlers.data) handlers.data(body);
+        if (handlers.end) handlers.end();
+      }).catch((e) => { if (handlers.error) handlers.error(e); });
+      return { on() { return this; }, end() { return this; } };
+    }
+    const HTTP = { get: httpGet, request: httpGet };
+
+    self.onmessage = async (ev) => {
+      const d = ev.data;
+      if (d && d.__init) {          // shared buffer handshake
+        CTRL = new Int32Array(d.sab, 0, 2);
+        DATA = new Uint8Array(d.sab, 8);
+        return;
+      }
+      const chunks = [];
+      const w = (s) => chunks.push(String(s));
+      const fmt = (a) => a.map(x => {
+        if (typeof x === 'string') return x;
+        if (x instanceof Error) return x.stack || String(x);
+        try { return JSON.stringify(x); } catch (_) { return String(x); }
+      }).join(' ');
+      self.console = { log: (...a) => w(fmt(a) + '\\n'), info: (...a) => w(fmt(a) + '\\n'),
+                       warn: (...a) => w(fmt(a) + '\\n'), error: (...a) => w(fmt(a) + '\\n'),
+                       debug: (...a) => w(fmt(a) + '\\n') };
+      self.__cwd = d.cwd || '/';
+      self.process = {
+        argv: ['node'].concat(d.argv || []),
+        env: {}, platform: 'linux', version: 'v20.0.0-page-v8',
+        exit: () => { throw { __exit: true }; },
+        stdout: { write: (s) => { w(s); return true; } },
+        stderr: { write: (s) => { w(s); return true; } },
+        cwd: () => self.__cwd,
+        nextTick: (fn, ...a) => Promise.resolve().then(() => fn(...a)),
+      };
+      // Node built-ins available to bundled code via __builtin(spec).
+      self.__builtin = (spec) => {
+        const n = String(spec).replace(/^node:/, '');
+        if (n === 'fs') return FS;
+        if (n === 'fs/promises') return FS.promises;
+        if (n === 'path') return PATH;
+        if (n === 'os') return { EOL: '\\n', platform: () => 'linux', tmpdir: () => '/tmp',
+                                 homedir: () => '/root', type: () => 'Linux', cpus: () => [{ model: 'wasm32' }] };
+        if (n === 'http' || n === 'https') return HTTP;
+        if (n === 'util') return { inspect: (x) => { try { return JSON.stringify(x); } catch (_) { return String(x); } },
+                                   promisify: (f) => (...a) => new Promise((rs, rj) => f(...a, (e, v) => e ? rj(e) : rs(v))) };
+        if (n === 'events') {
+          return class EventEmitter {
+            constructor() { this._h = {}; }
+            on(e, f) { (this._h[e] = this._h[e] || []).push(f); return this; }
+            once(e, f) { const g = (...a) => { this.off(e, g); f(...a); }; return this.on(e, g); }
+            off(e, f) { this._h[e] = (this._h[e] || []).filter(x => x !== f); return this; }
+            emit(e, ...a) { (this._h[e] || []).slice().forEach(f => f(...a)); return true; }
+          };
+        }
+        if (n === 'assert') { const A = (v, m) => { if (!v) throw new Error(m || 'assert'); };
+          A.ok = A; A.equal = (a, b, m) => A(a == b, m); A.strictEqual = (a, b, m) => A(a === b, m);
+          A.deepStrictEqual = (a, b, m) => A(JSON.stringify(a) === JSON.stringify(b), m); return A; }
+        throw new Error("Cannot find module '" + spec + "' (not bundled; no built-in shim)");
+      };
+      try {
+        const fn = new Function('module', 'exports', 'require', d.code);
+        const module = { exports: {} };
+        const r = fn(module, module.exports, self.__builtin);
+        if (r && typeof r.then === 'function') await r;
+        // Let pending microtasks/fetches settle before returning output.
+        await new Promise(res2 => setTimeout(res2, 30));
+      } catch (e) {
+        if (!(e && e.__exit)) chunks.push('Uncaught ' + (e && e.stack ? e.stack : e) + '\\n');
+      }
+      self.postMessage({ __done: true, out: chunks.join('') });
+    };
+  `;
+
+  return new Promise((resolve) => {
+    let url, worker, done = false;
+    const finish = (text) => {
+      if (done) return; done = true;
+      try { worker && worker.terminate(); } catch (_) {}
+      try { url && URL.revokeObjectURL(url); } catch (_) {}
+      resolve(text);
+    };
+    try {
+      url = URL.createObjectURL(new Blob([bootstrap], { type: 'text/javascript' }));
+      worker = new Worker(url);
+    } catch (e) {
+      return finish('node-v8: worker spawn failed: ' + (e?.message || e) + '\n');
+    }
+    worker.onmessage = async (ev) => {
+      const d = ev.data;
+      if (d && d.__done) return finish(String(d.out ?? ''));
+      if (d && d.__rpc) {
+        // Service one fs call against the guest agent, then release the Worker.
+        let reply;
+        try {
+          if (!agentPort) throw new Error('no guest fs agent for this run');
+          reply = await guestAgentCall(agentPort, { op: d.op, args: d.args });
+        } catch (e) {
+          reply = { error: String(e?.message || e) };
+        }
+        const bytes = new TextEncoder().encode(JSON.stringify(reply));
+        if (bytes.length > data.length) {
+          const errB = new TextEncoder().encode(JSON.stringify({ error: 'fs payload too large (> 4 MB)' }));
+          data.set(errB); Atomics.store(ctrl, 1, errB.length);
+        } else {
+          data.set(bytes); Atomics.store(ctrl, 1, bytes.length);
+        }
+        Atomics.store(ctrl, 0, 1);
+        Atomics.notify(ctrl, 0);
+      }
+    };
+    worker.onerror = (ev) => finish('node-v8: ' + (ev.message || 'worker error') + '\n');
+    setTimeout(() => finish('node-v8: timed out after ' + timeoutMs + 'ms\n'), timeoutMs);
+    if (sab) worker.postMessage({ __init: true, sab });
+    worker.postMessage({ code, cwd, argv });
+  });
+}
+
+// One JSON request/response against the guest-side fs agent, over an injected
+// TCP connection (same primitive the wf-live bridge and VNC view use).
+function guestAgentCall(port, obj, timeoutMs = 20000) {
+  return new Promise((resolve, reject) => {
+    const slirp = window.__slirp;
+    if (!slirp) return reject(new Error('guest not booted'));
+    const chunks = []; let total = 0, settled = false;
+    const done = () => {
+      if (settled) return; settled = true;
+      const buf = new Uint8Array(total); let p = 0;
+      for (const c of chunks) { buf.set(c, p); p += c.length; }
+      const txt = new TextDecoder().decode(buf);
+      try { resolve(JSON.parse(txt.trim() || '{}')); }
+      catch (e) { reject(new Error('bad agent reply: ' + txt.slice(0, 120))); }
+    };
+    const adapter = {
+      binaryType: 'arraybuffer',
+      readyState: WebSocket.OPEN,
+      send(g) {
+        const u = g instanceof Uint8Array ? g : new Uint8Array(g);
+        chunks.push(u); total += u.length;
+        // Agent terminates each reply with a newline.
+        if (u.length && u[u.length - 1] === 10) done();
+      },
+      close() { done(); },
+    };
+    slirp.injectConnect(port, adapter);
+    const line = new TextEncoder().encode(JSON.stringify(obj) + '\n');
+    if (adapter.onmessage) adapter.onmessage({ data: line.buffer.slice(line.byteOffset, line.byteOffset + line.byteLength) });
+    setTimeout(() => { if (!settled) { settled = true; reject(new Error('agent timeout')); } }, timeoutMs);
+  });
+}
+window.evalInPageV8 = evalInPageV8;
+window.guestAgentCall = guestAgentCall;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -984,6 +1989,7 @@ term.loadAddon(fitAddon);
 term.open($('term'));
 fitAddon.fit();
 window.addEventListener('resize', () => fitAddon.fit());
+window.__xterm__ = term; // expose for Playwright test buffer reads
 
 term.attachCustomKeyEventHandler(ev => {
   if (ev.type !== 'keydown') return true;
@@ -1004,11 +2010,409 @@ let consoleInputWriter = null; // WritableStreamDefaultWriter<Uint8Array> — ho
 let booted = false;
 let onDataDisposable = null; // xterm onData handler — disposed on each boot to prevent accumulation
 let bootConsoleAbort = null; // AbortController for the bootConsole reader loop
+let outputMode = 'terminal';
+let browserOutputRaw = '';
+const browserOutputDecoder = new TextDecoder();
+const BROWSER_OUTPUT_MAX_CHARS = 512 * 1024;
+let browserRunToken = null;
+let browserOutputRawAnsi = '';  // raw bytes, kept separately for ANSI strip
+
+// Strip ANSI/VT100 escape sequences and normalize line endings.
+function stripAnsiNorm(s) {
+  return s
+    .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')  // CSI sequences (colors, cursor)
+    .replace(/\x1b[^[]/g, '')                  // other ESC sequences
+    .replace(/\x0f|\x0e/g, '')                 // shift in/out
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
+}
+
+// Pull out only the captured run output using BEGIN/END markers.
+// Falls back to the full stripped stream if markers not seen yet.
+function extractBrowserRunOutput(stripped) {
+  if (!browserRunToken) return stripped;
+  const B = 'LOTCGI_B_' + browserRunToken + '\n';
+  const E = 'LOTCGI_E_' + browserRunToken;
+  const bi = stripped.indexOf(B);
+  if (bi < 0) return stripped; // still accumulating / no output yet
+  const start = bi + B.length;
+  const ei = stripped.indexOf(E, start);
+  return ei < 0 ? stripped.slice(start) : stripped.slice(start, ei).trimEnd();
+}
+
+function parseCgiOutput(raw) {
+  const lines = raw.split('\n');
+  // Skip any leading noise lines (e.g. kernel wasm_call_clone_fn messages).
+  // Find the first line that looks like a CGI header "Name: value".
+  let start = 0;
+  while (start < lines.length && !/^[A-Za-z0-9-]+:\s*\S/.test(lines[start])) start++;
+  if (start >= lines.length) return null;
+  // Collect consecutive header lines until a blank line.
+  const headerLines = [];
+  let i = start;
+  while (i < lines.length && lines[i].trim() !== '') {
+    if (!/^[A-Za-z0-9-]+:\s*/.test(lines[i])) return null;
+    headerLines.push(lines[i]);
+    i++;
+  }
+  if (!headerLines.length) return null;
+  // Body is everything after the blank separator line.
+  const body = lines.slice(i + 1).join('\n');
+  const headers = {};
+  for (const l of headerLines) {
+    const ci = l.indexOf(':');
+    headers[l.slice(0, ci).trim().toLowerCase()] = l.slice(ci + 1).trim();
+  }
+  return { headers, body };
+}
+
+function renderBrowserOutput() {
+  const stripped = stripAnsiNorm(browserOutputRaw);
+  const visible  = extractBrowserRunOutput(stripped);
+  const parsed   = parseCgiOutput(visible);
+  console.log('[cgi] render stripped=' + stripped.length + ' visible=' + visible.length + ' parsed=' + !!parsed);
+  const frame = $('cgi-frame');
+  const text  = $('cgi-text');
+  const meta  = $('cgi-meta');
+  // If no CGI headers found, check if the output itself is HTML — render it directly.
+  const body   = parsed ? parsed.body : visible;
+  const ct     = parsed ? (parsed.headers['content-type'] || '').toLowerCase() : '';
+  const isHtmlCt = ct.includes('text/html');
+  // For bare HTML (no CGI headers), scan the entire visible stream for the first
+  // <!doctype html or <html tag — everything from that point is the document.
+  const htmlIdx = !parsed ? visible.search(/<(!doctype\s+html|html[\s>])/i) : -1;
+  const isHtml  = isHtmlCt || htmlIdx >= 0;
+  if (isHtml) {
+    frame.hidden = false;
+    text.parentElement.hidden = true;
+    frame.srcdoc = parsed ? body : visible.slice(htmlIdx);
+    meta.textContent = parsed ? 'html — ' + ct : 'html (no cgi headers)';
+    return;
+  }
+  if (parsed) {
+    frame.hidden = true;
+    text.parentElement.hidden = false;
+    text.textContent = body;
+    meta.textContent = 'cgi — ' + (ct || 'no content-type');
+  } else {
+    frame.hidden = true;
+    text.parentElement.hidden = false;
+    text.textContent = visible;
+    meta.textContent = browserRunToken ? 'running…' : 'raw output';
+  }
+  $('cgi-text-wrap').scrollTop = $('cgi-text-wrap').scrollHeight;
+}
+
+function appendBrowserOutput(text) {
+  if (!text) return;
+  browserOutputRaw += text;
+  if (browserOutputRaw.length > BROWSER_OUTPUT_MAX_CHARS)
+    browserOutputRaw = browserOutputRaw.slice(-BROWSER_OUTPUT_MAX_CHARS);
+  console.log('[cgi] appendBrowserOutput len=' + browserOutputRaw.length + ' tok=' + browserRunToken + ' mode=' + outputMode + ' sample=' + JSON.stringify(text.slice(0, 80)));
+  renderBrowserOutput();
+}
+
+function clearBrowserOutput() {
+  browserOutputRaw = '';
+  browserRunToken  = null;
+  $('cgi-frame').srcdoc = '';
+  $('cgi-frame').hidden = true;
+  $('cgi-text-wrap').hidden = false;
+  $('cgi-text').textContent = '';
+  $('cgi-meta').textContent = 'raw output';
+}
+
+function setOutputMode(nextMode) {
+  outputMode = nextMode === 'browser' ? 'browser' : 'terminal';
+  const browser = outputMode === 'browser';
+  $('output-mode').textContent = browser ? 'output: browser' : 'output: terminal';
+  $('term').hidden = browser;
+  $('cgi-view').hidden = !browser;
+  if (browser) {
+    renderBrowserOutput();
+    $('cgi-cmd').focus();
+  } else {
+    term.focus();
+  }
+}
+
+// ── rootfs block overlay persistence (IndexedDB) ───────────────────────────
+const ROOTFS_BLOCK_SIZE = 4096;
+const ROOTFS_OVERLAY_DB = 'lot-rootfs-overlay-v1';
+let rootfsOverlay = null;
+
+function bytesToBase64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+
+function base64ToBytes(base64) {
+  const s = atob(base64);
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i);
+  return out;
+}
+
+function idbReq(req) {
+  return new Promise((resolve, reject) => {
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('IndexedDB request failed'));
+  });
+}
+
+function openRootfsOverlayDb() {
+  return new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) { resolve(null); return; }
+    const req = indexedDB.open(ROOTFS_OVERLAY_DB, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('blocks')) db.createObjectStore('blocks');
+      if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta');
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('Failed to open rootfs overlay DB'));
+  });
+}
+
+async function sha256Hex(buffer) {
+  const digest = await crypto.subtle.digest('SHA-256', buffer);
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function createRootfsOverlay(rootfsBytes, baseHash) {
+  const db = await openRootfsOverlayDb();
+  if (!db) return null;
+
+  let pendingBlocks = new Set();
+  let persistTimer = null;
+  let persistRunning = false;
+
+  async function loadInto(targetBytes) {
+    let loaded = 0;
+    const tx = db.transaction('blocks', 'readonly');
+    const store = tx.objectStore('blocks');
+    const range = IDBKeyRange.bound([baseHash, 0], [baseHash, Number.MAX_SAFE_INTEGER]);
+    await new Promise((resolve, reject) => {
+      const req = store.openCursor(range);
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) { resolve(); return; }
+        const key = cursor.key;
+        const blockIndex = key[1];
+        const block = cursor.value;
+        if (block instanceof Uint8Array || block instanceof ArrayBuffer) {
+          const bytes = block instanceof Uint8Array ? block : new Uint8Array(block);
+          targetBytes.set(bytes, blockIndex * ROOTFS_BLOCK_SIZE);
+          loaded += 1;
+        }
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error || new Error('Failed reading rootfs overlay blocks'));
+    });
+    return loaded;
+  }
+
+  async function persistNow() {
+    if (!pendingBlocks.size || persistRunning) return;
+    persistRunning = true;
+    const batch = Array.from(pendingBlocks);
+    pendingBlocks.clear();
+    try {
+      const tx = db.transaction(['blocks', 'meta'], 'readwrite');
+      const blocksStore = tx.objectStore('blocks');
+      const metaStore = tx.objectStore('meta');
+      for (const blockIndex of batch) {
+        const start = blockIndex * ROOTFS_BLOCK_SIZE;
+        const end = Math.min(start + ROOTFS_BLOCK_SIZE, rootfsBytes.byteLength);
+        // Store a detached copy so future mutations don't affect persisted data.
+        const copy = rootfsBytes.slice(start, end);
+        blocksStore.put(copy, [baseHash, blockIndex]);
+      }
+      metaStore.put({ baseHash, updatedAt: Date.now() }, 'active');
+      await new Promise((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error || new Error('Failed writing rootfs overlay blocks'));
+        tx.onabort = () => reject(tx.error || new Error('Rootfs overlay write aborted'));
+      });
+    } finally {
+      persistRunning = false;
+      if (pendingBlocks.size) schedulePersist();
+    }
+  }
+
+  async function countPersistedBlocks() {
+    const tx = db.transaction('blocks', 'readonly');
+    const store = tx.objectStore('blocks');
+    const range = IDBKeyRange.bound([baseHash, 0], [baseHash, Number.MAX_SAFE_INTEGER]);
+    return new Promise((resolve, reject) => {
+      const req = store.count(range);
+      req.onsuccess = () => resolve(req.result || 0);
+      req.onerror = () => reject(req.error || new Error('Failed counting overlay blocks'));
+    });
+  }
+
+  async function getStats() {
+    const tx = db.transaction('meta', 'readonly');
+    const meta = await idbReq(tx.objectStore('meta').get('active')).catch(() => null);
+    const storedBlocks = await countPersistedBlocks();
+    return {
+      baseHash,
+      pendingBlocks: pendingBlocks.size,
+      storedBlocks,
+      updatedAt: meta && meta.baseHash === baseHash ? meta.updatedAt || null : null,
+    };
+  }
+
+  async function exportSnapshot() {
+    await persistNow();
+    const blocks = [];
+    const tx = db.transaction('blocks', 'readonly');
+    const store = tx.objectStore('blocks');
+    const range = IDBKeyRange.bound([baseHash, 0], [baseHash, Number.MAX_SAFE_INTEGER]);
+    await new Promise((resolve, reject) => {
+      const req = store.openCursor(range);
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (!cursor) { resolve(); return; }
+        const blockIndex = cursor.key[1];
+        const value = cursor.value instanceof Uint8Array ? cursor.value : new Uint8Array(cursor.value);
+        blocks.push({ i: blockIndex, b64: bytesToBase64(value) });
+        cursor.continue();
+      };
+      req.onerror = () => reject(req.error || new Error('Failed exporting overlay blocks'));
+    });
+    return {
+      version: 1,
+      db: ROOTFS_OVERLAY_DB,
+      blockSize: ROOTFS_BLOCK_SIZE,
+      baseHash,
+      updatedAt: Date.now(),
+      blocks,
+    };
+  }
+
+  async function importSnapshot(snapshot, opts = {}) {
+    const replace = opts.replace !== false;
+    if (!snapshot || snapshot.version !== 1 || snapshot.blockSize !== ROOTFS_BLOCK_SIZE || !snapshot.baseHash || !Array.isArray(snapshot.blocks)) {
+      throw new Error('Invalid overlay snapshot format');
+    }
+    if (snapshot.baseHash !== baseHash) {
+      throw new Error('Snapshot base hash does not match current rootfs');
+    }
+    await persistNow();
+    const tx = db.transaction(['blocks', 'meta'], 'readwrite');
+    const blocksStore = tx.objectStore('blocks');
+    const metaStore = tx.objectStore('meta');
+    if (replace) {
+      blocksStore.delete(IDBKeyRange.bound([baseHash, 0], [baseHash, Number.MAX_SAFE_INTEGER]));
+    }
+    for (const b of snapshot.blocks) {
+      const blockIndex = Number(b.i);
+      if (!Number.isFinite(blockIndex) || blockIndex < 0 || typeof b.b64 !== 'string') continue;
+      const bytes = base64ToBytes(b.b64);
+      blocksStore.put(bytes, [baseHash, blockIndex]);
+      const start = blockIndex * ROOTFS_BLOCK_SIZE;
+      if (start < rootfsBytes.byteLength) rootfsBytes.set(bytes, start);
+    }
+    metaStore.put({ baseHash, updatedAt: Date.now() }, 'active');
+    await new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed importing overlay snapshot'));
+      tx.onabort = () => reject(tx.error || new Error('Overlay snapshot import aborted'));
+    });
+  }
+
+  async function clearCurrent() {
+    pendingBlocks.clear();
+    const tx = db.transaction(['blocks', 'meta'], 'readwrite');
+    tx.objectStore('blocks').delete(IDBKeyRange.bound([baseHash, 0], [baseHash, Number.MAX_SAFE_INTEGER]));
+    tx.objectStore('meta').put({ baseHash, updatedAt: Date.now() }, 'active');
+    await new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Failed clearing current overlay'));
+      tx.onabort = () => reject(tx.error || new Error('Clear current overlay aborted'));
+    });
+  }
+
+  function schedulePersist() {
+    if (persistTimer) return;
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      persistNow().catch(err => console.warn('[overlay] persist failed:', err));
+    }, 200);
+  }
+
+  function markDirtyRange(offset, length) {
+    const startBlock = Math.floor(offset / ROOTFS_BLOCK_SIZE);
+    const endBlock = Math.floor((offset + length - 1) / ROOTFS_BLOCK_SIZE);
+    for (let i = startBlock; i <= endBlock; i++) pendingBlocks.add(i);
+    schedulePersist();
+  }
+
+  function close() {
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+    db.close();
+  }
+
+  return { loadInto, markDirtyRange, persistNow, close, baseHash, getStats, exportSnapshot, importSnapshot, clearCurrent };
+}
+
+async function clearAllRootfsOverlays() {
+  if (!('indexedDB' in window)) return false;
+  // Flush and detach the live overlay so its blocks are included in the clear.
+  if (rootfsOverlay && rootfsOverlay.persistNow) await rootfsOverlay.persistNow().catch(() => {});
+  if (rootfsOverlay && rootfsOverlay.close) rootfsOverlay.close();
+  rootfsOverlay = null;
+  // Clear object stores in-place rather than deleteDatabase — avoids the
+  // "blocked by open connections" error when the kernel still holds a handle.
+  const db = await openRootfsOverlayDb();
+  if (!db) return false;
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction(['blocks', 'meta'], 'readwrite');
+    tx.objectStore('blocks').clear();
+    tx.objectStore('meta').clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error || new Error('Failed clearing overlay database'));
+    tx.onabort = () => reject(tx.error || new Error('Overlay clear aborted'));
+  });
+  db.close();
+  return true;
+}
 
 function setStatus(text, cls) {
   const el = $('status');
   el.textContent = text;
   el.className = cls || 'hint';
+}
+
+// ── boot image cache + download progress ────────────────────────────────────────
+// Boot images (the 512 MB rootfs especially) are cached in Cache Storage so they
+// download once and are reused instantly on later boots instead of every time.
+const BOOT_CACHE = 'lot-boot-v1';
+async function openBootCache() {
+  try { return ('caches' in self) ? await caches.open(BOOT_CACHE) : null; }
+  catch (_) { return null; }
+}
+function fmtMB(b) { return (b / 1048576).toFixed(b >= 10485760 ? 0 : 1) + ' MB'; }
+function showDlProgress() { const p = $('dl-progress'); if (p) p.hidden = false; }
+function hideDlProgress() { const p = $('dl-progress'); if (p) { p.hidden = true; p.classList.remove('indet'); } }
+function setDlProgress(label, loaded, total) {
+  const p = $('dl-progress'), fill = $('dl-fill'), lab = $('dl-label');
+  if (!p) return;
+  p.hidden = false;
+  if (total > 0) {
+    p.classList.remove('indet');
+    const pct = Math.min(100, Math.round(loaded / total * 100));
+    if (fill) fill.style.width = pct + '%';
+    if (lab) lab.textContent = label + ' · ' + pct + '% (' + fmtMB(loaded) + ' / ' + fmtMB(total) + ')';
+  } else {
+    p.classList.add('indet');
+    if (lab) lab.textContent = label + (loaded ? ' · ' + fmtMB(loaded) : '');
+  }
 }
 
 // ── guest I/O ──────────────────────────────────────────────────────────────────
@@ -1051,6 +2455,13 @@ async function doBoat() {
   let outputController;
   const outputStream = new WritableStream({
     write(chunk) {
+      if (outputMode === 'browser') {
+        // chunk may be a SharedArrayBuffer view — TextDecoder rejects shared buffers, so copy first.
+        const text = (chunk instanceof Uint8Array) ? browserOutputDecoder.decode(chunk.slice()) : String(chunk);
+        console.log('[cgi] outputStream→browser len=' + text.length);
+        appendBrowserOutput(text);
+        return;
+      }
       term.write(chunk);
     },
   });
@@ -1058,27 +2469,214 @@ async function doBoat() {
   const consoleDev = new ConsoleDevice(inputTransform.readable, outputStream);
   const entropyDev = new EntropyDevice();
 
+  // Wake-the-guest kick for interactive network sessions (X display).
+  // The guest can park with virtio-net interrupts NAPI-masked: injected
+  // frames then sit undelivered (net vring kicks are ignored kernel-side)
+  // until ANY unmasked IRQ — e.g. console — wakes the CPU, whose softirq
+  // pass drains the net ring too. A spurious console vring IRQ is harmless
+  // (the ISR finds an empty ring) but reliably unparks the CPU.
+  window.__lotConsoleKick = () => {
+    try { consoleDev.trigger_interrupt('vring'); } catch (_) {}
+  };
+  // Debug handles for wake-path experiments (harmless to keep exposed).
+  window.__lotDevs = { consoleDev, entropyDev };
+
   // Set up WISP-slirp networking (virtual NIC + WISP WebSocket proxy).
-  const slirp = new WispSlirp('wss://linuxontab-net.fly.dev/wisp');
+  // WISP egress relay. Defaults to the cloud relay (public internet only);
+  // override with ?wisp=ws://<host>:<port>/wisp to egress from inside a LAN
+  // (e.g. a relay on a NAS so the guest can reach LAN-only SMB/Plex shares).
+  const wispUrl = new URLSearchParams(location.search).get('wisp')
+    || 'wss://linuxontab-net.fly.dev/wisp';
+  // Per-packet network logging (VIRTIO/ETH/HTCP/RELAYWS/INJECT). MUST stay off
+  // by default: at bulk-transfer rates the logging stalls the main thread long
+  // enough that WS message dispatch stops and the WISP watchdog tears down a
+  // healthy link (looked exactly like "flaky relay" for weeks).
+  window.__netdebug = new URLSearchParams(location.search).has('netdebug');
+  const slirp = new WispSlirp(wispUrl);
   const guestMac = crypto.getRandomValues(new Uint8Array(6));
   guestMac[0] &= 0xfe;  // clear multicast bit
   const netDev = new NetworkDevice(guestMac, slirp.backend);
   window.__slirp = slirp;  // exposed for JS tunnel below
+  if (window.__lotDevs) window.__lotDevs.netDev = netDev;
+
+  // ?nettap — timestamped tap on both NIC directions, for chasing the
+  // periodic transport freezes. Event-driven (immune to hidden-tab timer
+  // throttling). window.__nettap.gaps(minMs) lists silences with the frame
+  // counters at gap onset, so count-periodic bugs (ring-wrap glitches every
+  // N frames) show up as clustered counter residues.
+  if (new URLSearchParams(location.search).has('nettap')) {
+    const ev = [];          // [tMs, dir, len, injCount, outCount]
+    let injN = 0, outN = 0;
+    const push = (dir, len) => {
+      ev.push([performance.now(), dir, len, injN, outN]);
+      if (ev.length > 40000) ev.splice(0, 20000);
+    };
+    const origRecv = slirp.backend.receive;   // set by NetworkDevice ctor
+    slirp.backend.receive = (f) => { injN++; push('inj', f.length); return origRecv(f); };
+    const origSend = slirp.backend.send.bind(slirp.backend);
+    slirp.backend.send = (f) => { outN++; push('out', f.length); return origSend(f); };
+    window.__nettap = {
+      ev,
+      counts() { return { inj: injN, out: outN }; },
+      gaps(minMs = 400) {
+        const out = [];
+        for (let i = 1; i < ev.length; i++) {
+          const d = ev[i][0] - ev[i-1][0];
+          if (d >= minMs) {
+            const [t, dir, len, inj, outC] = ev[i-1];
+            out.push({ gapMs: Math.round(d), t: Math.round(t),
+                       lastDir: dir, lastLen: len, inj, out: outC,
+                       injMod256: inj % 256, outMod256: outC % 256, outMod128: outC % 128,
+                       resumeDir: ev[i][1], resumeLen: ev[i][2] });
+          }
+        }
+        return out;
+      },
+    };
+  }
+  try { fetch('/log', { method: 'POST', body: '[boot] __slirp ready' }).catch(()=>{}); } catch(_) {}
+
+  // Loads a boot image via a LOCAL cache (Cache Storage): downloaded once, then
+  // reused instantly on later boots — no more full re-download every boot.
+  // Streams with a progress bar, verifies length + validateFn, and only caches a
+  // fully-validated image so a truncated/corrupt download can never poison it.
+  const fetchBootImage = async (path, validateFn, label) => {
+    label = label || path.split('/').pop().split('?')[0];
+    const cache = await openBootCache();
+
+    // 1. Local cache first (survives reloads). Validate before trusting it.
+    if (cache) {
+      try {
+        const hit = await cache.match(path);
+        if (hit) {
+          setDlProgress('loading ' + label + ' (cached)', 0, 0);
+          const buf = await hit.arrayBuffer();
+          validateFn(new Uint8Array(buf));
+          return buf;
+        }
+      } catch (e) {
+        try { await cache.delete(path); } catch (_) {}   // poisoned entry — drop it
+      }
+    }
+
+    // 2. Download (streaming + progress), verify length, then cache.
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const url = attempt === 1
+          ? path
+          : path + (path.includes('?') ? '&' : '?') + '_r=' + attempt + Date.now().toString(36);
+        const resp = await fetch(url, { cache: 'no-store' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status + ' for ' + path);
+        const total = +(resp.headers.get('content-length') || 0);
+        let buf;
+        if (total > 0 && resp.body && resp.body.getReader) {
+          const out = new Uint8Array(total);
+          const reader = resp.body.getReader();
+          let off = 0;
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (off + value.byteLength > total) throw new Error('overlong response for ' + path);
+            out.set(value, off); off += value.byteLength;
+            setDlProgress('downloading ' + label, off, total);
+          }
+          if (off !== total) throw new Error('short read ' + off + '/' + total + ' for ' + path);
+          buf = out.buffer;
+        } else {
+          buf = await resp.arrayBuffer();
+          setDlProgress('downloading ' + label, buf.byteLength, buf.byteLength);
+        }
+        validateFn(new Uint8Array(buf));
+        if (cache) {
+          try {
+            await cache.put(path, new Response(buf, { headers: {
+              'content-type': 'application/octet-stream',
+              'content-length': String(buf.byteLength),
+            } }));
+          } catch (_) { /* quota/other — boot still works, just uncached */ }
+        }
+        return buf;
+      } catch (e) {
+        lastErr = e;
+        term.write(`\r\n\x1b[33m[boot] retry ${attempt}/3 loading ${path}: ${e.message || e}\x1b[0m\r\n`);
+      }
+    }
+    throw lastErr || new Error('failed to load ' + path);
+  };
+
+  // Drop stale cached boot images (a previous ?v=) so the cache can't grow
+  // unbounded or serve an outdated rootfs.
+  try {
+    const _bc = await openBootCache();
+    if (_bc) {
+      const _keep = ['./linux-dist/initramfs.cpio', './linux-dist/rootfs.ext4?v=motd1']
+        .map(p => new URL(p, location.href).href);
+      for (const _req of await _bc.keys()) if (!_keep.includes(_req.url)) await _bc.delete(_req);
+    }
+  } catch (_) {}
+  showDlProgress();
 
   // Load userspace initramfs (pivot-root stub that hands off to rootfs.ext4).
-  const imageCacheBust = Date.now().toString(36);
-  const initcpioResp = await fetch('./linux-dist/initramfs.cpio?v=' + imageCacheBust, { cache: 'no-store' });
-  const initcpio = new Uint8Array(await initcpioResp.arrayBuffer());
+  const initcpioBuffer = await fetchBootImage('./linux-dist/initramfs.cpio', (bytes) => {
+    // cpio newc magic must start with ASCII "070701"
+    if (bytes.length < 6 ||
+        bytes[0] !== 0x30 || bytes[1] !== 0x37 || bytes[2] !== 0x30 ||
+        bytes[3] !== 0x37 || bytes[4] !== 0x30 || bytes[5] !== 0x31) {
+      throw new Error('invalid initramfs magic');
+    }
+  });
+  const initcpio = new Uint8Array(initcpioBuffer);
 
   // Load Alpine-like rootfs as a virtio block device (/dev/vda inside guest).
-  const rootfsResp = await fetch('./linux-dist/rootfs.ext4?v=' + imageCacheBust, { cache: 'no-store' });
-  const rootfsBuffer = await rootfsResp.arrayBuffer();
+  const rootfsBuffer = await fetchBootImage('./linux-dist/rootfs.ext4?v=motd1', (bytes) => {
+    // ext4 superblock magic at offset 0x438 should be 0x53 0xEF (little-endian 0xEF53)
+    if (bytes.length < 0x43A || bytes[0x438] !== 0x53 || bytes[0x439] !== 0xEF) {
+      throw new Error('invalid rootfs ext4 magic');
+    }
+  });
   const rootfsBytes = new Uint8Array(rootfsBuffer);
+  hideDlProgress();
+
+  // Persisted overlay is OPT-IN. It snapshots individual dirty blocks of a live,
+  // never-unmounted ext4 (debounced), so restoring it across reloads can replay
+  // a TORN, inconsistent filesystem — some blocks pre-write, some post, the
+  // journal half-committed — which corrupts the guest (garbled /etc/motd, etc.).
+  // For the public preview every load should boot the pristine image. Enable
+  // persistence explicitly with ?persist=1 or localStorage 'lot.persist'='1'.
+  let persistEnabled = false;
+  try {
+    persistEnabled = new URLSearchParams(location.search).has('persist')
+      || localStorage.getItem('lot.persist') === '1';
+  } catch (_) { persistEnabled = false; }
+
+  try {
+    if (rootfsOverlay && rootfsOverlay.close) rootfsOverlay.close();
+    rootfsOverlay = null;
+    if (persistEnabled) {
+      const baseHash = await sha256Hex(rootfsBuffer);
+      rootfsOverlay = await createRootfsOverlay(rootfsBytes, baseHash);
+      if (rootfsOverlay) {
+        const restoredBlocks = await rootfsOverlay.loadInto(rootfsBytes);
+        if (restoredBlocks > 0) {
+          term.write(`\r\n\x1b[36m[overlay] restored ${restoredBlocks} persisted block(s)\x1b[0m\r\n`);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[overlay] disabled due to initialization failure:', err);
+  }
+  refreshStoragePanel().catch(() => {});
+
   const blockDev = new BlockDevice({
     capacity: rootfsBytes.byteLength,
     read: (offset, length) => Promise.resolve(rootfsBytes.slice(offset, offset + length)),
-    write: (offset, data) => { rootfsBytes.set(data, offset); return Promise.resolve(data.byteLength); },
-    flush: () => Promise.resolve(),
+    write: (offset, data) => {
+      rootfsBytes.set(data, offset);
+      if (rootfsOverlay) rootfsOverlay.markDirtyRange(offset, data.byteLength);
+      return Promise.resolve(data.byteLength);
+    },
+    flush: () => rootfsOverlay ? rootfsOverlay.persistNow().then(() => undefined) : Promise.resolve(),
   });
 
   // Connect xterm keyboard → guest console input (track disposable to avoid double-registration on reset).
@@ -1088,14 +2686,17 @@ async function doBoat() {
 
   machine = new Machine({
     devices: [consoleDev, entropyDev, blockDev, netDev],
-    memoryMib: 128,
+    memoryMib: 2048,
     cpus: 1,
     initcpio,
     // Static IP: 192.168.86.100/24, gw 192.168.86.1, DNS 192.168.86.1
     // SLIRP intercepts UDP/53 and forwards via DoH.
     // ip=... format: ip:server:gw:netmask:hostname:interface:autoconf
     // 'on' means bring the interface up, 'off' means don't auto-bring up
-    cmdline: 'console=hvc0 nr_cpus=1 rdinit=/init ip=192.168.86.100::192.168.86.1:255.255.255.0::eth0:off',
+    // lot_epoch: current host Unix time — /etc/init.d/rcS uses it to set the
+    // guest wall clock (`date -s @N`). Setting it kernel-side at an initcall
+    // breaks inbound TCP handshakes, so it must happen from userspace.
+    cmdline: 'console=hvc0 loglevel=4 nr_cpus=1 rdinit=/init ip=192.168.86.100::192.168.86.1:255.255.255.0::eth0:off lot_epoch=' + Math.floor(Date.now() / 1000),
   });
 
   // Pipe the early boot console (pre-virtio kernel messages) to xterm.
@@ -1109,6 +2710,12 @@ async function doBoat() {
         if (_bca.signal.aborted) { reader.cancel().catch(() => {}); break; }
         const { value, done } = await reader.read();
         if (done || _bca.signal.aborted) break;
+        if (outputMode === 'browser') {
+          // value may be a SharedArrayBuffer view — copy before decoding.
+          const text = (value instanceof Uint8Array) ? browserOutputDecoder.decode(value.slice()) : String(value);
+          appendBrowserOutput(text);
+          continue;
+        }
         term.write(value);
       }
     } catch (_) {}
@@ -1140,8 +2747,10 @@ async function doBoat() {
     $('break').disabled = false;
     $('tunnels').disabled = false;
     $('lot-bridge-btn').disabled = false;
+    $('x-display-btn').disabled = false;
     term.focus();
   } catch (err) {
+    hideDlProgress();
     setStatus('boot failed', 'err');
     term.write('\r\n\x1b[31m[wasm-shell] boot failed: ' + err.message + '\x1b[0m\r\n');
     $('boot').disabled = false;
@@ -1150,10 +2759,44 @@ async function doBoat() {
 
 $('boot').onclick = () => doBoat();
 $('reset').onclick = () => doBoat();
+if (new URLSearchParams(location.search).has('autoboot')) doBoat();
 $('break').onclick = () => guestWrite(new Uint8Array([0x03]));
+$('output-mode').onclick = () => setOutputMode(outputMode === 'terminal' ? 'browser' : 'terminal');
+// WebFuse UI (guest :8080) can still be rendered in the browser panel from the
+// console:  await import('/shell/wf-live/bridge.js').then(m => m.start())
+// (the dedicated menu button was removed).
+$('cgi-clear').onclick = () => clearBrowserOutput();
+$('cgi-run').onclick = () => {
+  const cmd = $('cgi-cmd').value.trim();
+  if (!cmd) return;
+  if (!booted || !consoleInputWriter) {
+    $('cgi-meta').textContent = 'guest not booted — boot first';
+    return;
+  }
+  clearBrowserOutput();
+  // Short alphanumeric token — safe for both shell and JS indexOf
+  browserRunToken = Math.random().toString(36).slice(2, 10);
+  $('cgi-meta').textContent = 'running…';
+  // Redirect command output to a temp file so it bypasses TTY echo/readline.
+  // cat emits clean bytes; printf markers are plain ASCII with no ANSI codes.
+  const tok = browserRunToken;
+  const f = `/tmp/lot_cgi_${tok}`;
+  // Use brace group { } instead of subshell ( ) — brace group runs in the current
+  // shell process (no fork), saving one level of the ~3-deep WASM fork limit.
+  const wrapped = `_F=${f}; { ${cmd}; } >"$_F" 2>&1; printf 'LOTCGI_B_${tok}\\n'; cat "$_F"; printf '\\nLOTCGI_E_${tok}\\n'; rm -f "$_F"`;
+  guestSend(wrapped);
+};
+$('cgi-cmd').addEventListener('keydown', ev => {
+  if (ev.key !== 'Enter') return;
+  ev.preventDefault();
+  $('cgi-run').click();
+});
+setOutputMode('terminal');
+window.addEventListener('pagehide', () => { if (rootfsOverlay) rootfsOverlay.persistNow().catch(() => {}); });
+window.addEventListener('beforeunload', () => { if (rootfsOverlay) rootfsOverlay.persistNow().catch(() => {}); });
 
 // ── panel toggles ─────────────────────────────────────────────────────────────
-const panels = { tunnels: $('tunnels-panel'), 'lot-bridge': $('lot-bridge-panel') };
+const panels = { tunnels: $('tunnels-panel'), 'lot-bridge': $('lot-bridge-panel'), storage: $('storage-panel') };
 function openPanel(name) {
   for (const [k, el] of Object.entries(panels)) el.hidden = (k !== name);
 }
@@ -1161,8 +2804,139 @@ function closePanel() { for (const el of Object.values(panels)) el.hidden = true
 
 $('tunnels').onclick     = () => $('tunnels-panel').hidden ? openPanel('tunnels')    : closePanel();
 $('lot-bridge-btn').onclick = () => $('lot-bridge-panel').hidden ? openPanel('lot-bridge') : closePanel();
+$('storage-btn').onclick = () => {
+  if ($('storage-panel').hidden) {
+    openPanel('storage');
+    refreshStoragePanel().catch(() => {});
+  } else {
+    closePanel();
+  }
+};
 $('tunnels-close').onclick  = closePanel;
 $('lb-close').onclick       = closePanel;
+$('storage-close').onclick  = closePanel;
+
+// ── storage panel ─────────────────────────────────────────────────────────────
+const storageLogEl = $('storage-log');
+
+function storageLog(line, cls = 'info') {
+  const d = document.createElement('div');
+  d.className = cls;
+  d.textContent = line;
+  storageLogEl.appendChild(d);
+  storageLogEl.scrollTop = storageLogEl.scrollHeight;
+}
+
+function shortHash(h) {
+  if (!h || typeof h !== 'string') return '-';
+  return h.slice(0, 12) + '…' + h.slice(-8);
+}
+
+function formatTime(ts) {
+  if (!ts) return '-';
+  try { return new Date(ts).toLocaleString(); } catch (_) { return String(ts); }
+}
+
+async function refreshStoragePanel() {
+  const hasOverlay = !!rootfsOverlay;
+  $('storage-state').textContent = hasOverlay ? 'active' : (('indexedDB' in window) ? 'idle (boot to activate)' : 'IndexedDB unavailable');
+  $('storage-base').textContent = hasOverlay ? shortHash(rootfsOverlay.baseHash) : '-';
+  $('storage-save').disabled = !hasOverlay;
+  $('storage-export').disabled = !hasOverlay;
+  $('storage-import').disabled = !hasOverlay;
+  if (!hasOverlay) {
+    $('storage-blocks').textContent = '-';
+    $('storage-pending').textContent = '-';
+    $('storage-updated').textContent = '-';
+    return;
+  }
+  try {
+    const st = await rootfsOverlay.getStats();
+    $('storage-blocks').textContent = String(st.storedBlocks);
+    $('storage-pending').textContent = String(st.pendingBlocks);
+    $('storage-updated').textContent = formatTime(st.updatedAt);
+  } catch (err) {
+    $('storage-blocks').textContent = 'error';
+    $('storage-pending').textContent = 'error';
+    $('storage-updated').textContent = 'error';
+    storageLog('stats failed: ' + err.message, 'err');
+  }
+}
+
+$('storage-refresh').onclick = () => refreshStoragePanel();
+$('storage-save').onclick = async () => {
+  if (!rootfsOverlay) return;
+  try {
+    await rootfsOverlay.persistNow();
+    storageLog('persisted pending blocks to IndexedDB', 'ok');
+    await refreshStoragePanel();
+  } catch (err) {
+    storageLog('save failed: ' + err.message, 'err');
+  }
+};
+
+$('storage-export').onclick = async () => {
+  if (!rootfsOverlay) return;
+  try {
+    const snap = await rootfsOverlay.exportSnapshot();
+    const blob = new Blob([JSON.stringify(snap)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'lot-rootfs-overlay-' + snap.baseHash.slice(0, 12) + '.json';
+    a.click();
+    URL.revokeObjectURL(url);
+    storageLog('exported snapshot with ' + snap.blocks.length + ' block(s)', 'ok');
+  } catch (err) {
+    storageLog('export failed: ' + err.message, 'err');
+  }
+};
+
+$('storage-import').onclick = () => {
+  const input = $('storage-import-file');
+  input.value = '';
+  input.click();
+};
+
+$('storage-import-file').onchange = async ev => {
+  if (!rootfsOverlay) return;
+  const file = ev.target.files && ev.target.files[0];
+  if (!file) return;
+  try {
+    const wasBooted = booted;
+    const txt = await file.text();
+    const snap = JSON.parse(txt);
+    await rootfsOverlay.importSnapshot(snap, { replace: true });
+    storageLog('imported snapshot from ' + file.name + ' (' + (snap.blocks ? snap.blocks.length : 0) + ' block(s))', 'ok');
+    await refreshStoragePanel();
+    if (wasBooted) {
+      const resetNow = confirm('Snapshot imported. New binaries and directory updates may require a machine reset to become visible immediately. Reset now?');
+      if (resetNow) {
+        storageLog('resetting machine to fully apply imported snapshot…', 'info');
+        await doBoat();
+        storageLog('machine reset complete; imported snapshot is now fully active', 'ok');
+        await refreshStoragePanel();
+      } else {
+        storageLog('import kept live without reset (best-effort mode); if binaries are missing, click reset', 'info');
+      }
+    }
+  } catch (err) {
+    storageLog('import failed: ' + err.message, 'err');
+  }
+};
+
+$('storage-reset').onclick = async () => {
+  if (!confirm('Delete all persisted filesystem overlays from this browser?')) return;
+  try {
+    await clearAllRootfsOverlays();
+    storageLog('cleared all persisted filesystem overlays', 'ok');
+    await refreshStoragePanel();
+  } catch (err) {
+    storageLog('clear failed: ' + err.message, 'err');
+  }
+};
+
+refreshStoragePanel();
 
 // ── tunnels panel ─────────────────────────────────────────────────────────────
 const tunnelsLogEl = $('tunnels-log');
@@ -1325,13 +3099,67 @@ $('tn-run-btn').onclick = () => {
 
 // ── JS tunnel (browser-side WASM guest bridge, no websocat) ──────────────────
 (function () {
-  const TUNNEL_RELAY    = 'https://tunnel.linuxontab.com';
-  const TUNNEL_RELAY_WS = 'wss://tunnel.linuxontab.com';
-  const POOL_SIZE = 3;
+  // HYBRID: register + pool the guest WS on Cloudflare (Durable Object) — Fly's
+  // 443 proxy drops these long-lived browser WS with code 1006 under load; CF's
+  // WS handling is stable. Public TCP exposure still goes to Fly (CF can't do
+  // raw TCP ingress) — see exposePublic() / TUNNEL_EXPOSE_ENDPOINTS. Fly's TCP
+  // shim bridges each inbound connection to CF's /port/client. ?relay=fly forces
+  // the old all-Fly path as a fallback.
+  const _forceFly = new URLSearchParams(location.search).get('relay') === 'fly';
+  const RELAY_CANDIDATES = _forceFly ? [
+    { http: 'https://linuxontab-tunnel.fly.dev', ws: 'wss://linuxontab-tunnel.fly.dev' },
+  ] : [
+    { http: 'https://tunnel.linuxontab.com',     ws: 'wss://tunnel.linuxontab.com' },
+    { http: 'https://linuxontab-tunnel.fly.dev', ws: 'wss://linuxontab-tunnel.fly.dev' },
+  ];
+  let tunnelRelay = RELAY_CANDIDATES[0].http;
+  let tunnelRelayWs = RELAY_CANDIDATES[0].ws;
+  // Pool depth = burst headroom. Each inbound connection is single-use: it
+  // pops a guest WS, and on close that WS is gone, so N rapid connections drain
+  // an N-deep pool before refill (healthTimer, ~1s) catches up, yielding 503
+  // "no guest bridge". 2 was too shallow (a FileZilla dir-listing + transfer,
+  // or a few quick reconnects, drained it). 6 tolerates normal bursts; the CF
+  // pool is cheap to keep warm. Override with ?pool=N.
+  const _poolOverride = parseInt(new URLSearchParams(location.search).get('pool'), 10);
+  const POOL_SIZE = Number.isInteger(_poolOverride) && _poolOverride > 0 ? _poolOverride : 6;
+  const MIN_POOL_SIZE = 2;
   let tunnelCode  = null;
   let tunnelPort  = 22;
   let pool        = [];
   let active      = false;
+  let dialInFlight = 0;
+  let refillTimer = null;
+  let healthTimer = null;
+  let cooloffUntil = 0;
+  let closeBurst = [];
+  const publicEndpoints = new Map();  // guestPort -> { host, publicPort }
+
+  function targetPoolSize(now = Date.now()) {
+    return now < cooloffUntil ? MIN_POOL_SIZE : POOL_SIZE;
+  }
+
+  function decodeCtrlFrame(data) {
+    try {
+      if (typeof data === 'string') return data;
+      if (data instanceof ArrayBuffer) {
+        return new TextDecoder().decode(new Uint8Array(data));
+      }
+      if (ArrayBuffer.isView(data)) {
+        return new TextDecoder().decode(new Uint8Array(data.buffer, data.byteOffset || 0, data.byteLength || 0));
+      }
+    } catch (_) {}
+    return '';
+  }
+
+  function notePoolClose(now = Date.now()) {
+    closeBurst.push(now);
+    const cutoff = now - 8000;
+    while (closeBurst.length && closeBurst[0] < cutoff) closeBurst.shift();
+    if (closeBurst.length >= 4) {
+      cooloffUntil = now + 12000;
+      jtnLog('pool cooloff: detected close burst, temporarily reducing idle sockets', 'hint');
+    }
+  }
 
   function jtnLog(msg, cls) {
     const el = $('tunnels-log');
@@ -1341,83 +3169,224 @@ $('tn-run-btn').onclick = () => {
     d.textContent = msg;
     el.appendChild(d);
     el.scrollTop = el.scrollHeight;
+    // Also post to /log so terminal can track tunnel state
+    try { fetch('/log', { method: 'POST', body: '[jtn] ' + msg }).catch(()=>{}); } catch(_) {}
+  }
+
+  function scheduleRefill(ms = 250) {
+    if (!active) return;
+    if (refillTimer) return;
+    refillTimer = setTimeout(() => {
+      refillTimer = null;
+      fillPool();
+    }, ms);
+  }
+
+  function fillPool() {
+    if (!active || !tunnelCode) return;
+    const deficit = targetPoolSize() - (pool.length + dialInFlight);
+    for (let i = 0; i < deficit; i++) addPoolWs();
   }
 
   function addPoolWs() {
     if (!active || !tunnelCode) return;
+    dialInFlight += 1;
     const ws = new WebSocket(
-      TUNNEL_RELAY_WS + '/port/guest?code=' + tunnelCode + '&port=' + tunnelPort
+      tunnelRelayWs + '/port/guest?code=' + tunnelCode + '&port=' + tunnelPort
     );
     ws.binaryType = 'arraybuffer';
-    pool.push(ws);
+    let settled = false;
+    const settleDial = () => {
+      if (settled) return;
+      settled = true;
+      dialInFlight = Math.max(0, dialInFlight - 1);
+    };
+
     ws.onopen = () => {
+      settleDial();
+      if (!active) {
+        try { ws.close(); } catch (_) {}
+        return;
+      }
+      pool.push(ws);
       jtnLog('guest WS open (pool=' + pool.length + ')', 'hint');
       // Pool WS stays idle until the CF Worker signals a client has arrived.
       // injectConnect is called lazily to avoid dropbear's unauthenticated-
       // session timeout (default ~30s) cycling the entire pool.
+      // Keepalive: ping every 8s. This is BELOW Cloudflare's ~10s DO
+      // hibernation threshold ON PURPOSE — an incoming WS message resets the
+      // timer, so the pool keeps the Durable Object warm and it never
+      // hibernates. That matters because on hibernation wake the DO's
+      // in-memory pool/pair maps are lost; the wake-time 'rehydrate' pass then
+      // churns the pool, dropping to 0 and yielding intermittent 503 "no guest
+      // bridge" on pairing. Staying warm sidesteps that entirely (at the cost
+      // of keeping one DO active while the tunnel is open — fine on paid CF).
+      const ka = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.send('__ping__'); } catch (_) {}
+        } else {
+          clearInterval(ka);
+        }
+      }, 8000);
+      ws._ka = ka;
     };
     ws.onmessage = (e) => {
-      if (e.data !== '__connected__') return;  // ignore unexpected text frames
+      const ctrl = decodeCtrlFrame(e.data).trim();
+      if (ctrl !== '__connected__') return;  // ignore non-control frames on pool sockets
       // CF Worker paired this WS with a client — establish TCP → dropbear now.
+      if (ws._ka) { clearInterval(ws._ka); ws._ka = null; }
+      // Keep active session sockets warm as well; otherwise long-ish quiet
+      // SSH phases can hit relay idle timeouts and close with code 1006.
+      const sessKa = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          try { ws.send('__ping__'); } catch (_) {}
+        } else {
+          clearInterval(sessKa);
+        }
+      }, 5000);
+      ws._sessKa = sessKa;
       pool = pool.filter(w => w !== ws);
-      if (active) addPoolWs();  // refill pool slot immediately
-      jtnLog('client arrived — connecting dropbear (pool=' + pool.length + ')', 'hint');
+      scheduleRefill(0);  // refill pool slot immediately
+      jtnLog('client arrived — connecting ssh (pool=' + pool.length + ')', 'hint');
       const slirp = window.__slirp;
       if (!slirp) { jtnLog('WispSlirp not ready — boot the guest first', 'tn-relay-err'); ws.close(); return; }
       slirp.injectConnect(tunnelPort, ws);
       // injectConnect sets ws.onclose; chain a close logger on top.
       const injClose = ws.onclose;
       ws.onclose = (e2) => {
+        if (ws._sessKa) { clearInterval(ws._sessKa); ws._sessKa = null; }
         jtnLog('SSH session closed code=' + (e2.code || '?') + ' ' + (e2.reason || ''), 'hint');
         if (injClose) injClose.call(ws, e2);
       };
     };
     ws.onerror = () => jtnLog('guest WS error', 'tn-relay-err');
     ws.onclose = (e) => {
+      settleDial();
       // Idle pool WS closed before any client arrived (e.g. CF WS timeout).
+      if (ws._ka) { clearInterval(ws._ka); ws._ka = null; }
+      if (ws._sessKa) { clearInterval(ws._sessKa); ws._sessKa = null; }
       pool = pool.filter(w => w !== ws);
       jtnLog('guest WS closed code=' + (e.code || '?') + ' ' + (e.reason || '') + ' (pool=' + pool.length + ')', 'hint');
-      if (active) setTimeout(addPoolWs, 800);
+      if (active) {
+        notePoolClose();
+        const delay = Date.now() < cooloffUntil ? 4000 : 1200;
+        scheduleRefill(delay);
+      }
     };
   }
 
   async function startJsTunnel(port) {
     tunnelPort = port || 22;
-    try {
-      const resp = await fetch(TUNNEL_RELAY + '/port/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ports: [tunnelPort] }),
-      });
-      if (!resp.ok) { jtnLog('register failed: ' + resp.status, 'tn-relay-err'); return; }
-      const j = await resp.json();
-      tunnelCode = j.code;
-    } catch (e) {
-      jtnLog('register error: ' + e.message, 'tn-relay-err');
+    let regErr = null;
+    tunnelCode = null;
+    for (const cand of RELAY_CANDIDATES) {
+      try {
+        const resp = await fetch(cand.http + '/port/register', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ports: [tunnelPort] }),
+        });
+        if (!resp.ok) { regErr = 'register failed: ' + resp.status + ' @ ' + cand.http; continue; }
+        const j = await resp.json();
+        if (!j || !j.code) { regErr = 'register invalid response @ ' + cand.http; continue; }
+        tunnelCode = j.code;
+        tunnelRelay = cand.http;
+        tunnelRelayWs = cand.ws;
+        break;
+      } catch (e) {
+        regErr = 'register error: ' + e.message + ' @ ' + cand.http;
+      }
+    }
+    if (!tunnelCode) {
+      jtnLog(regErr || 'register failed on all relays', 'tn-relay-err');
       return;
     }
     active = true;
+    if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
+    healthTimer = setInterval(() => { if (active) fillPool(); }, 1000);
     const codeEl = $('jtn-code');
     if (codeEl) codeEl.textContent = 'code: ' + tunnelCode;
     const cmdEl  = $('jtn-cmd');
     if (cmdEl)  cmdEl.textContent  = 'sh <(curl -sS https://linuxontab.com/local/tunnel-listen.sh) ' + tunnelCode;
     jtnLog('registered code: ' + tunnelCode, 'tn-relay-ok');
+    jtnLog('relay: ' + tunnelRelay, 'hint');
     jtnLog('then: ssh -p 2222 root@localhost  or  sftp -P 2222 root@localhost', 'hint');
-    for (let i = 0; i < POOL_SIZE; i++) setTimeout(addPoolWs, i * 300);
+    // When in autoboot mode, POST the code to the dev server log for automated testing
+    try { fetch('/log', { method: 'POST', body: 'AUTOBOOT_TUNNEL_CODE:' + tunnelCode }).catch(()=>{}); } catch(e) {}
+    fillPool();
+    // Auto-expose a PUBLIC endpoint so the guest is reachable "in the wild"
+    // with no host-side tunnel-listen. Fire-and-forget; surfaces the URL when ready.
+    exposePublic(tunnelPort);
   }
+
+  // Ask the relay to allocate a public TCP port that bridges to this guest port
+  // through the page's WS pool (relay /port/expose). Returns {host, publicPort}.
+  // This is the "expose in the wild" path — anyone can connect to host:publicPort,
+  // no pairing code / tunnel-listen needed. Relies on the relay sending
+  // '__connected__' to the guest bridge (server.js _completeClientPair parity).
+  async function exposePublic(port) {
+    if (!active || !tunnelCode) return null;
+    const p = port || tunnelPort;
+    try {
+      // Expose ALWAYS goes to Fly — CF has no raw TCP ingress. Fly stores the
+      // public-port→code assignment and, on each inbound TCP connection, bridges
+      // to CF's /port/client for the (CF-minted) code. tunnelRelay may be CF.
+      const exposeHost = TUNNEL_EXPOSE_ENDPOINTS[0];
+      const resp = await fetch(exposeHost + '/port/expose', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // Port 22 is reserved by Fly for machine SSH, so prefer the stable
+        // public 2222 for the guest's sshd; other ports try same-number.
+        body: JSON.stringify({ code: tunnelCode, port: p, preferPort: p === 22 ? 2222 : p }),
+      });
+      if (!resp.ok) { jtnLog('expose failed: ' + resp.status, 'tn-relay-err'); return null; }
+      const j = await resp.json();
+      if (!j || !j.publicPort) { jtnLog('expose: invalid response', 'tn-relay-err'); return null; }
+      const info = { host: j.host, publicPort: j.publicPort, port: p };
+      publicEndpoints.set(p, info);
+      jtnLog('PUBLIC ' + p + ' → ' + j.host + ':' + j.publicPort +
+        (p === 22 ? '  (ssh -p ' + j.publicPort + ' root@' + j.host + ')' : ''), 'tn-relay-ok');
+      const pubEl = $('jtn-public');
+      if (pubEl) pubEl.textContent = j.host + ':' + j.publicPort;
+      window.dispatchEvent(new CustomEvent('lot-public', { detail: info }));
+      return info;
+    } catch (e) {
+      jtnLog('expose error: ' + e.message, 'tn-relay-err');
+      return null;
+    }
+  }
+  window.exposePublic = exposePublic;
+  window.getTunnelInfo = () => ({ code: tunnelCode, port: tunnelPort, relay: tunnelRelay, active,
+    publicEndpoints: Object.fromEntries(publicEndpoints) });
 
   function stopJsTunnel() {
     active = false;
+    if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
+    if (refillTimer) { clearTimeout(refillTimer); refillTimer = null; }
+    dialInFlight = 0;
+    cooloffUntil = 0;
+    closeBurst = [];
     for (const ws of pool) try { ws.close(); } catch (_) {}
     pool = [];
     tunnelCode = null;
+    publicEndpoints.clear();
     const codeEl = $('jtn-code'); if (codeEl) codeEl.textContent = '';
     const cmdEl  = $('jtn-cmd');  if (cmdEl)  cmdEl.textContent  = '';
+    const pubEl  = $('jtn-public'); if (pubEl) pubEl.textContent = '';
+    window.dispatchEvent(new CustomEvent('lot-public-clear'));
     jtnLog('tunnel stopped', 'hint');
   }
 
+  // Allow other UI modules (e.g., X display) to pause tunnel traffic.
+  window.stopJsTunnel = stopJsTunnel;
+  // Exposed for automation/tests: switch the tunnel to a different guest port
+  // (e.g. stopJsTunnel(); startJsTunnel(8080) to expose an in-guest web app).
+  window.startJsTunnel = startJsTunnel;
+
   $('jtn-start').onclick = () => startJsTunnel(22);
   $('jtn-stop').onclick  = stopJsTunnel;
+  // Auto-start tunnel when ?autoboot is in URL
+  if (new URLSearchParams(location.search).has('autoboot')) startJsTunnel(22);
 })();
 
 // ── lot-bridge panel ──────────────────────────────────────────────────────────
@@ -1430,7 +3399,6 @@ $('tn-run-btn').onclick = () => {
   const lbStatusBtn = $('lb-status-btn');
   const lbRefresh   = $('lb-refresh');
   const lbPorts     = $('lb-ports');
-  const lbRelay     = $('lb-relay');
   const lbDot       = $('lb-dot');
   const lbStateLabel = $('lb-state-label');
   const lbCodeVal   = $('lb-code-val');
@@ -1476,48 +3444,66 @@ $('tn-run-btn').onclick = () => {
     await new Promise(r => setTimeout(r, 1000));
   }
 
+  // Page-side expose: reuse the browser's WS pool + slirp injection (which is
+  // reliable) and ask the relay for a public TCP port via /port/expose. The old
+  // guest-side approach (download lot-bridge, run websocat inside the guest) is a
+  // dead end — websocat has no wasm build and isn't in the guest. Everything here
+  // runs on the page; nothing is installed in the guest.
   async function lbDoStart() {
-    const ports = (lbPorts.value || '22 8080').trim().split(/\s+/).filter(Boolean);
-    const relay = (lbRelay.value || 'https://linuxontab-tunnel.fly.dev').trim();
-    if (!ports.length) { lbAppend('no ports specified', 'lb-err'); return; }
-
-    lbAppend('downloading lot-bridge binary…', 'lb-info');
-    guestSend(
-      'rm -f /usr/local/bin/lot-bridge; ' +
-      'wget -qO /usr/local/bin/lot-bridge https://raw.githubusercontent.com/kilian-ai/linuxontab/main/local/lot-bridge ' +
-      '|| wget -qO /usr/local/bin/lot-bridge https://linuxontab.com/local/lot-bridge; ' +
-      'chmod +x /usr/local/bin/lot-bridge; ' +
-      '/usr/local/bin/lot-bridge --version 2>&1'
-    );
-    lbAppend('waiting for download (watch terminal)…', 'lb-info');
-    await new Promise(r => setTimeout(r, 8000));
-
-    guestSend('lot-bridge down 2>/dev/null; killall -q websocat 2>/dev/null; killall -q lot-bridge 2>/dev/null; true');
-    guestSend('rm -f /tmp/lot-bridge.code /tmp/lot-bridge.status.json /tmp/lot-bridge.pid');
-    await new Promise(r => setTimeout(r, 600));
-
-    const cmd = `LOT_BRIDGE_RELAY='${relay}' lot-bridge up ${ports.join(' ')} > /tmp/lot-bridge.log 2>&1 &`;
-    lbAppend('starting: ' + cmd, 'lb-info');
-    guestSend(cmd);
-    lbAppend('sent — watching for code (check terminal)…', 'lb-info');
-
-    // Poll for code via terminal output — we can only ask the guest to print it.
-    for (let i = 0; i < 8; i++) {
-      await new Promise(r => setTimeout(r, 1500));
-      guestSend('cat /tmp/lot-bridge.code 2>/dev/null | tr -d "\\n"; echo');
+    const ports = (lbPorts.value || '22').trim().split(/\s+/).filter(Boolean)
+      .map(n => parseInt(n, 10)).filter(n => Number.isInteger(n) && n > 0 && n < 65536);
+    if (!ports.length) { lbAppend('no valid ports specified', 'lb-err'); return; }
+    if (typeof window.startJsTunnel !== 'function' || typeof window.exposePublic !== 'function') {
+      lbAppend('tunnel module not ready — boot the guest first', 'lb-err'); return;
     }
-    lbAppend('done — copy code from terminal output above', 'lb-ok');
-    lbSetRunning(true, '?');
+
+    // The page pool bridges ONE guest port at a time (tunnelPort). Use the first
+    // listed port as the bridged port; expose it publicly. Extra ports are noted.
+    const primary = ports[0];
+    lbAppend('starting page tunnel on guest port ' + primary + '…', 'lb-info');
+    const info = window.getTunnelInfo();
+    if (!info.active || info.port !== primary) {
+      window.stopJsTunnel();
+      await window.startJsTunnel(primary);   // registers + opens WS pool + auto-exposes
+    } else {
+      await window.exposePublic(primary);    // already bridging this port; just expose
+    }
+    await new Promise(r => setTimeout(r, 1200));
+
+    const pub = window.getTunnelInfo().publicEndpoints[primary];
+    if (pub) {
+      lbAppend('PUBLIC: ' + pub.host + ':' + pub.publicPort, 'lb-ok');
+      if (primary === 22) lbAppend('ssh -p ' + pub.publicPort + ' root@' + pub.host, 'lb-ok');
+      lbSetRunning(true, window.getTunnelInfo().code);
+      lbPoolInfo.textContent = pub.host + ':' + pub.publicPort;
+    } else {
+      lbAppend('expose did not return a public port — check the relay', 'lb-err');
+    }
+    if (ports.length > 1) {
+      lbAppend('note: only 1 guest port is bridged at a time; ' +
+        'extra ports (' + ports.slice(1).join(', ') + ') were ignored', 'lb-info');
+    }
   }
 
   async function lbDoStop() {
     lbAppend('stopping…', 'lb-info');
-    guestSend('lot-bridge down 2>/dev/null; killall -q websocat 2>/dev/null; killall -q lot-bridge 2>/dev/null; true');
-    await new Promise(r => setTimeout(r, 800));
+    if (typeof window.stopJsTunnel === 'function') window.stopJsTunnel();
+    await new Promise(r => setTimeout(r, 400));
     lbSetRunning(false, null);
     lbPoolInfo.textContent = '';
-    lbAppend('stop command sent', 'lb-ok');
+    lbAppend('tunnel stopped', 'lb-ok');
   }
+
+  // Reflect auto-expose (e.g. on autoboot) in the panel even if opened later.
+  window.addEventListener('lot-public', (e) => {
+    const d = e.detail || {};
+    lbAppend('PUBLIC: ' + d.host + ':' + d.publicPort, 'lb-ok');
+    lbPoolInfo.textContent = d.host + ':' + d.publicPort;
+    try { lbSetRunning(true, window.getTunnelInfo().code); } catch (_) {}
+  });
+  window.addEventListener('lot-public-clear', () => {
+    lbSetRunning(false, null); lbPoolInfo.textContent = '';
+  });
 
   lbStart.onclick = async () => {
     lbStart.disabled = true;
@@ -1549,6 +3535,590 @@ $('tn-run-btn').onclick = () => {
 
   // Expose guestSend globally for test/debug automation
   window.guestSend = guestSend;
+})();
+
+// ── X Display / VNC-over-injectConnect ───────────────────────────────────────
+// Minimal RFB 3.8 client + GuestVncSocket that uses slirp.injectConnect
+// to open a synthetic TCP connection to vnc-server on port 5900.
+//
+// Data flow (no external relay needed — entirely in-browser):
+//   canvas input → RfbClient.send() → relay.onmessage() → injectConnect buffer → guest VNC server
+//   guest VNC server → slirp handleTcp → relay.send() → RfbClient.onmessage() → canvas
+
+(function () {
+
+let xDbgBudget = 160;
+function xDbg(msg) {
+  if (xDbgBudget <= 0) return;
+  xDbgBudget--;
+  try { fetch('/log', { method: 'POST', body: '[xrfb] ' + msg }).catch(() => {}); }
+  catch (_) {}
+}
+
+// ── Minimal RFB 3.8 client ──────────────────────────────────────────────────
+class RfbClient {
+  constructor(canvas, socket) {
+    this._canvas = canvas;
+    this._ctx    = canvas.getContext('2d');
+    this._ws     = socket;
+    this._buf    = new Uint8Array(0);
+    this._state  = 'version';
+    this._w = 0; this._h = 0;
+    this._rectsLeft = 0;
+    this._rawX = 0; this._rawY = 0; this._rawW = 0; this._rawH = 0;
+    this._frames = 0;
+    this._rxEvents = 0;
+    this._rawWaitLogged = false;
+    this._pumping = false;
+    this._pumpPending = false;
+    this._lastFrameTs = Date.now();
+    this._lastPointerReqTs = 0;
+    this._watchdog = setInterval(() => {
+      // RARE escape hatch ONLY. The msg-done → 16ms → FbReq loop self-paces
+      // ONE outstanding request at a time; any extra request queues a whole
+      // extra update response guest-side. During a guest park (kernel
+      // IRQ-wake bug) a short-interval escape hatch compounds a request
+      // backlog that starves PointerEvents for minutes. Requests are never
+      // lost (windowed sender retransmits), so this exists only to restart
+      // the loop after a truly broken exchange.
+      if (!this._w || !this._h) return;
+      const idleMs = Date.now() - this._lastFrameTs;
+      if (idleMs < 30000) return;
+      this._sendFbReq(true);
+      this._lastFrameTs = Date.now();  // pace the escape hatch itself
+    }, 1000);
+
+    socket.onmessage = (e) => {
+      try {
+        const d = this._normalizeIncoming(e.data);
+        if (this._rxEvents < 30) {
+          this._rxEvents++;
+          xDbg('rx chunk=' + d.length + ' state=' + this._state + ' bufBefore=' + this._buf.length);
+        }
+        this._append(d);
+        if (this._pumping) {
+          this._pumpPending = true;
+          return;
+        }
+        do {
+          this._pumpPending = false;
+          this._pumping = true;
+          try {
+            this._pump();
+          } finally {
+            this._pumping = false;
+          }
+        } while (this._pumpPending);
+      } catch (err) {
+        xDbg('pump exception state=' + this._state + ' err=' + (err && (err.stack || err.message) || String(err)));
+        throw err;
+      }
+    };
+    socket.onclose = () => { this.destroy(); $('x-status').textContent = 'disconnected'; xDisconnect(); };
+    socket.onerror = (e) => { console.error('[rfb] socket error', e); };
+  }
+
+  destroy() {
+    if (this._watchdog) {
+      clearInterval(this._watchdog);
+      this._watchdog = null;
+    }
+  }
+
+  _append(d) {
+    const b = new Uint8Array(this._buf.length + d.length);
+    b.set(this._buf); b.set(d, this._buf.length);
+    this._buf = b;
+  }
+  _normalizeIncoming(data) {
+    if (data instanceof Uint8Array) return data;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (ArrayBuffer.isView(data)) return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    if (data && data.buffer instanceof ArrayBuffer) {
+      const off = data.byteOffset || 0;
+      const len = data.byteLength || (data.buffer.byteLength - off);
+      return new Uint8Array(data.buffer, off, len);
+    }
+    throw new Error('unsupported onmessage data type: ' + Object.prototype.toString.call(data));
+  }
+  _consume(n) { this._buf = this._buf.slice(n); }
+  _u8(o)  { return this._buf[o]; }
+  _u16(o) { return (this._buf[o] << 8) | this._buf[o+1]; }
+  _u32(o) { return (((this._buf[o] << 24) | (this._buf[o+1] << 16) | (this._buf[o+2] << 8) | this._buf[o+3]) >>> 0); }
+  _send(d) { this._ws.send(d); }
+
+  _pump() { while (this._step()) {} }
+
+  _step() {
+    const b = this._buf;
+    switch (this._state) {
+
+    case 'version':
+      if (b.length < 12) return false;
+      this._send(new TextEncoder().encode('RFB 003.008\n'));
+      this._consume(12);
+      this._state = 'sec-list';
+      return true;
+
+    case 'sec-list': {
+      if (b.length < 1) return false;
+      const n = b[0];
+      if (b.length < 1 + n) return false;
+      const types = Array.from(b.slice(1, 1 + n));
+      this._consume(1 + n);
+      if (types.includes(1)) {
+        this._send(new Uint8Array([1]));   // choose None
+        this._state = 'sec-result';
+      } else {
+        $('x-status').textContent = 'error: no supported auth type (got ' + types + ')';
+        return false;
+      }
+      return true;
+    }
+
+    case 'sec-result':
+      if (b.length < 4) return false;
+      if (this._u32(0) !== 0) { $('x-status').textContent = 'auth failed'; return false; }
+      this._consume(4);
+      this._send(new Uint8Array([1]));     // ClientInit shared=1
+      this._state = 'server-init';
+      return true;
+
+    case 'server-init': {
+      if (b.length < 24) return false;
+      this._w = this._u16(0); this._h = this._u16(2);
+      const nameLen = this._u32(20);
+      if (b.length < 24 + nameLen) return false;
+      const name = new TextDecoder().decode(b.slice(24, 24 + nameLen));
+      this._consume(24 + nameLen);
+      this._canvas.width  = this._w;
+      this._canvas.height = this._h;
+      $('x-status').textContent = 'connected — ' + this._w + '×' + this._h + ' "' + name + '"';
+      xDbg('server-init ' + this._w + 'x' + this._h + ' name=' + JSON.stringify(name));
+      $('x-disconnect').disabled = false;
+      this._sendFbReq(false);
+      this._state = 'msg';
+      return true;
+    }
+
+    case 'msg':
+      if (b.length < 1) return false;
+      switch (b[0]) {
+      case 0:  // FramebufferUpdate
+        if (b.length < 4) return false;
+        this._rectsLeft = this._u16(2);
+        this._consume(4);
+        this._state = this._rectsLeft > 0 ? 'rect-hdr' : 'msg-done';
+        return true;
+      case 1:  // SetColourMapEntries
+        if (b.length < 6) return false;
+        const nColors = this._u16(4);
+        if (b.length < 6 + nColors * 6) return false;
+        this._consume(6 + nColors * 6);
+        return true;
+      case 2:  // Bell — the guest server's repair nudge (librfb pushes one
+        // after every 300ms of request silence, on its unthrottled usleep
+        // clock). Answer with a no-op SetEncodings: a pure side-channel
+        // message the server drains without responding, whose only purpose
+        // is to ENQUEUE bytes toward the guest — the enqueue path runs the
+        // stale-unacked check and go-back-N repairs any transport hole,
+        // with no browser timer involved and no effect on the one-
+        // outstanding update pipeline.
+        this._consume(1);
+        this._send(new Uint8Array([2, 0, 0, 0]));  // SetEncodings, count=0
+        return true;
+      case 3: {  // ServerCutText
+        if (b.length < 8) return false;
+        const tlen = this._u32(4);
+        if (b.length < 8 + tlen) return false;
+        // librfb carries the pointer shape here, marked by a leading \x01
+        // (see rfb_set_cursor): the viewer draws its own native cursor, so
+        // the pointer stays crisp and lag-free even mid-stall. Anything
+        // else is a genuine clipboard update.
+        const txt = new TextDecoder().decode(b.slice(8, 8 + tlen));
+        const m = /^\x01rfb-cursor:([a-z-]+)$/.exec(txt);
+        if (m) this._canvas.style.cursor = m[1];
+        this._consume(8 + tlen);
+        return true;
+      }
+      default:
+        console.error('[rfb] unknown server msg', b[0]);
+        return false;
+      }
+
+    case 'msg-done':
+      // Immediately request the next update — message-driven, no timer, so
+      // background-tab timer throttling (setTimeout clamped to ≥1 s when
+      // document.visibilityState is hidden) cannot slow the update loop.
+      // Pacing is the server's job: it sleeps ~30 ms before answering when
+      // the pupils didn't move.
+      this._sendFbReq(true);
+      this._state = 'msg';
+      return true;
+
+    case 'rect-hdr':
+      if (b.length < 12) return false;
+      this._rawX = this._u16(0); this._rawY = this._u16(2);
+      this._rawW = this._u16(4); this._rawH = this._u16(6);
+      const enc  = this._u32(8) | 0;  // signed
+      this._rawWaitLogged = false;
+      if (this._frames < 3) xDbg('rect-hdr x=' + this._rawX + ' y=' + this._rawY + ' w=' + this._rawW + ' h=' + this._rawH + ' enc=' + enc + ' rectsLeft=' + this._rectsLeft);
+      this._consume(12);
+      if (enc === 0) {
+        this._state = 'raw-pixels';
+      } else if (enc === 2) {
+        this._state = 'rre-hdr';
+      } else {
+        console.warn('[rfb] unsupported encoding', enc, '— skipping');
+        this._rectsLeft--;
+        this._state = this._rectsLeft > 0 ? 'rect-hdr' : 'msg-done';
+      }
+      return true;
+
+    case 'rre-hdr': {
+      // RRE (encoding 2): u32 nSubrects, bg pixel (4B BGRA), then per
+      // subrect: pixel (4B) + x,y,w,h (u16 each) relative to rect origin.
+      if (b.length < 8) return false;
+      this._rreN = this._u32(0);
+      this._rreBg = 'rgb(' + b[6] + ',' + b[5] + ',' + b[4] + ')';  // B,G,R
+      this._consume(8);
+      this._ctx.fillStyle = this._rreBg;
+      this._ctx.fillRect(this._rawX, this._rawY, this._rawW, this._rawH);
+      this._state = this._rreN > 0 ? 'rre-sub' : 'rre-done';
+      return true;
+    }
+
+    case 'rre-sub': {
+      const need = this._rreN * 12;
+      if (b.length < need) return false;
+      for (let i = 0; i < this._rreN; i++) {
+        const o = i * 12;
+        this._ctx.fillStyle = 'rgb(' + b[o+2] + ',' + b[o+1] + ',' + b[o] + ')';
+        this._ctx.fillRect(this._rawX + this._u16(o+4), this._rawY + this._u16(o+6),
+                           this._u16(o+8), this._u16(o+10));
+      }
+      this._consume(need);
+      this._state = 'rre-done';
+      return true;
+    }
+
+    case 'rre-done':
+      this._lastFrameTs = Date.now();
+      this._frames++;
+      this._rectsLeft--;
+      this._state = this._rectsLeft > 0 ? 'rect-hdr' : 'msg-done';
+      return true;
+
+    case 'raw-pixels': {
+      const sz = this._rawW * this._rawH * 4;
+      if (b.length < sz) {
+        if (!this._rawWaitLogged) {
+          this._rawWaitLogged = true;
+          xDbg('raw wait have=' + b.length + ' need=' + sz + ' w=' + this._rawW + ' h=' + this._rawH);
+        }
+        return false;
+      }
+      const pixels = b.slice(0, sz);
+      this._consume(sz);
+      // BGRA → RGBA
+      const rgba = new Uint8ClampedArray(sz);
+      for (let i = 0; i < sz; i += 4) {
+        rgba[i]   = pixels[i + 2];
+        rgba[i+1] = pixels[i + 1];
+        rgba[i+2] = pixels[i];
+        rgba[i+3] = 255;
+      }
+      this._ctx.putImageData(new ImageData(rgba, this._rawW, this._rawH), this._rawX, this._rawY);
+      this._lastFrameTs = Date.now();
+      this._frames++;
+      if (this._frames <= 3 || (this._frames % 60) === 0) {
+        xDbg('frame=' + this._frames + ' putImageData ' + this._rawW + 'x' + this._rawH + ' at ' + this._rawX + ',' + this._rawY);
+      }
+      this._rectsLeft--;
+      this._state = this._rectsLeft > 0 ? 'rect-hdr' : 'msg-done';
+      return true;
+    }
+
+    }
+    return false;
+  }
+
+  _sendFbReq(incremental) {
+    const m = new Uint8Array(10);
+    m[0] = 3; m[1] = incremental ? 1 : 0;
+    m[2] = 0; m[3] = 0; // x
+    m[4] = 0; m[5] = 0; // y
+    m[6] = (this._w >> 8) & 0xff; m[7] = this._w & 0xff; // width
+    m[8] = (this._h >> 8) & 0xff; m[9] = this._h & 0xff; // height
+    this._send(m);
+  }
+
+  sendKey(keysym, down) {
+    const m = new Uint8Array(8);
+    m[0] = 4; m[1] = down ? 1 : 0;
+    m[4] = (keysym >> 24) & 0xff; m[5] = (keysym >> 16) & 0xff;
+    m[6] = (keysym >> 8)  & 0xff; m[7] =  keysym        & 0xff;
+    this._send(m);
+  }
+
+  sendPointer(buttons, x, y) {
+    // Do NOT piggyback an update request here: the continuous msg-done
+    // request loop already picks up the new pointer position, and extra
+    // mid-response requests queue redundant updates guest-side (see
+    // watchdog comment). Throttle pure moves — every queued message is a
+    // read() the lurchy guest must chew through on wake, so keep the line
+    // short: ~30 Hz while updates flow, 1 Hz while the guest is stalled.
+    // Button changes always go through immediately.
+    const now = Date.now();
+    if (buttons === this._lastButtons) {
+      const healthy = (now - this._lastFrameTs) < 1000;
+      const minGap  = healthy ? 33 : 1000;
+      if (now - this._lastPointerReqTs < minGap) return;
+    }
+    this._lastButtons = buttons;
+    this._lastPointerReqTs = now;
+    const m = new Uint8Array(6);
+    m[0] = 5; m[1] = buttons;
+    m[2] = (x >> 8) & 0xff; m[3] = x & 0xff;
+    m[4] = (y >> 8) & 0xff; m[5] = y & 0xff;
+    this._send(m);
+  }
+}
+
+// ── X display state ──────────────────────────────────────────────────────────
+let xRfbClient = null;
+let xRelay     = null;
+let xKickTimer = null;
+let xAutoHeal  = null;
+
+function xConnect() {
+  const slirp = window.__slirp;
+  if (!slirp) { $('x-status').textContent = 'boot guest first'; return; }
+
+  // The JS tunnel pool can generate constant websocket churn in autoboot mode.
+  // Pause it while using the in-browser VNC path to avoid starving RFB parsing.
+  try {
+    if (typeof window.stopJsTunnel === 'function') window.stopJsTunnel();
+  } catch (_) {}
+
+  $('x-status').textContent = 'connecting to :5900…';
+  $('x-connect').disabled = true;
+  xDbg('xConnect begin');
+
+  // Buffer early guest bytes until the RFB client is constructed.
+  const pendingGuestToBrowser = [];
+  let guestToBrowserBatch = [];
+  let guestToBrowserBatchBytes = 0;
+  let guestToBrowserFlushScheduled = false;
+
+  function flushGuestToBrowserBatch() {
+    guestToBrowserFlushScheduled = false;
+    if (!xRfbClient || !xRfbClient._ws.onmessage || guestToBrowserBatch.length === 0) return;
+    if (guestToBrowserBatch.length === 1) {
+      xRfbClient._ws.onmessage({ data: guestToBrowserBatch[0] });
+      guestToBrowserBatch = [];
+      guestToBrowserBatchBytes = 0;
+      return;
+    }
+    const merged = new Uint8Array(guestToBrowserBatchBytes);
+    let off = 0;
+    for (const chunk of guestToBrowserBatch) {
+      const u8 = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
+      merged.set(u8, off);
+      off += u8.length;
+    }
+    guestToBrowserBatch = [];
+    guestToBrowserBatchBytes = 0;
+    xRfbClient._ws.onmessage({ data: merged.buffer });
+  }
+
+  // relay adapter — passed to injectConnect (looks like a relay WebSocket)
+  // readyState must equal WebSocket.OPEN (1) so #handleTcp forwards guest data.
+  xRelay = {
+    binaryType: 'arraybuffer',
+    readyState: WebSocket.OPEN,
+    // .onmessage and .onclose are set by injectConnect synchronously
+    send(guestData) {
+      // guest → browser: deliver to RFB client
+      if (xRfbClient && xRfbClient._ws.onmessage) {
+        const u8 = guestData instanceof Uint8Array ? guestData : new Uint8Array(guestData);
+        guestToBrowserBatch.push(u8);
+        guestToBrowserBatchBytes += u8.length;
+        // Flush at ~16KB or next tick, whichever comes first.
+        if (guestToBrowserBatchBytes >= 16384) {
+          flushGuestToBrowserBatch();
+        } else if (!guestToBrowserFlushScheduled) {
+          guestToBrowserFlushScheduled = true;
+          setTimeout(flushGuestToBrowserBatch, 0);
+        }
+      } else {
+        pendingGuestToBrowser.push(guestData);
+      }
+    },
+    close() {
+      if (xRfbClient && xRfbClient._ws.onclose) {
+        xRfbClient._ws.onclose({ code: 1000, reason: 'relay closed' });
+      }
+    }
+  };
+
+  // clientSocket adapter — passed to RfbClient (looks like a WebSocket)
+  const clientSocket = {
+    binaryType: 'arraybuffer',
+    onmessage: null,
+    onclose:   null,
+    onerror:   null,
+    send(data) {
+      // browser → guest: inject via relay.onmessage set by injectConnect
+      if (xRelay && xRelay.onmessage) xRelay.onmessage({ data: data });
+    },
+    close() {
+      if (xRelay && xRelay.onclose) xRelay.onclose({ code: 1000, reason: 'user disconnect' });
+    }
+  };
+
+  // Instantiate RFB client — sets clientSocket.onmessage, starts state machine
+  xRfbClient = new RfbClient($('x-canvas'), clientSocket);
+  window.__xRfb = xRfbClient;  // debug handle
+
+  // Open synthetic TCP connection to guest port 5900
+  slirp.injectConnect(5900, xRelay);
+  xDbg('injectConnect 5900 issued');
+
+  // Keep the guest responsive while the X session is open: if it parks with
+  // virtio-net IRQs NAPI-masked, injected pointer/update traffic stalls
+  // until an unmasked IRQ wakes the CPU. Kick via the console device.
+  if (!xKickTimer && window.__lotConsoleKick) {
+    xKickTimer = setInterval(window.__lotConsoleKick, 250);
+  }
+
+  // Auto-heal: the wasm kernel's timer/IRQ layer can wedge the guest's TCP
+  // mid-session (the bulk-transfer stall family) and it rarely self-recovers,
+  // but a RECONNECT reliably re-establishes a fresh path. If the update loop
+  // has been dead for 45 s (the RfbClient escape hatch gets a shot at 30 s),
+  // bounce the session automatically.
+  if (!xAutoHeal) xAutoHeal = setInterval(() => {
+    if (!xRfbClient || !xRfbClient._w) return;
+    if (Date.now() - xRfbClient._lastFrameTs > 45000) {
+      xDbg('auto-heal: update loop dead >45s — reconnecting');
+      xDisconnect();
+      setTimeout(() => { if (!xRfbClient) xConnect(); }, 1000);
+    }
+  }, 5000);
+
+  // Flush any bytes that arrived between injectConnect and handler wiring.
+  while (pendingGuestToBrowser.length && xRfbClient && xRfbClient._ws.onmessage) {
+    const d = pendingGuestToBrowser.shift();
+    const u8 = d instanceof Uint8Array ? d : new Uint8Array(d);
+    guestToBrowserBatch.push(u8);
+    guestToBrowserBatchBytes += u8.length;
+  }
+  flushGuestToBrowserBatch();
+}
+
+function xDisconnect() {
+  if (xKickTimer) { clearInterval(xKickTimer); xKickTimer = null; }
+  if (xAutoHeal)  { clearInterval(xAutoHeal);  xAutoHeal  = null; }
+  if (xRfbClient) {
+    try { xRfbClient.destroy(); } catch (_) {}
+    try { xRfbClient._ws.close(); } catch (_) {}
+    xRfbClient = null;
+  }
+  xRelay = null;
+  $('x-connect').disabled   = false;
+  $('x-disconnect').disabled = true;
+  $('x-status').textContent  = 'disconnected';
+}
+
+// ── Toolbar buttons ──────────────────────────────────────────────────────────
+$('x-display-btn').onclick = () => {
+  const showing = !$('x-view').hidden;
+  $('term').hidden      = !showing;
+  $('cgi-view').hidden  = true;
+  $('x-view').hidden    = showing;
+  if (!showing) {
+    // switched to X view — show terminal in background, keep xterm alive
+    $('term').hidden = true;
+  } else {
+    $('term').hidden = false;
+    term.focus();
+  }
+};
+
+$('x-connect').onclick    = () => xConnect();
+$('x-disconnect').onclick = () => xDisconnect();
+
+// Forward keyboard events to VNC when canvas is focused
+$('x-canvas').addEventListener('keydown', (e) => {
+  if (!xRfbClient) return;
+  const ks = domKeyToKeysym(e.key);
+  if (ks) xRfbClient.sendKey(ks, true);
+  e.preventDefault();
+});
+$('x-canvas').addEventListener('keyup', (e) => {
+  if (!xRfbClient) return;
+  const ks = domKeyToKeysym(e.key);
+  if (ks) xRfbClient.sendKey(ks, false);
+  e.preventDefault();
+});
+$('x-canvas').setAttribute('tabindex', '0');
+
+// Forward mouse events — xeyes-style: track the pointer across the whole
+// page while the X view is open, not only over the canvas. RFB pointer
+// coords are unsigned, so positions outside the framebuffer clamp to its
+// edge (the eyes still look toward the pointer's direction).
+let xDragFromCanvas = false;
+function xPointerXY(e) {
+  const c = $('x-canvas');
+  const r = c.getBoundingClientRect();
+  const sx = r.width  ? c.width  / r.width  : 1;
+  const sy = r.height ? c.height / r.height : 1;
+  const x = Math.max(0, Math.min(c.width  - 1, Math.round((e.clientX - r.left) * sx)));
+  const y = Math.max(0, Math.min(c.height - 1, Math.round((e.clientY - r.top)  * sy)));
+  return [x, y];
+}
+document.addEventListener('mousemove', (e) => {
+  if (!xRfbClient || $('x-view').hidden) return;
+  const [x, y] = xPointerXY(e);
+  // Buttons are only honoured for drags that started on the canvas, so
+  // clicking shell UI elsewhere never grabs the guest window.
+  xRfbClient.sendPointer(xDragFromCanvas ? (e.buttons & 7) : 0, x, y);
+});
+$('x-canvas').addEventListener('mousedown', (e) => {
+  if (!xRfbClient) return;
+  $('x-canvas').focus();
+  xDragFromCanvas = true;
+  const [x, y] = xPointerXY(e);
+  const btn = (e.button === 0 ? 1 : e.button === 1 ? 2 : e.button === 2 ? 4 : 0);
+  xRfbClient.sendPointer(btn, x, y);
+  e.preventDefault();
+});
+// Document-level mouseup so a drag released outside the canvas still ends.
+document.addEventListener('mouseup', (e) => {
+  if (!xRfbClient) return;
+  if (!xDragFromCanvas && $('x-view').hidden) return;
+  xDragFromCanvas = false;
+  const [x, y] = xPointerXY(e);
+  xRfbClient.sendPointer(0, x, y);
+});
+$('x-canvas').addEventListener('contextmenu', (e) => e.preventDefault());
+
+// Minimal X11 keysym mapping for common keys
+function domKeyToKeysym(key) {
+  if (key.length === 1) return key.codePointAt(0);  // ASCII
+  const map = {
+    'Enter': 0xff0d, 'Backspace': 0xff08, 'Tab': 0xff09, 'Escape': 0xff1b,
+    'Delete': 0xffff, 'Insert': 0xff63, 'Home': 0xff50, 'End': 0xff57,
+    'PageUp': 0xff55, 'PageDown': 0xff56,
+    'ArrowLeft': 0xff51, 'ArrowUp': 0xff52, 'ArrowRight': 0xff53, 'ArrowDown': 0xff54,
+    'Shift': 0xffe1, 'Control': 0xffe3, 'Alt': 0xffe9, 'Meta': 0xffe7,
+    'CapsLock': 0xffe5, 'F1': 0xffbe, 'F2': 0xffbf, 'F3': 0xffc0, 'F4': 0xffc1,
+    'F5': 0xffc2, 'F6': 0xffc3, 'F7': 0xffc4, 'F8': 0xffc5, 'F9': 0xffc6,
+    'F10': 0xffc7, 'F11': 0xffc8, 'F12': 0xffc9,
+  };
+  return map[key] || null;
+}
+
 })();
 </script>
 </body>

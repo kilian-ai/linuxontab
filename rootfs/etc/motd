@@ -1,10 +1,29 @@
+██╗     ██╗███╗   ██╗██╗   ██╗██╗  ██╗ ██████╗ ███╗   ██╗████████╗ █████╗ ██████╗
+██║     ██║████╗  ██║██║   ██║╚██╗██╔╝██╔═══██╗████╗  ██║╚══██╔══╝██╔══██╗██╔══██╗
+██║     ██║██╔██╗ ██║██║   ██║ ╚███╔╝ ██║   ██║██╔██╗ ██║   ██║   ███████║██████╔╝
+██║     ██║██║╚██╗██║██║   ██║ ██╔██╗ ██║   ██║██║╚██╗██║   ██║   ██╔══██║██╔══██╗
+███████╗██║██║ ╚████║╚██████╔╝██╔╝ ██╗╚██████╔╝██║ ╚████║   ██║   ██║  ██║██████╔╝
+╚══════╝╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝   ╚═╝   ╚═╝  ╚═╝╚═════╝
 
- █  ██ ███   ██  █  █  ██  ███ ███  ███  ███
- █  █   █   █ █  ██ █ █  █  █  █ █  █   █  
- █  █   █   █ █  █ ██ █  █  █  █ █  █   ███ 
- █  █   █   ████ █  █ █  █  █  █ █  █   █   
- ██ ██ ███  █  █ █  █  ██  ███ ███  ███  ██  on Tab
+ Welcome to LinuxOnTab 2.0 (wasm32)
 
-  Alpine Linux 3.21 · WebAssembly Kernel 6.1
-  https://linuxontab.com/
+ Kernel:  Linux 6.1.0-linuxontab (WebAssembly, no x86 emulation)
+ Arch:    wasm32 · Userland: BusyBox + musl libc
+ Docs:    https://linuxontab.com/
+ Bugs:    https://github.com/kilian-ai/linuxontab/issues
+
+ ── Now working (all compiled to wasm32, running natively) ──────────────
+   Terminal   tmux (splits/panes) · mc (F10 to quit) · nano · lotfm
+   Shells     zsh 5.9  NEW! · ash · hush (default /bin/sh)
+              real fork()+setjmp/longjmp via wasm-EH — command
+              substitution, subshells & job control all work
+   Languages  python3 + pip · node · clang (self-hosting toolchain)
+   Tools      curl · jq · sqlite3 · wasm-ld · wasm-opt
+   Graphics   xeyes · Xvfb · x11vnc   (X display demo — top bar)
+   VNC demos  vnc-server  eyes whose pupils track your mouse
+              vnc-snake   snake game — arrows/WASD steer, p pause, r restart
+              run one, then watch the X display panel (top bar) · :5900
+   AI         claw   (LLM REPL — export ANTHROPIC_API_KEY, then: claw)
+
+   Tip: TERM is xterm-256color, so mc/nano/tmux come up in full color.
 

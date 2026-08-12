@@ -152,13 +152,24 @@ export class PortSession {
       if (Array.isArray(ports)) this.registeredPorts = new Set(ports);
       const created = await this.state.storage.get('created');
       if (typeof created === 'number') this.created = created;
-      // Force-reset any hibernated WSes — pair state isn't persisted to DO
-      // storage, and CF DO hibernation only triggers after extended idle
-      // (tunnel-up.sh's --ping-interval 25 keeps active sessions hot, so
-      // hibernation cannot interrupt a live transfer). Closing hibernated
-      // WS triggers tunnel-up.sh respawn → fresh bridges enqueued cleanly.
+      // On wake from hibernation the in-memory maps (pairs/guestQueue) are
+      // empty but the accepted WebSockets survive. The old code closed ALL of
+      // them ('rehydrate'), which — with a BROWSER-pooled guest set — nuked the
+      // whole pool on every wake. CF hibernates after ~10s idle while the pool
+      // pings only every ~20s, so that produced a constant hibernate→wake→nuke
+      // churn and flaky pairing. Instead: RE-ENQUEUE idle guest WSes (a pooled
+      // guest carries no pair state, so it's safe to keep serving), and close
+      // only client WSes (whose lost pair state can't be reconstructed). Active
+      // pairs don't hibernate — traffic keeps the DO hot — so this is safe.
       for (const ws of this.state.getWebSockets()) {
-        try { ws.close(1000, 'rehydrate'); } catch (_) {}
+        const { role, port } = this._parseTags(ws);
+        if (role === 'guest' && port != null && ws.readyState === 1) {
+          let q = this.guestQueue.get(port);
+          if (!q) { q = []; this.guestQueue.set(port, q); }
+          q.push(ws);
+        } else {
+          try { ws.close(1000, 'rehydrate'); } catch (_) {}
+        }
       }
     });
   }
@@ -230,10 +241,15 @@ export class PortSession {
       // on the guest side, single-use. Filezilla-style parallel SFTP transfers
       // open multiple SSH connections to the same port — each one dequeues
       // its own bridge here, paired independently.
+      //
+      // LIFO (pop from end, not shift from front): newest WSes are tried first
+      // because they are most likely from the current browser session. Stale
+      // orphaned WSes from closed tabs accumulate at the front of the queue
+      // and are only tried as a last resort.
       const popFreshGuest = () => {
         const q = this.guestQueue.get(port);
         while (q && q.length) {
-          const candidate = q.shift();
+          const candidate = q.pop();
           if (candidate.readyState === 1 /* OPEN */) {
             if (!q.length) this.guestQueue.delete(port);
             return candidate;
@@ -268,6 +284,23 @@ export class PortSession {
       this.pairs.set(client, guest);
       this.pairs.set(guest, client);
 
+      // Notify the browser-side guest WS that a client has arrived so it
+      // can lazily call injectConnect (TCP SYN injection into the WASM guest).
+      // If the send throws the WS is stale — retry with the next guest in queue.
+      let sendOk = false;
+      while (guest) {
+        try { guest.send('__connected__'); sendOk = true; break; } catch (_) {}
+        // Stale WS: close it and try the next freshest one.
+        try { guest.close(1000, 'stale'); } catch (_) {}
+        guest = popFreshGuest();
+      }
+      if (!sendOk || !guest) {
+        return new Response(
+          `no live guest bridge available on port ${port} (all pooled WSes stale)`,
+          { status: 503 },
+        );
+      }
+
       // Flush any pre-pair buffered bytes (e.g. SSH banner sent eagerly by
       // sshd on TCP accept, before this client dequeued the bridge).
       const buf = this.guestBuffer.get(guest);
@@ -297,6 +330,9 @@ export class PortSession {
   async webSocketMessage(ws, message) {
     this.lastActivity = Date.now();
     const { role } = this._parseTags(ws);
+
+    // Drop keepalive pings from the browser so they are never buffered as data.
+    if (typeof message === 'string' && message === '__ping__') return;
 
     // If an _httpProxy call owns this guest WS, deliver bytes to it.
     const call = this.proxyCalls.get(ws);
@@ -413,7 +449,7 @@ export class PortSession {
     const q = this.guestQueue.get(port);
     let guestWs = null;
     while (q && q.length) {
-      const candidate = q.shift();
+      const candidate = q.pop();  // LIFO: newest first, skip stale orphans
       if (candidate.readyState === 1) { guestWs = candidate; break; }
     }
     if (q && !q.length) this.guestQueue.delete(port);

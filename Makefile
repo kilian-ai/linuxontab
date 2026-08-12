@@ -4,10 +4,13 @@
 #   make all            — compile all C programs + rebuild rootfs.ext4
 #   make tcplisten      — compile tcplisten.c → rootfs/sbin/tcplisten
 #   make sftp-server    — compile sftp-server.c → rootfs/usr/lib/sftp-server
+#   make ws-proxy       — compile ws-proxy.c → rootfs/sbin/ws-proxy
 #   make rootfs         — rebuild rootfs.ext4 from the staging tree
 #   make packages       — rebuild package tarballs from wasm-distro results
 #   make clean          — remove compiled object files
 #   make distro-build   — build all packages via @tombl/distro Nix flake
+
+.PHONY: all tcplisten sftp-server ws-proxy rootfs packages distro-build rebuild-sshd bootstrap-zlib clean
 #
 # Override toolchain paths at the command line, e.g.:
 #   make tcplisten CLANG=/path/to/clang
@@ -20,7 +23,10 @@
 # Use the patched clang from @tombl/distro (adds wasm32-unknown-linux-musl triple)
 CLANG     ?= /nix/store/sa4f4iaw4zmkdnfiidjpys8dlgkzridc-clang/bin/clang
 WASM_LD   ?= /nix/store/l62m9j22mhh21n6w9g3rzb5f8kp55f8a-lld-19.1.7/bin/wasm-ld
-SYSROOT   ?= /nix/store/10s1qmch2cmk1aa9di1wpq4znlh1vr7s-musl-sysroot
+# Prefer the repo sysroot: identical to the Nix musl-sysroot but with the
+# mallocng alloc_meta fix (hardcoded 0x8000 meta-area base). See
+# toolchain/build-musl-sysroot-fixed.sh.
+SYSROOT   ?= $(if $(wildcard $(CURDIR)/toolchain/musl-sysroot-fixed/lib/libc.a),$(CURDIR)/toolchain/musl-sysroot-fixed,/nix/store/10s1qmch2cmk1aa9di1wpq4znlh1vr7s-musl-sysroot)
 WASM_OPT  ?= /opt/homebrew/bin/wasm-opt
 WASM_DISTRO ?= /private/tmp/wasm-distro
 
@@ -58,9 +64,9 @@ WASM_LIBS := \
   -lc
 
 # ── Phony targets ──────────────────────────────────────────────────────────────
-.PHONY: all tcplisten sftp-server rootfs packages distro-build clean help
+.PHONY: all tcplisten sftp-server rootfs packages distro-build rebuild-sshd bootstrap-zlib clean help
 
-all: tcplisten sftp-server rootfs
+all: tcplisten sftp-server ws-proxy rootfs
 
 help:
 	@echo "LinuxOnTab-kernel build targets:"
@@ -70,6 +76,8 @@ help:
 	@echo "  make rootfs          rebuild rootfs.ext4 from staging tree"
 	@echo "  make packages        repack package tarballs from wasm-distro results"
 	@echo "  make distro-build    build WASM packages via Nix (slow, first time)"
+	@echo "  make bootstrap-zlib  build wasm zlib into writable local prefix"
+	@echo "  make rebuild-sshd    rebuild/import-verify sshd and enable daemon mode"
 	@echo "  make clean           remove temp build files"
 	@echo ""
 	@echo "Toolchain overrides:"
@@ -108,6 +116,20 @@ rootfs/usr/lib/sftp-server: sftp-server.c
 	chmod +x $@
 	@echo "[done] $@ ($(shell wc -c < $@) bytes)"
 
+# ── ws-proxy ──────────────────────────────────────────────────────────────────
+ws-proxy: rootfs/sbin/ws-proxy
+
+rootfs/sbin/ws-proxy: ws-proxy.c
+	@echo "[compile] ws-proxy.c → $@"
+	$(CLANG) $(WASM_CFLAGS) -c ws-proxy.c -o /tmp/ws-proxy.o
+	$(CLANG) $(WASM_LDFLAGS) \
+	  $(SYSROOT)/lib/crt1.o /tmp/ws-proxy.o \
+	  -lc $(SYSROOT)/lib/clang/19/lib/wasm32-unknown-linux-musl/libclang_rt.builtins.a \
+	  -o /tmp/ws-proxy.wasm
+	$(WASM_OPT) --asyncify -O1 /tmp/ws-proxy.wasm -o $@
+	chmod +x $@
+	@echo "[done] $@ ($(shell wc -c < $@) bytes)"
+
 # ── rootfs ────────────────────────────────────────────────────────────────────
 rootfs:
 	@echo "[build-rootfs] rebuilding $(OUTPUT)..."
@@ -134,6 +156,19 @@ distro-build:
 	  --no-link \
 	  --print-out-paths
 	@echo "[distro] done. Run 'make packages' to repackage."
+
+# ── rebuild-sshd ─────────────────────────────────────────────────────────────
+# Requires OPENSSH_SRC=/path/to/openssh-portable source tree.
+rebuild-sshd:
+	@if [ -z "$(OPENSSH_SRC)" ]; then \
+	  echo "Usage: make rebuild-sshd OPENSSH_SRC=/path/to/openssh-source"; \
+	  exit 1; \
+	fi
+	bash local/rebuild-sshd-wasm.sh "$(OPENSSH_SRC)"
+	@echo "[rebuild-sshd] done. Run 'make rootfs' to bake the new daemon binary."
+
+bootstrap-zlib:
+	bash local/bootstrap-wasm-zlib.sh
 
 # ── clean ─────────────────────────────────────────────────────────────────────
 clean:

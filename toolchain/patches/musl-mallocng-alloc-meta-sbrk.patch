@@ -1,0 +1,19 @@
+--- a/src/malloc/mallocng/malloc.c
++++ b/src/malloc/mallocng/malloc.c
+@@ -59,8 +59,14 @@
+ 	if (!ctx.avail_meta_count) {
+ 		if (!ctx.avail_meta_area_count) {
+ 			size_t new = 3*pagesize;
+-			if (sbrk(new) == MAP_FAILED) a_crash();
+-			ctx.avail_meta_areas = (void *)(new - pagesize);
++			void *base = sbrk(new);
++			if (base == MAP_FAILED) a_crash();
++			/* Meta areas are located via (uintptr_t)m & -4096 in
++			 * get_meta(), so the base must be 4096-aligned. sbrk
++			 * returns the old break, which need not be aligned;
++			 * the extra 2 pages requested above cover the slack. */
++			ctx.avail_meta_areas =
++				(void *)(((uintptr_t)base + 4095) & -(uintptr_t)4096);
+ 			ctx.avail_meta_area_count = pagesize>>12;
+ 		}
+ 		p = ctx.avail_meta_areas;

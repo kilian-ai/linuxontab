@@ -1,0 +1,9 @@
+127.0.0.1   localhost
+::1         localhost
+
+# LinuxOnTab tunnel infrastructure
+# UDP/53 is dropped by WISP; these static entries bypass DNS for TCP connections.
+# Update if connections stop working: dig +short <host>
+66.241.124.191  linuxontab-tunnel.fly.dev
+66.241.124.22   linuxontab-net.fly.dev
+104.21.76.53    relay.linuxontab.com

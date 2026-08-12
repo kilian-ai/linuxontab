@@ -1,0 +1,19 @@
+# Cloudflare Pages header rules for LinuxOnTab 2.0.
+# (Applies to STATIC assets. The rootfs Function sets its own headers.)
+
+# Cross-origin isolation — required for SharedArrayBuffer, which the wasm
+# kernel uses for the guest agent + one Web Worker per process. With these
+# real headers the coi-serviceworker.js shim self-disables (it only acts when
+# SharedArrayBuffer is missing), so isolation is live on the very first load.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
+
+# Kernel + userland blobs are content-addressed by the loader; cache hard.
+/linux-dist/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Never cache the shell HTML itself, so updates ship immediately.
+/index.html
+  Cache-Control: no-cache

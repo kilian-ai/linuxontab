@@ -1,7 +1,21 @@
 #!/bin/sh
 # System init — runs after switch_root from initramfs
 
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export TERM=xterm-256color
+
+# System CA bundle for guest-side TLS. The wasm openssl build baked its default
+# cert path to a nonexistent /tmp dir (get_default_verify_paths -> cafile=None),
+# so Python's httpx/urllib do direct TLS with an EMPTY trust store and reject
+# every server ("self signed certificate in certificate chain"). Point the
+# default context at the shipped bundle so all guest processes (WebFuse fetching
+# a .torrent, etc.) verify correctly. Shell wget/curl use the browser gateway
+# instead and are unaffected. Exported here so services + the login shell inherit it.
+export SSL_CERT_FILE=/etc/ssl/cert.pem
+export SSL_CERT_DIR=/etc/ssl/certs
+
 /bin/busybox --install -s
+/usr/local/sbin/install-https-tools
 
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
@@ -10,6 +24,20 @@ mkdir -p /dev/pts
 mount -t devpts devpts /dev/pts
 mkdir -p /tmp /run /var/tmp /var/run /var/log
 chmod 1777 /tmp /var/tmp
+
+# Set the wall clock from lot_epoch=N on the kernel cmdline (written by
+# wasm.html at boot with the host's Unix time). This must happen from
+# userspace: setting the clock in a kernel initcall breaks inbound TCP
+# handshakes (injected connections stall in SYN-RECV). The JS syscall shim
+# watches clock_settime and keeps its clock origins in sync.
+read _CMDLINE < /proc/cmdline
+case "$_CMDLINE" in
+*lot_epoch=*)
+	_EPOCH="${_CMDLINE##*lot_epoch=}"
+	_EPOCH="${_EPOCH%% *}"
+	date -s "@${_EPOCH}" > /dev/null 2>&1
+	;;
+esac
 
 hostname linuxontab
 
@@ -26,9 +54,61 @@ cat >> /etc/hosts <<'EOF'
 66.241.124.191  linuxontab-net.fly.dev
 EOF
 
+# Package registries. Guest DNS is DoH-relayed through the page, and the
+# response frame is routinely lost when the tab is background-throttled —
+# which surfaced as endless `EAI_AGAIN` / "Try again" failures in pip and
+# npm even though the transport itself was fine. Pinning the CDN anycast
+# addresses removes DNS from the package-install path entirely. TLS is
+# unaffected (SNI/cert validation still use the hostname from the URL).
+# Refresh these if a registry ever moves: dig +short <host> A
+cat >> /etc/hosts <<'EOF'
+104.16.0.34     registry.npmjs.org
+104.16.11.34    registry.npmjs.org
+151.101.192.223 pypi.org
+151.101.128.223 files.pythonhosted.org
+151.101.192.223 files.pythonhosted.org
+EOF
+
+# LLM API endpoints — clawlite (/usr/local/bin/claw) talks to these. Same DoH
+# throttle problem as the registries, so pin them too. Refresh if they move.
+cat >> /etc/hosts <<'EOF'
+160.79.104.10   api.anthropic.com
+162.159.140.245 api.openai.com
+172.66.0.243    api.openai.com
+EOF
+
 cat /etc/motd
 
-# Start SSH daemon (blank-password root login allowed)
-/usr/local/bin/mininetd 2>/tmp/mininetd.log &
+# Run OpenSSH. Default to sshd-session for compatibility.
+# If /etc/ssh/sshd-daemon.enabled exists (written by host rebuild script after
+# wasm import-memory verification), prefer native sshd daemon mode.
+if [ -f /etc/ssh/sshd-daemon.enabled ]; then
+        mkdir -p /run/sshd
+        (while true; do
+                # NB: LoginGraceTime / ClientAlive* come from sshd_config and
+                # MUST NOT be overridden to 0 here — that disables the timeouts
+                # that reap dead/stuck sessions (browser-tunnel process leak).
+                # -e: log to stderr (syslog doesn't exist in the guest) so
+                # per-session fatal errors actually reach /tmp/sshd.log.
+                /sbin/sshd -D -e -f /etc/ssh/sshd_config \
+                        -o PerSourcePenalties=no \
+                        -o MaxStartups=200 \
+                        -o MaxSessions=64 \
+                        -o PermitRootLogin=yes \
+                        -o PasswordAuthentication=yes \
+                        >>/tmp/sshd.log 2>&1
 
-exec /sbin/getty -n -l /bin/sh hvc0 0 vt100
+                echo "[rc] sshd exited, falling back to sshd-session" >>/tmp/sshd.log
+                /usr/local/libexec/sshd-session -f /etc/ssh/sshd_config >>/tmp/sshd.log 2>&1
+                sleep 1
+        done) &
+else
+        (while true; do
+                /usr/local/libexec/sshd-session -f /etc/ssh/sshd_config 2>>/tmp/sshd.log
+        done) &
+fi
+
+# getty with -l /bin/sh uses sys_clone(fn=446, fn_arg=0) in the current BusyBox
+# build, which produces a broken child that loops without making syscalls.
+# Exec the shell directly so switch_entry gets fn=616 arg=<valid> instead.
+exec /bin/sh -i

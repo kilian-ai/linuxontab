@@ -1,0 +1,24 @@
+# build artifacts (regenerate with build-forktest.sh)
+forktest
+forktest.o
+forktest.raw
+wasm_fork.o
+futexpp
+condpp
+conduni
+
+# sjlj/fork repro build artifacts
+sjljfork
+sjljfork.o
+sjljfork.raw
+sjljfork2
+sjljfork2.o
+sjljfork2.raw
+sjljchain
+sjljchain.o
+sjljchain.raw
+sj.o
+wf.o
+sjljfork2dbg
+sjljfork2dbg.raw
+sjljfork2dbg.o

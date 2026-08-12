@@ -1,0 +1,4 @@
+#!/usr/local/bin/python3
+import sys
+from runpy import run_module
+sys.exit(run_module('pip', run_name='__main__'))

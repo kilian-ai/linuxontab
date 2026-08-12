@@ -1,0 +1,44 @@
+--- a/src/linux/brk.c
++++ b/src/linux/brk.c
+@@ -13,25 +13,24 @@ static void *current = &__heap_end;
+ static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+
+ static int _brk(void *end) {
+-	if (!initial_end) initial_end = (void *)(__builtin_wasm_memory_size(0) * PAGE_SIZE);
+-
+ 	if (end < current) goto fail;
+
+-	size_t inc = (uintptr_t)end - (uintptr_t)current;
+-
+-	// as number of pages, rounding up
+-	inc = (inc + PAGE_SIZE - 1) / PAGE_SIZE;
+-
+-	while (inc && current < initial_end) {
+-		current += PAGE_SIZE;
+-		inc--;
+-	}
+-	if (!inc) return 0;
+-
+-	if (__builtin_wasm_memory_grow(0, inc) == SIZE_MAX) goto fail;
++	/* __builtin_wasm_memory_size/grow count 64 KiB WASM pages, NOT the
++	 * 16 KiB musl PAGE_SIZE of this port. The original code mixed the two:
++	 * it computed the increment in 16 KiB pages and passed that count to
++	 * memory_grow, growing linear memory 4x more than requested. Every
++	 * heap expansion then ballooned toward the engine's maximum (4096
++	 * pages = 256 MiB) 4x early, memory_grow started failing, and
++	 * mallocng a_crash()ed — python/pip died with "Segmentation fault"
++	 * at ~1/2 of the memory they should have had. Do everything in WASM
++	 * page units instead and consult the real memory size directly. */
++	void *mem_end = (void *)(__builtin_wasm_memory_size(0) * 65536ul);
++	if (end > mem_end) {
++		size_t need = (uintptr_t)end - (uintptr_t)mem_end;
++		size_t pages = (need + 65535) / 65536;
++		if (__builtin_wasm_memory_grow(0, pages) == SIZE_MAX) goto fail;
++	}
+ 	current = end;
+-
+ 	return 0;
+ fail:
+ 	errno = ENOMEM;
+ 	return -1;
+ }

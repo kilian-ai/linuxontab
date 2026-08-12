@@ -266,30 +266,52 @@ export class ConsoleDevice extends VirtioDevice {
         this.#input = input;
         this.#output = output.getWriter();
     }
+    #pendingInput = [];
+    #warnedInputBacklog = false;
+    #enqueueInput(chunk) {
+        if (chunk.length === 0)
+            return;
+        this.#pendingInput.push(chunk.slice());
+    }
+    #flushPending(queue) {
+        let wrote = false;
+        while (this.#pendingInput.length > 0) {
+            const chain = queue[Symbol.iterator]().next().value;
+            if (!chain) {
+                if (!this.#warnedInputBacklog) {
+                    console.warn("no more descriptors, queueing console input");
+                    this.#warnedInputBacklog = true;
+                }
+                break;
+            }
+            const [desc, trailing] = chain;
+            assert(desc && desc.writable, "receiver must be writable");
+            assert(!trailing, "too many descriptors");
+            const chunk = this.#pendingInput[0];
+            const n = Math.min(chunk.length, desc.array.byteLength);
+            desc.array.set(chunk.subarray(0, n));
+            if (n === chunk.length)
+                this.#pendingInput.shift();
+            else
+                this.#pendingInput[0] = chunk.subarray(n);
+            chain.release(n);
+            wrote = true;
+        }
+        if (this.#pendingInput.length === 0)
+            this.#warnedInputBacklog = false;
+        if (wrote)
+            this.trigger_interrupt("vring");
+    }
     #writing = null;
     async #writer(queue) {
-        const queue_iter = queue[Symbol.iterator]();
         const reader = this.#input.getReader();
         for (;;) {
             const { value, done } = await reader.read();
             if (done)
                 break;
-            let chunk = value;
-            while (chunk.length > 0) {
-                const chain = queue_iter.next().value;
-                if (!chain) {
-                    console.warn("no more descriptors, dropping console input");
-                    break;
-                }
-                const [desc, trailing] = chain;
-                assert(desc && desc.writable, "receiver must be writable");
-                assert(!trailing, "too many descriptors");
-                const n = Math.min(chunk.length, desc.array.byteLength);
-                desc.array.set(chunk.subarray(0, n));
-                chunk = chunk.subarray(n);
-                chain.release(n);
-            }
-            this.trigger_interrupt("vring");
+            if (value)
+                this.#enqueueInput(value);
+            this.#flushPending(queue);
         }
     }
     async notify(vq) {
@@ -298,6 +320,7 @@ export class ConsoleDevice extends VirtioDevice {
         switch (vq) {
             case 0:
                 this.#writing ??= this.#writer(queue);
+                this.#flushPending(queue);
                 break;
             case 1:
                 for (const chain of queue) {
@@ -341,22 +364,104 @@ export class NetworkDevice extends VirtioDevice {
             this.config_bytes[i] = mac[i];
         // Bind the backend's receive callback to our inject method.
         backend.receive = (frame) => this.#injectRx(frame);
+        // Missed-doorbell insurance. The guest driver can add TX frames (or
+        // RX refill buffers) to a ring WITHOUT ringing the doorbell again —
+        // virtio notification suppression assumes the device keeps polling
+        // while busy. This device only reads the rings inside notify(), so a
+        // suppressed doorbell left frames sitting forever: observed as a hard
+        // TCP jam where the guest polls write() against a full sndbuf and no
+        // frame ever hits the wire in either direction. Sweep both rings on
+        // a short timer; an empty sweep is nearly free.
+        setInterval(() => {
+            this.#txSweep(false);
+            const rq = this.vqs[0];
+            if (rq && this.#rx_queue_ready)
+                this.#drainPending(rq);
+        }, 50);
+    }
+    // Drain the transmit ring. force=true preserves notify()'s original
+    // behaviour of always raising the completion interrupt.
+    #txSweep(force) {
+        const queue = this.vqs[1];
+        if (!queue)
+            return;
+        let sent = 0;
+        for (const chain of queue) {
+            let totalLen = 0;
+            const parts = [];
+            for (const { array, writable } of chain) {
+                assert(!writable, "TX descriptor must be readable");
+                parts.push(array.slice(0)); // copy since SharedArrayBuffer
+                totalLen += array.byteLength;
+            }
+            // Strip the 12-byte virtio_net_hdr_mrg_rxbuf before handing to backend.
+            const HDR = 12;
+            if (totalLen > HDR) {
+                const full = new Uint8Array(totalLen);
+                let off = 0;
+                for (const p of parts) {
+                    full.set(p, off);
+                    off += p.byteLength;
+                }
+                this.#backend.send(full.subarray(HDR));
+            }
+            chain.release(totalLen);
+            sent++;
+        }
+        if (sent || force)
+            this.trigger_interrupt("vring");
     }
     // Queue of frames waiting for the guest to provide RX descriptors.
     #rxPending = [];
+    // Re-kick state: interrupts written while the guest is busy coalesce into
+    // one IRQ (trigger_interrupt just sets a flag), and the guest ISR does not
+    // reliably drain every used entry per IRQ. Frames then sit in the ring
+    // until the NEXT incoming frame re-kicks — which made bulk downloads run
+    // at one segment per sender-RTO (~1 KB/s). Until the guest refills RX
+    // buffers (notify(0), i.e. it visibly consumed something), keep re-raising
+    // the vring interrupt on a short timer.
+    #rekickTimer = null;
+    #rekickStep = 0;
+    #unconsumed = 0;
+    // Bounded + decaying: a fixed unthrottled interval turned into an IRQ storm
+    // that froze the guest outright. A few spaced kicks per frame batch is
+    // enough to drain a partially-processed ring without starving the guest.
+    static #REKICK_DELAYS = [30, 60, 120, 250, 500, 1000];
+    #armRekick() {
+        if (this.#rekickTimer)
+            return;
+        const step = () => {
+            this.#rekickTimer = null;
+            if (this.#unconsumed <= 0 && this.#rxPending.length === 0)
+                return;
+            if (this.#rekickStep >= NetworkDevice.#REKICK_DELAYS.length)
+                return; // give up; next injected frame re-arms
+            try { this.trigger_interrupt("vring"); } catch (e) { /* not set up yet */ }
+            this.#rekickTimer = setTimeout(step, NetworkDevice.#REKICK_DELAYS[this.#rekickStep++]);
+        };
+        this.#rekickTimer = setTimeout(step, NetworkDevice.#REKICK_DELAYS[0]);
+    }
     // Inject an Ethernet frame into the guest's receive queue.
     #injectRx(frame) {
         const queue = this.vqs[0]; // receiveq
         if (!queue || !this.#rx_queue_ready) {
-            console.log('[VIRTIO RX] pending (queue='+(!!queue)+' ready='+this.#rx_queue_ready+')');
+            if (globalThis.__netdebug) console.log('[VIRTIO RX] pending (queue='+(!!queue)+' ready='+this.#rx_queue_ready+')');
             this.#rxPending.push(frame);
             return;
         }
         this.#drainPending(queue);
         const ok = this.#writeRxFrame(queue, frame);
-        console.log('[VIRTIO RX] writeRxFrame len='+frame.byteLength+' ok='+ok+' pending='+this.#rxPending.length);
+        // Per-packet logging is gated: at bulk-transfer rates (thousands of
+        // frames/sec) unconditional console.log stalls the main thread long
+        // enough that WS dispatch stops and the WISP watchdog kills a healthy
+        // link. Enable with ?netdebug.
+        if (globalThis.__netdebug) console.log('[VIRTIO RX] writeRxFrame len='+frame.byteLength+' ok='+ok+' pending='+this.#rxPending.length);
         if (!ok)
             this.#rxPending.push(frame);  // no RX descriptors available — queue it
+        else
+            this.#unconsumed += 1;
+        this.#rekickStep = 0;   // fresh frame — restart the decay schedule
+        this.#armRekick();
     }
     #drainPending(queue) {
         while (this.#rxPending.length > 0) {
@@ -364,7 +469,10 @@ export class NetworkDevice extends VirtioDevice {
             if (!this.#writeRxFrame(queue, f))
                 break;
             this.#rxPending.shift();
+            this.#unconsumed += 1;
         }
+        if (this.#unconsumed > 0)
+            this.#armRekick();
     }
     // Write a single frame into the RX virtqueue. Returns false if no descriptors available.
     #writeRxFrame(queue, frame) {
@@ -411,31 +519,13 @@ export class NetworkDevice extends VirtioDevice {
         switch (vq) {
             case 0: // receiveq — guest is providing RX buffers
                 this.#rx_queue_ready = true;
+                // Refill = the guest consumed frames; stop re-kicking for them.
+                this.#unconsumed = 0;
+                this.#rekickStep = 0;
                 this.#drainPending(queue);
                 break;
             case 1: { // transmitq — guest is sending frames
-                for (const chain of queue) {
-                    let totalLen = 0;
-                    const parts = [];
-                    for (const { array, writable } of chain) {
-                        assert(!writable, "TX descriptor must be readable");
-                        parts.push(array.slice(0)); // copy since SharedArrayBuffer
-                        totalLen += array.byteLength;
-                    }
-                    // Strip the 12-byte virtio_net_hdr_mrg_rxbuf before handing to backend.
-                    const HDR = 12;
-                    if (totalLen > HDR) {
-                        const full = new Uint8Array(totalLen);
-                        let off = 0;
-                        for (const p of parts) {
-                            full.set(p, off);
-                            off += p.byteLength;
-                        }
-                        this.#backend.send(full.subarray(HDR));
-                    }
-                    chain.release(totalLen);
-                }
-                this.trigger_interrupt("vring");
+                this.#txSweep(true);
                 break;
             }
             default:

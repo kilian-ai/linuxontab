@@ -1,0 +1,18 @@
+#!/bin/sh
+# LinuxOnTab workaround: default to single-thread linker mode in WASM guest.
+# This avoids known hangs/crashes in threaded clone paths until kernel support stabilizes.
+
+threads_specified=0
+for arg in "$@"; do
+  case "$arg" in
+    --threads|--threads=*|-threads|-threads=*)
+      threads_specified=1
+      ;;
+  esac
+done
+
+if [ "$threads_specified" -eq 0 ]; then
+  exec /usr/local/bin/wasm-ld.real --threads=1 "$@"
+fi
+
+exec /usr/local/bin/wasm-ld.real "$@"

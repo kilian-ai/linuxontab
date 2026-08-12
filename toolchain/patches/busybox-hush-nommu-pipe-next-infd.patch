@@ -1,0 +1,20 @@
+Port of LinuxOnTab commit 7b5cb89 ("fix: hush NOMMU pipe hang") to busybox
+source. The fix was originally applied only to the prebuilt wasm binary in
+rootfs/bin/busybox; this makes it a source patch so rebuilds keep it.
+
+run_pipe() passed &pipefds.rd (always 0 on the first iteration) as the stdin
+fd for the first pipe command, so its stdin was the pipe read end instead of
+the terminal. Pass &next_infd instead, which starts at 0 (terminal) and is
+updated to the previous pipe's read end between iterations.
+
+--- a/shell/hush.c
++++ b/shell/hush.c
+@@ -9791,7 +9791,7 @@
+         args.nommu_save = &nommu_save;
+ #endif
+         args.pipefds = &pipefds;
+-        args.next_infd = &pipefds.rd;
++        args.next_infd = &next_infd;
+ 		command->pid = clone(run_pipe_child, child_stack, CLONE_VM | CLONE_VFORK | SIGCHLD, &args);
+
+ 		/* parent or error */

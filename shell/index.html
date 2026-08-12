@@ -1335,6 +1335,78 @@
   window.pubFsSnapshotNow = pubFsSnapshotNow;
   window.pubFsList       = pubFsList;
 
+  // ---- /mnt/host full IndexedDB persistence ----
+  // Serializes the ENTIRE fs9p virtio filesystem state to a single IDB key
+  // so ALL files under /mnt/host survive page reloads, not just ~/public.
+  //
+  // Uses v86's own get_state()/set_state() protocol:
+  //   fs9p.get_state() returns: [inodes(objects), qidcounter, [[id, Uint8Array]...], total_size, used_size, ...mounts]
+  //   fs9p.set_state() expects:  [inodes(plain arrays via inode.get_state()), ...]
+  //
+  // We pre-serialize inodes to their plain-array form before IDB storage so
+  // structured-clone doesn't lose prototype methods, and set_state() can
+  // reconstruct uc (Inode) instances from the serialized form.
+  const HOST_FS_IDB_KEY = 'host-fs-v1';
+
+  // Serialize and save the full fs9p state to IDB.
+  // Returns the number of inodes saved, or 0 on failure.
+  async function hostFsSave() {
+    const fs = typeof emulator !== 'undefined' && emulator && emulator.fs9p;
+    if (!fs) return 0;
+    try {
+      const raw = fs.get_state();
+      // raw[0] is the live inode object array. Serialize each to plain arrays
+      // so IDB structured clone + set_state() can reconstruct them.
+      const state = [
+        raw[0].map(inode => inode && typeof inode.get_state === 'function' ? inode.get_state() : inode),
+        raw[1], // qidcounter.last_qidnumber
+        raw[2], // [[id, Uint8Array], ...] file data — IDB handles Uint8Array natively
+        raw[3], // total_size
+        raw[4], // used_size
+        ...raw.slice(5), // mounts
+      ];
+      await idbPut(HOST_FS_IDB_KEY, state);
+      console.log('[hostFs] saved', raw[0].length, 'inodes to IDB');
+      return raw[0].length;
+    } catch (e) {
+      console.warn('[hostFs] save failed:', e);
+      return 0;
+    }
+  }
+
+  // Restore the full fs9p state from IDB into the live emulator.
+  // Must be called after new V86() but before the guest mounts /mnt/host.
+  // Returns the number of inodes restored, or 0 if nothing was saved.
+  async function hostFsRestore() {
+    const fs = typeof emulator !== 'undefined' && emulator && emulator.fs9p;
+    if (!fs) return 0;
+    try {
+      const state = await idbGet(HOST_FS_IDB_KEY);
+      if (!state || !Array.isArray(state) || !state[0]) {
+        console.log('[hostFs] no saved state in IDB');
+        return 0;
+      }
+      // state[0] is an array of serialized inode states (plain arrays from inode.get_state()).
+      // set_state() reconstructs uc instances from them.
+      fs.set_state(state);
+      console.log('[hostFs] restored', state[0].length, 'inodes from IDB');
+      return state[0].length;
+    } catch (e) {
+      console.warn('[hostFs] restore failed:', e);
+      return 0;
+    }
+  }
+
+  // Clear the saved fs9p state from IDB.
+  async function hostFsClear() {
+    await idbDel(HOST_FS_IDB_KEY);
+    console.log('[hostFs] cleared IDB state');
+  }
+
+  window.hostFsSave    = hostFsSave;
+  window.hostFsRestore = hostFsRestore;
+  window.hostFsClear   = hostFsClear;
+
   // ---- Snapshot dropdown state ----
   // Selection model: each <option> value is a snapshot IDB key
   // (`snap:<iso>:v2:<name>`) or a fresh-boot pseudo-key (`fresh:<iso>`).
@@ -1813,6 +1885,8 @@
       const name = currentSnapName || DEFAULT_SNAP_NAME;
       await idbPut(snapKeyFor(currentIso, name), st);
       currentSnapName = name;
+      // Persist full /mnt/host fs9p state alongside the x86 snapshot.
+      await hostFsSave().catch(e => console.warn('[hostFs] autosave failed:', e));
       // Re-mount for the live session so the user keeps working.
       await remountAfterSave();
       lastAutosaveAt = Date.now();
@@ -2831,10 +2905,14 @@
     currentMemMB = memMB;
     serialVfs._attach(emulator);
 
-    // Restore persisted ~/public files into fs9p before the guest boots.
-    // fs9p is populated immediately after V86() constructs it, so the
-    // files will be visible as soon as the guest runs `mount -t 9p ...`.
-    pubFsRestoreAll().catch(e => console.warn('[pubFs] restore error', e));
+    // Restore the full /mnt/host filesystem from IDB (survives page reloads).
+    // hostFsRestore() uses fs9p.set_state() to rebuild the entire virtio tree.
+    // pubFsRestoreAll() is kept as fallback for older IDB data (pub:* keys).
+    const hostRestored = await hostFsRestore().catch(e => { console.warn('[hostFs] restore error', e); return 0; });
+    if (!hostRestored) {
+      // Fall back to legacy pub:* per-file restore.
+      pubFsRestoreAll().catch(e => console.warn('[pubFs] restore error', e));
+    }
 
     // ISOLINUX `boot:` autopilot. On fresh ISO boot v86 occasionally
     // lands at the ISOLINUX prompt without auto-booting (the syslinux
@@ -4413,6 +4491,8 @@
       currentSnapName = targetName;
       const key = snapKeyFor(targetIso, targetName);
       await idbPut(key, buf);
+      // Persist full /mnt/host fs9p state alongside the x86 snapshot.
+      await hostFsSave().catch(e => console.warn('[hostFs] save failed:', e));
       await remountAfterSave();
       setStatus(`snapshot saved as ${targetIso}/${targetName} (${(buf.byteLength/1048576).toFixed(1)} MB)`, 'ok');
       await populateSnapSelect(key);
@@ -4498,6 +4578,18 @@
     updateSnapButtonsState();
   };
   await populateSnapSelect();
+
+  // ---- /mnt/host fs9p auto-save on page hide ----
+  // visibilitychange → hidden fires when the user switches tabs or closes the
+  // browser. This is the best cross-browser hook for "just before unload" that
+  // still allows async IDB writes to complete (beforeunload can't await).
+  // We save the fs9p state here so /mnt/host contents survive tab refreshes
+  // even without a manual snapshot save.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && typeof emulator !== 'undefined' && emulator && emulator.fs9p) {
+      hostFsSave().catch(e => console.warn('[hostFs] visibilitychange save failed:', e));
+    }
+  });
 
   // ---- Keyboard input: xterm.js streams raw VT input directly ----
   // term.onData fires with a string containing already-encoded VT sequences
@@ -7132,10 +7224,15 @@
 
   async function clawDoInstall() {
     clawSetStatus('installing claw…');
-    clawMsg('downloading claw from linuxontab.com/local/clawlite.sh…', 'info');
+    clawMsg('downloading claw (local gateway preferred, cloud fallback)…', 'info');
     try {
       const r = await clawExec(
-        'wget -qO /usr/local/bin/claw https://linuxontab.com/local/clawlite.sh && chmod +x /usr/local/bin/claw',
+        'mkdir -p /usr/local/bin ~/.config/clawlite ~/.local/share/clawlite '
+        + '&& (wget -qO /usr/local/bin/claw http://192.168.86.1/local/clawlite.sh '
+        + '|| wget -qO /usr/local/bin/claw https://linuxontab.com/local/clawlite.sh) '
+        + '&& awk '\''BEGIN{done=0} { if(!done && $0=="set -u"){ print "if (set -u) 2>/dev/null; then"; print "  set -u"; print "fi"; done=1; next } print }'\'' /usr/local/bin/claw > /tmp/claw.fixed '
+        + '&& mv /tmp/claw.fixed /usr/local/bin/claw '
+        + '&& chmod +x /usr/local/bin/claw',
         90000
       );
       if (r.exitCode === 0) {

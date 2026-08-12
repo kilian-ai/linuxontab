@@ -1,0 +1,9 @@
+[
+  {
+    "name": "Briquette",
+    "kind": "smb",
+    "smb_host": "192.168.0.55",
+    "smb_share": "storage",
+    "path": "Movies"
+  }
+]

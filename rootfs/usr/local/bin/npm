@@ -1,0 +1,228 @@
+#!/bin/sh
+# npm — minimal npm client for LinuxOnTab WASM guest
+# Fork-depth-safe: npm runs at depth 2; all subprocesses run at depth 3.
+# Never nest $(...) calls — use redirect-and-read pattern throughout.
+
+NPM_VERSION="10.0.0-linuxontab"
+REGISTRY="https://registry.npmjs.org"
+
+_die()  { printf 'npm error: %s\n' "$*" >&2; exit 1; }
+_log()  { printf 'npm: %s\n' "$*"; }
+
+# HTTP GET $1 to file $2. curl preferred, then wget, then python3.
+# python3 matters: neither curl nor busybox wget is in the base image, but
+# python3 is — and it does real HTTPS (openssl + /etc/ssl/cert.pem), so npm
+# works out of the box instead of failing with "apk add curl for HTTPS".
+_get() {
+    # Try each transport and FALL THROUGH ON FAILURE (not merely when the
+    # command is missing): the shipped curl/wget exist but their socket path
+    # times out in this guest (curl exit 28 even on plain HTTP), while
+    # python3's urllib works. Success = downloaded file exists and is non-empty.
+    rm -f "$2"
+    if command -v curl >/dev/null 2>&1; then
+        curl -sL --max-time 120 "$1" -o "$2" 2>/dev/null
+        [ -s "$2" ] && return 0
+    fi
+    rm -f "$2"
+    wget -qO "$2" "$1" 2>/dev/null
+    [ -s "$2" ] && return 0
+    rm -f "$2"
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$1" "$2" <<'PYEOF'
+import sys, urllib.request
+req = urllib.request.Request(sys.argv[1], headers={"User-Agent": "npm-linuxontab"})
+# Long timeout: the guest's inbound path is slow (tens of KB/s).
+with urllib.request.urlopen(req, timeout=300) as r, open(sys.argv[2], "wb") as f:
+    while True:
+        chunk = r.read(65536)
+        if not chunk:
+            break
+        f.write(chunk)
+PYEOF
+        [ -s "$2" ] && return 0
+    fi
+    return 1
+}
+
+# Extract dist.tarball URL from npm registry JSON (awk at depth 3).
+# Writes the URL to $2 (temp file). Uses redirect pattern, no $().
+_reg_tarball() {
+    awk '/"tarball":/ {
+        s=$0
+        sub(/.*"tarball":[[:space:]]*"/, "", s)
+        sub(/".*/, "", s)
+        print s; exit
+    }' "$1" > "$2"
+}
+
+# Extract first "version" value from JSON file. Writes to $2.
+_reg_version() {
+    awk '/"version":/ {
+        s=$0
+        sub(/.*"version":[[:space:]]*"/, "", s)
+        sub(/".*/, "", s)
+        print s; exit
+    }' "$1" > "$2"
+}
+
+# Extract a named script from package.json scripts section. Writes cmd to $2.
+_pkg_script() {
+    awk -v sc="$1" '
+        /"scripts":[[:space:]]*\{/ { in_s=1; next }
+        in_s && /^[[:space:]]*\}/ { exit }
+        in_s && index($0, "\"" sc "\":") > 0 {
+            s=$0
+            sub(/.*"[^"]*":[[:space:]]*"/, "", s)
+            sub(/".*/, "", s)
+            print s; exit
+        }
+    ' package.json > "$2"
+}
+
+# Install one package by name and optional version.
+_install_one() {
+    local pkg="$1" ver="$2"
+    local endpoint tmpjson tmptar tmpout tarurl pkgver workdir
+    tmpjson="/tmp/npm-meta-$$.json"
+    tmptar="/tmp/npm-dl-$$.tgz"
+    tmpout="/tmp/npm-out-$$"
+
+    endpoint="$REGISTRY/$pkg/latest"
+    [ -n "$ver" ] && endpoint="$REGISTRY/$pkg/$ver"
+
+    _log "Fetching $pkg metadata..."
+    _get "$endpoint" "$tmpjson" || _die "fetch failed for $pkg (apk add curl for HTTPS)"
+    [ -s "$tmpjson" ] || _die "empty registry response for $pkg"
+
+    # Tarball URL — awk writes to file, read picks it up (no $() nesting)
+    _reg_tarball "$tmpjson" "$tmpout"
+    read -r tarurl < "$tmpout" || tarurl=""
+    rm -f "$tmpout"
+    [ -n "$tarurl" ] || _die "no tarball URL in registry response for $pkg"
+
+    _reg_version "$tmpjson" "$tmpout"
+    read -r pkgver < "$tmpout" || pkgver="?"
+    rm -f "$tmpout"
+    rm -f "$tmpjson"
+
+    _log "Downloading $pkg@$pkgver..."
+    _get "$tarurl" "$tmptar" || _die "download failed for $pkg"
+    [ -s "$tmptar" ] || _die "empty download for $pkg"
+
+    mkdir -p "./node_modules"
+    workdir="/tmp/npm-work-$$-$pkg"
+    rm -rf "$workdir" && mkdir "$workdir"
+    tar xzf "$tmptar" -C "$workdir" 2>/dev/null || _die "extract failed for $pkg"
+    rm -f "$tmptar"
+
+    # npm tarballs extract to a "package/" subdirectory
+    rm -rf "./node_modules/$pkg"
+    if [ -d "$workdir/package" ]; then
+        mv "$workdir/package" "./node_modules/$pkg"
+    else
+        mv "$workdir" "./node_modules/$pkg"
+        workdir=""
+    fi
+    [ -n "$workdir" ] && rm -rf "$workdir"
+
+    _log "Installed $pkg@$pkgver → ./node_modules/$pkg"
+}
+
+cmd_install() {
+    local pkg pname pver depfile
+    if [ -z "$*" ]; then
+        # No args: install from package.json dependencies
+        [ -f package.json ] || _die "no package.json found — run: npm init"
+        _log "Installing dependencies from package.json..."
+        depfile="/tmp/npm-deps-$$"
+        awk '
+            /"dependencies":[[:space:]]*\{/ { in_d=1; next }
+            in_d && /^[[:space:]]*\}/ { exit }
+            in_d && /"[^"]+":/ {
+                s=$0
+                sub(/^[[:space:]]*"/, "", s)
+                sub(/".*/, "", s)
+                print s
+            }
+        ' package.json > "$depfile"
+        while IFS= read -r dep; do
+            [ -n "$dep" ] && _install_one "$dep" ""
+        done < "$depfile"
+        rm -f "$depfile"
+    else
+        for pkg in "$@"; do
+            # Skip npm flags
+            case "$pkg" in
+                --save|--save-dev|--save-exact|--no-save|-S|-D|-E|-P) continue ;;
+            esac
+            pver=""
+            case "$pkg" in
+                *@*) pname="${pkg%%@*}"; pver="${pkg##*@}" ;;
+                *)   pname="$pkg" ;;
+            esac
+            _install_one "$pname" "$pver"
+        done
+    fi
+}
+
+cmd_run() {
+    local script="$1" tmpout cmd
+    [ -n "$script" ] || _die "Usage: npm run <script>"
+    [ -f package.json ] || _die "no package.json found"
+    tmpout="/tmp/npm-sc-$$"
+    _pkg_script "$script" "$tmpout"
+    read -r cmd < "$tmpout" || cmd=""
+    rm -f "$tmpout"
+    [ -n "$cmd" ] || _die "script '$script' not found in package.json"
+    _log "Running: $cmd"
+    exec sh -c "$cmd"
+}
+
+cmd_init() {
+    local force=0
+    [ "$1" = "-y" ] || [ "$1" = "--yes" ] && force=1
+    [ -f package.json ] && [ "$force" -eq 0 ] && \
+        _die "package.json already exists (use npm init -y to overwrite)"
+    # Use parameter expansion — no subprocess fork for basename
+    local pkgname="${PWD##*/}"
+    cat > package.json << PKGJSON
+{
+  "name": "$pkgname",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"no tests\" && exit 1"
+  },
+  "dependencies": {}
+}
+PKGJSON
+    _log "Created package.json for $pkgname"
+}
+
+case "$1" in
+    install|i)             shift; cmd_install "$@" ;;
+    run)                   shift; cmd_run "$@" ;;
+    start)                 cmd_run "start" ;;
+    init)                  shift; cmd_init "$@" ;;
+    version|--version|-v)  printf '%s\n' "$NPM_VERSION" ;;
+    help|--help|-h|"")
+        cat << 'HELPEOF'
+Usage: npm <command>
+
+Commands:
+  install [pkg[@ver]]  install package(s) from npm registry
+  install              install all deps listed in package.json
+  run <script>         run a script defined in package.json
+  start                run the "start" script
+  init [-y]            create a package.json in the current directory
+  version              show npm version
+
+Engine: QuickJS 2024-01-13 (ES2023)
+Note:   apk add curl   — needed for HTTPS access to registry.npmjs.org
+        Only pure-JS packages work; native addons (.node files) will not run.
+HELPEOF
+        ;;
+    *)  _die "unknown command: $1 — run 'npm help'" ;;
+esac

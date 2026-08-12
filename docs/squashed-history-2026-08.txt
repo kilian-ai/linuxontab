@@ -1,0 +1,229 @@
+8a2ef51 wasm.html: cache boot images locally + toolbar download progress bar
+bcd7775 wasm.html: make the persisted rootfs overlay opt-in (fix garbled boot)
+f2c9b4b xtiny: taskbar, launcher and working window buttons — a usable desktop
+832cb5b xtiny: real window management — z-order, click-to-focus, cursor shapes
+021ceea index.html: point 2.0 CTAs at the live linuxontab2.pages.dev URL
+9613d0c cloudflare: deploy 2.0 (wasm) to Pages + R2; link it from the marketing site
+986d704 xterm: builds and runs as a real xtiny X client; xtiny protocol gap fixes
+d99acfb xtiny: accept the void grab requests (GrabButton et al.)
+91c46fb xterm: builds and runs as a real xtiny X client; xtiny protocol gap fixes
+3439fd9 xtiny: core X11 fonts — the kernel's VGA 8x16 serves every font name
+d0afe29 xtiny: tiny X11 server on librfb — real unmodified xeyes runs on the wasm guest
+a9a3c21 vnc: timer-free transport stall repair + snake pauses across stalls
+5922f84 packages: asyncify --enable-exception-handling (wasm-EH ports)
+bacbac9 apk: dependency resolution — the missing piece of lane 1
+0e09ece guest: motd describes the vnc-server (eyes) + vnc-snake demos
+02fc895 guest: motd announces zsh 5.9
+adef378 kernel: ship vmlinux with signal-handler pt_regs save/restore fix
+d7d3149 librfb: split RFB core out of vnc-server; add vnc-snake keyboard demo
+6bf87d0 slirp: fix multi-minute transport wedges — go-back-N loss recovery
+a732c2d guest: motd lists what now works (tmux/mc/nano/lotfm/ash/claw/xeyes/…)
+c5c3b1e guest: zsh 5.9 running on wasm — native wasm-EH sjlj + fork thunk
+9a69fbd vnc-server: pointer-tracked eyes work end-to-end — RRE, pupil rects, self-ticking polls
+591b6dc guest: default TERM=xterm-256color; dev-server autoPort
+83d536a sched-debug: gitignore sjljfork2dbg artifacts
+ef22d4c guest: ash subshells FIXED via native wasm-EH setjmp/longjmp
+dbc1b18 guest: tmux 3.5a working — server/client, pty, fork all verified
+3072c18 sched-debug: sjlj+fork repros — expose subshell fork-child fall-through
+904598a guest: busybox ash builds and runs (fork thunk + multi-frame sjlj)
+3c2c728 fork: per-worker grown scratch region for buffer-less clone paths
+840eb06 wali: Rust runs on the guest — WALI syscall bridge (Path A milestone)
+151c36a packages: sync nodejs recipe wrappers with hand-fixed rootfs copies
+61c0ccb packages: rebuild qjs against dynamic fork thunk; asyncify -O1 by default
+687b699 toolchain: WALI bridge scaffold — Path A groundwork for Rust on the guest
+f631f3e rootfs: rebuild sshd (OpenSSH 9.9p2) against dynamic fork thunk
+f9a5d61 guest: nano 8.3 working — first real nano in the image
+ab72592 fork: dynamic per-call asyncify thunk sized from live stack depth
+260d980 guest: Midnight Commander WORKS — initscr crash was the 64KB default wasm stack
+13b5d1d guest: lotfm file manager (working); mc port parked at ncurses initscr
+389d1cd guest: default clawlite provider to anthropic (claude-sonnet-4-5)
+f3497d9 guest: rebuild busybox hush with HUSH_TICK — $() command substitution now works
+6725df8 curl shim: honor -o/--output (write to file, not stdout)
+3920279 guest: install clawlite (getclaw.site liteclaw) — LLM REPL, working end-to-end
+02e7c6f slirp: RST orphaned injected connections — fixes FIN_WAIT1 leak + concurrent failures
+603bea2 node-v8: fs proxied into the guest, http served by the page's fetch
+17e323e node-v8: run guest JavaScript on the page's real JS engine (option C prototype)
+698f95e rc: pin npm/PyPI registry IPs in /etc/hosts — npm install now works
+40c23ac guest: install real curl, stop the boot script clobbering it, npm fetch fallback
+a056ffa tunnel: keep CF DO warm (8s ping) + deeper pool (6) + lot-bridge UI cleanup
+2c7b833 local/wheels: stage radicale's full pure-python wheel set for offline install
+43ea2f4 Revert the brk byte-patch from 45ac007 (it broke pip entirely)
+54153a9 tunnel: CF Durable Object hybrid for the WS pool (fixes Fly 1006 drops)
+bc7f29d relay: log TCP-expose no-assignment/expired rejections (were silent)
+913e70b tunnel: end-to-end backpressure — kills the large-upload wedge, ~13x throughput
+45ac007 musl brk: fix 4x memory.grow overshoot (root cause of pip segfaults)
+4e16841 relay: TCP-expose bridge must drop text control frames (fixes 'Packet too big')
+41fa16c Revert "relay: cap concurrent public-TCP pairs per guest port"
+c380aa7 relay: cap concurrent public-TCP pairs per guest port
+45fca54 shell: auto-expose public endpoint; rewire lot-bridge button to page-side flow
+7bbffe7 worker: always log user-process crash stacks to the console
+835fbd8 relay: /port/expose TCP path must signal guest with __connected__
+bb1fb15 guest clock: read/write clock origins as SIGNED i64 + sanity clamp
+99e7450 remove WebFuse menu button; fix mmap shim so pip downloads work again
+4699148 wasm: coherent uaccess read fixes musl cond/threading lost-wakeup
+d357b35 LAN media gateway: movie bytes bypass the guest entirely
+aa0576d wf-live media path + four root-cause fixes for the 'flaky relay' stack
+2b5b402 sched-debug: add condpp.c — pure-C mutex+cond repro isolates the wedge
+983143a kernel syscall-restart fix + SSH stack rebuilt vs fixed libc + sched-debug harness
+63e96b5 rootfs.ext4: bake in progressive SMB cache
+2a1927e webfuse: progressive SMB cache — stream while downloading, no blocking
+9f8f0e0 rootfs.ext4: bake in pysmb SMB source, seed, and cleared stale bytecode
+c766600 services: minimal LAN WISP relay (raw WebSocket, pure stdlib)
+cdc1aee webfuse: seed sources on startup from seed_sources.json
+b094c88 webfuse: SMB source via pysmb (pure Python), with local file cache
+16519b1 wasm slirp: reliable outbound downloads, WISP watchdog, LAN relay override, WebFuse button
+cf9afc5 worker.js: forked child memory maximum must be 4096, not parent size
+70d73a3 wasm slirp: windowed sender + retransmit for the download direction
+b2491cc rootfs.ext4: bake in the CA bundle, torrent engine/shim, wf-live scan helper
+edb0530 webfuse: render the frontend live in the LinuxOnTab "output: browser" panel
+ba95ca5 webfuse: real TCP-only BitTorrent, exposed via a Transmission-RPC shim
+e2dfce3 guest: ship a system CA bundle so Python HTTPS verifies
+e1442b7 webfuse: run sync handlers inline to fix HTTP keep-alive on wasm guest
+0553acd wasm slirp: forward FIN-coalesced data on injected downloads
+5ba972f wasm host: gate per-syscall tracing behind ?debuglog (was always on)
+c655298 webfuse: pydantic-v1 orm_mode shim — library API serializes ORM rows
+99d7b89 wasm guest: userspace wall clock via lot_epoch; fix inbound-TCP regression
+3db0b20 python3: bump 3.11.9 -> 3.11.14 — match host bytecode for precompiled .pyc
+11e44e0 chore: allowlist read-only wasm-objdump/curl-probe/browser-navigate
+6a5ef8e rootfs.ext4: rebuild with python3 pip/ssl/sqlite stack + WebFuse
+bb47d90 rootfs: deploy WebFuse backend + frontend into the guest
+03bff08 python3: pip+ssl+sqlite — full package-install stack for the wasm guest
+e4f7759 wasm guest: real asyncio/uvicorn support — kernel epoll+futex, unified clocks, real kernel threads
+9d09b62 wasm.html: fix SFTP download deadlock — trim partially-overlapping retransmits
+7a768fd fix guest SSH session leak: reliable RST teardown + sshd reaping timeouts
+6216c5a wasm.html: add TCP flow control to slirp injected-connection path
+c5abdc5 rootfs: fix root password to a DES-crypt hash (wasm musl crypt is DES-only)
+ab395bc docs: update agent guide for fixed musl sysroot + current status
+f82ce33 toolchain: fix musl mallocng alloc_meta 0x8000 corruption distro-wide
+36ccd5a python3: land root-cause CPython rebuild (recipe, pip site-packages, initcpio relocation)
+b1ce7af fix: allow memory.grow by setting maximum=4096 pages (256MB) for all processes
+e60ae20 fix: set execute bit on wasm3 and syncthing.wasm in rootfs
+d2eed82 feat: real TCP sockets for wasip1 via wasm3 socket extensions
+3e6c1b5 wasm3+syncthing: add real wasip1 socket extensions (sock_open/bind/listen/connect/getlocaladdr/getpeeraddr/setsockopt)
+368d34b packages: add syncthing 1.27.12 wasip1 — runs via wasm3 inside guest
+22f92a3 rootfs: fix sysroot headers for asyncified clang (#include stdio.h + stdint.h)
+03f8308 packages: add wasm3 0.5.0 — WASI interpreter (run wasip1 binaries in guest)
+c971ac0 claw: harden guest install and runtime
+41524fe worker.js: fix epoll close shim - only intercept fds >= 101, not pre-registered fd=0
+1f01794 epoll shim: fix epoll_pwait OOB crash
+2f5632b epoll shim: pre-register fd=0 — Xvfb uses it without calling epoll_create1
+ddf119d worker: force fresh memory on execve when module changes
+ca50ec0 xvfb: fix fn[3617] patch3 — move end(block void) before return so br_if exits land at local.get 0; return
+fbeb8b7 xvfb: revert bad nop patch at 0x2f9eb8 (broke WASM type validation — unreachable is polymorphic)
+bcef222 xvfb: patch fn[3617]:0x2f9eb8 unreachable→nop (asyncify rewind Patch 3)
+cd51845 worker.js: add epoll shim (nr=20/21/22) — CONFIG_EPOLL not set in kernel
+186a996 xvfb: patch func[9] type: ()->void -> (i32,i32)->void (table[3] call_indirect mismatch at 0x1061e8)
+c07f722 xvfb: patch unreachable at 0xbaa6 (asyncify fn1839 returns sync)
+9cfeac7 xvfb: asyncify without --pass-arg to fix unreachable crashes
+0f1c2e8 xvfb: bypass Popen/xkbcomp, copy pre-compiled XKM directly
+f1a473d rootfs: xkbcomp with debug logging to /tmp/xkbcomp.log
+06a030b rootfs: replace xkbcomp shell stub with real WASM binary
+c1378d2 rootfs: add stub xkbcomp + pre-compiled server.xkm keymap
+c70310f rootfs: add xkeyboard-config 2.41 XKB data files
+73d8983 xvfb: fix call_indirect type mismatch — table[3]=func[9] wrong type
+3a9911a xvfb: patch all 1247 asyncify false-positive unreachables to nop
+5383680 xvfb: fix asyncify unreachable by specifying asyncify-imports@linux.syscall
+f06af84 fix: re-asyncify Xvfb+xeyes without -O1 (fixes unreachable crash)
+e738ed4 fix: chmod +x for WASM binaries after asyncify
+957282f x11vnc + xeyes: full X11 VNC stack in rootfs
+cf1ed2c xvfb: add Xvfb 21.1.13 package (WASM, asyncified)
+fe3520a python3.11: patch _PyBuiltins_AddExceptions to return 0 on ExceptionGroup failure
+0d9201c rootfs: rebuild image after xeyes package updates
+987ea06 python3.11: fix sbrk shift 14→16 (memory ceiling was 4x too small)
+459d70f packages: add Xt stack deps and xeyes recipe scaffold
+3e0815a packages: clean libxcb archive and add libX11 recipe
+ac256b0 packages: add xtrans, libXau, libXdmcp, libxcb
+5107b78 packages: add xorgproto base recipe and package for real X stack bootstrap
+d7b378d wasm.html: add FBU watchdog and pointer-driven incremental refresh fallback
+0fc3dd7 wasm.html: stop autoboot JS tunnel when opening X display
+81e50e3 wasm.html: repump after in-pump arrivals to prevent partial-frame stalls
+1379b3b wasm.html: guard RFB pump against re-entrant onmessage calls
+1ed39ce vnc-server: send full framebuffer as 40-row bands to avoid black startup stall
+abc9a8a wasm.html: batch guest->RFB chunks to avoid frame decode stall
+81633cf wasm.html: instrument RFB chunk flow and raw-pixel accumulation
+f44a863 wasm.html: emit bounded RFB breadcrumbs even without debuglog
+ef48246 wasm.html: fix bare HTML detection in browser output — scan anywhere in stream
+4a4ec39 wasm.html: add RFB debug breadcrumbs and fix FBUpdateRequest field order
+a786138 rootfs: use TERM=vt100 everywhere — fixes nano segfault with xterm-256color
+dd1d164 rootfs: remove all macOS terminfo files — BusyBox uses built-in xterm sequences
+cb405a6 rootfs: fix nano segfault — set TERM=xterm-256color in rc, remove bad linux terminfo
+bb8fde3 rootfs: add terminfo entries for linux, xterm, xterm-256color, vt100
+a96d629 wasm.html: render bare HTML output in browser output mode even without CGI headers
+a5a1177 node: add built-in os and path modules to QuickJS wrapper
+972184d worker.js: fix $() subshells — use asyncify rewind for NOMMU fn_arg=0 (subshell), native fn for fn_arg≠0 (exec)
+3ea7770 worker.js: fix NOMMU clone — pass fn/fn_arg to kernel so child runs NOMMU function natively
+f371e78 vnc-server: fix mouse - usleep(1) yields kernel for pointer event delivery
+e43f2af vnc-server: fix mouse - coalesce rect pixels into single write() call
+2c48875 worker.js: fix NOMMU child spawn; revert wrong fn_arg busybox patch
+2ce8243 vnc-server: window manager + incremental eye updates; fix qjs +x
+8ce5115 rootfs: fix BusyBox NOMMU spawn fn_arg=0 bug
+eab8f68 vnc-server: xeyes demo — pupils track mouse via PointerEvent
+cdc1897 fix: /Users/kilian/.ai/LinuxOnTab-kernel freeze in node wrapper + worker.js infinite loop guard
+791f2ee wasm.html: fix VNC relay readyState — guest data was silently dropped
+a281491 X display: VNC-over-injectConnect canvas rendering
+d5c7673 rootfs: pre-install nodejs 20 (node, npm, qjs binaries)
+284accb rootfs: add CGI polyglot demos + browser output pane fixes
+bfb2acc rootfs: fix console shell - exec sh directly instead of broken getty clone path
+d216134 silence debug logs (no buffering fix for console filter)
+6f17a86 worker.js: fix wasm-ld all-zero output via MAP_PRIVATE mmap writeback
+3dcec20 packages: add python3 3.11.9 (CPython WASM, asyncified)
+59db6c5 packages: nodejs: fix circular require via _normPath (fixes js-yaml instanceof)
+0ceb512 packages: nodejs: fix TextDecoder not available in QuickJS, use String.fromCharCode
+5a28b64 packages: nodejs: fix multi -e flag (qjs only uses last -e; concatenate shim+code)
+6ae0583 packages: nodejs: fix require() shim (single quotes in SHIM var broke shell assignment)
+0db2da9 packages: nodejs: add CommonJS require() shim via --std + globalThis.std
+2770009 packages: rebuild nodejs with 8MB WASM stack + 8MB JS stack (fix require() stack overflow)
+99b7b01 packages: add nodejs 20.0.0 (QuickJS 2026-05-21, ES2023) + npm
+f37d4d8 docs: update lot-kernel agent with clang fix details and milestone roadmap
+ac56776 clang: fix call_indirect type mismatch via select-based vtable dispatch
+2df6bae wasm-ld: fix sigaltstack asyncify crash; increase machine RAM to 1GB
+743f31e wasm-ld: fix sigaltstack asyncify crash (HAVE_SIGALTSTACK must be undefined, not 0)
+0bb2c9f packages: add wasm-ld 19.1.7 WASM binary; increase rootfs to 256MB
+d905aff wasm-opt: 8MB stack, 256MB guest RAM; fix --asyncify -O1 (skip precompute)
+c12d8ca packages: add wasm-opt 129 (WASM32 guest-runnable)
+a3d1c63 rootfs: rebuild with native sshd daemon; update rc, motd, tooling
+55ba1af rootfs: native OpenSSH sshd daemon mode
+19cfdab relay-tunnel: LIFO dequeue + stale-WS retry for concurrent SFTP
+39d7923 wasm: remove drop_caches step after snapshot import
+139e30a wasm: prompt fast reset after snapshot import
+790a5bb wasm: refresh guest fs cache after overlay import
+aebf184 wasm: add storage panel with overlay export/import/reset
+bf6dfac wasm: add IndexedDB-backed rootfs block overlay persistence
+99ae083 lua: harden runtime (C89 mode, trimmed default libs)
+f384490 packages: add lua 5.4.7
+4685cd0 nano: fix ncurses runtime terminfo search paths
+5e7164f apk+nano: fix busybox symlink replacement and vt100 terminfo lookup
+ec1948f packages: add nano 8.3 with static ncurses dependency
+707b8bf apk: fix chmod +x — run on installed paths, not temp pkgroot
+499c559 packages: add jq 1.7.1; fix build-package.sh import-memory check
+d4dee47 apk: chmod +x installed files after cp
+6fe2020 apk: fix off-by-one in _pkg_field awk index calculation
+805df95 apk: rewrite parsers with awk to fix busybox ash WASM case-pattern bugs
+fb4ea98 apk: fix _pkg_field case pattern quoting for busybox ash WASM
+34f87a7 apk: validate JSON before caching index; fix misleading byte count in update msg
+af362ea apk: fix IFS= read broken in busybox ash WASM; fix symlink overwrite on install
+8787a73 packages: add curl 8.13.0 (HTTP-only, wasm32)
+04f84c8 packages: add build pipeline, recipes, live apk update, online registry
+d249d92 packages: add push-wasm-pkg.sh + document package system and install-directly workflow in agent
+b25e023 docs: add lot-kernel.agent.md with WASM porting lessons and kernel architecture
+e31feef rootfs: OpenSSH sshd-session standalone WASM mode (--import-memory fix)
+d551e40 wasm.html: autoboot also starts JS tunnel and logs code to /log
+c5f9ac3 wasm.html: add ?autoboot URL param for automated testing
+b3f3f89 debug+fix: forward all workerLog to HTTP /log; fix fatal-error deadlock
+dcef4f2 fix: dbglog always active — worker location.search != main page URL
+d927523 Add HTTP debug logging to worker.js + /log endpoint in serve.sh
+999305d fix: intercept vfork() SYS_clone (arg0=0x4111) + add log handler to index.js
+aac5021 test: add fork-chain unit test — 22/22 pass at any depth
+d6bf4b4 fix: pass fork_bufPtr/fork_retPtr through spawn_worker chain (depth >= 2)
+ac1f477 fix: add /etc/hosts with static IPs to bypass UDP/53 DNS (dropped by WISP)
+c727ae3 feat: add ws-proxy WASM binary + tunnel-up-wasm for plain-WS tunneling
+4cd687c fix: apply all fork fixes to worker-Q7XWPLKR.js (actual loaded file)
+e18324c fix: dropbear -F (no daemon fork) + better error logging + rootfs rebuild
+63e3ad7 debug: add console.log to SYS_clone(220,17,0) interceptor to verify fix is running
+1ae8d44 fix: intercept SYS_clone(SIGCHLD,0) for wasm-stubs.c fork() in asyncified binaries
+2a66143 debug: add sftp-server startup log + rebuild rootfs
+574c1bf fix: SSH password auth — inline hash in /etc/passwd, simplify passwd wrapper
+58eeafe fix: passwd wrapper — use temp file instead of $() to avoid WASM hang
+8af79f1 fix: passwd/shadow — proper shadow format + working passwd command
+b1341cc feat: SSH via dropbear + full /mnt/host IDB persistence
+7122ce3 fix: apk 0.4.0 — eliminate all $() subshells to fix depth-3/4 fork hang

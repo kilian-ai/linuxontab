@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebFuse (LinuxOnTab live)</title>
+    <!-- Bridge: the app's /api/* fetches are routed to the guest's uvicorn
+         (127.0.0.1:8080 inside the wasm guest) via the parent page's in-process
+         slirp HTTP client (window.parent.__guestFetchResponse). Static assets
+         load normally from this dev-server origin. No external relay involved. -->
+    <script>
+    (function () {
+      // The app uses BrowserRouter; make it see "/" so the Movies route (index)
+      // mounts and fetches, instead of the no-match /shell/wf-live/index.html path.
+      try { history.replaceState(null, '', '/'); } catch (e) {}
+      window.addEventListener('error', function () {}, true);
+      var P = window.parent;
+      var orig = window.fetch.bind(window);
+      window.fetch = function (input, init) {
+        var url = typeof input === 'string' ? input : (input && input.url) || String(input);
+        var path = url;
+        try { var u = new URL(url, location.href); path = u.pathname + u.search; } catch (e) {}
+        if (/\/api\//.test(path) || path.indexOf('/api') === 0) {
+          if (P && P.__guestFetchResponse) return P.__guestFetchResponse(path, init || {});
+        }
+        return orig(input, init);
+      };
+
+      // <video> requests are native browser HTTP — the fetch shim above never
+      // sees them. A service worker (scope "/") intercepts /api/stream/* and
+      // messages us here; we run the request over the parent bridge and hand
+      // the bytes back. The app bundle is loaded only once the SW controls
+      // this page, so the first media request is already interceptable.
+      var booted = false;
+      var boot = function () {
+        if (booted) return; booted = true;
+        var s = document.createElement('script');
+        s.type = 'module'; s.crossOrigin = '';
+        s.src = '/shell/wf-live/assets/index-h4J1WfnH.js';
+        document.head.appendChild(s);
+      };
+      if (!('serviceWorker' in navigator)) { boot(); return; }
+      navigator.serviceWorker.addEventListener('message', function (ev) {
+        var d = ev.data;
+        if (!d || d.type !== 'lot-stream' || !ev.ports[0]) return;
+        var port = ev.ports[0];
+        if (!P || !P.__guestFetchResponse) { port.postMessage({ status: 502 }); return; }
+        P.__guestFetchResponse(d.path, { headers: d.headers || {} }).then(function (resp) {
+          return resp.arrayBuffer().then(function (buf) {
+            var hs = {};
+            resp.headers.forEach(function (v, k) { hs[k] = v; });
+            port.postMessage({ status: resp.status, headers: hs, body: buf }, [buf]);
+          });
+        }).catch(function () { port.postMessage({ status: 502 }); });
+      });
+      // Media gateway: same host as the LAN WISP relay (it's the SMB box),
+      // port 8901 (wf-media-gw.py). The SW reads it from its own URL query.
+      var swUrl = '/wf-sw.js';
+      try {
+        var wisp = new URLSearchParams(P.location.search).get('wisp');
+        if (wisp) {
+          var gwHost = new URL(wisp.replace(/^ws/, 'http')).hostname;
+          swUrl += '?gw=' + encodeURIComponent('http://' + gwHost + ':8901');
+        }
+      } catch (e) {}
+      navigator.serviceWorker.register(swUrl, { scope: '/' }).catch(function () {});
+      if (navigator.serviceWorker.controller) boot();
+      else {
+        navigator.serviceWorker.addEventListener('controllerchange', boot);
+        setTimeout(boot, 4000);   // fail open: app still usable if SW never lands
+      }
+    })();
+    </script>
+    <link rel="stylesheet" crossorigin href="/shell/wf-live/assets/index-DwjovvYX.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcrun simctl list *)",
+      "Bash(xcrun devicectl list *)",
+      "Bash(plutil -p *)",
+      "mcp__Claude_Browser__read_console_messages",
+      "mcp__Claude_Browser__read_page",
+      "mcp__Claude_Browser__read_network_requests",
+      "mcp__Claude_Browser__find",
+      "Bash(wasm-objdump *)",
+      "Bash(curl -s -o /dev/null *)",
+      "mcp__Claude_Browser__navigate"
+    ]
+  }
+}

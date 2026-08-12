@@ -1,0 +1,5 @@
+name=python3
+version=3.11.9
+description=Python 3.11 interpreter (CPython, WASM)
+built_with=lot-build-package
+target=wasm32-linux-musl

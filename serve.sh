@@ -13,7 +13,8 @@
 #     linuxontab-net.fly.dev) accept WebSocket from any origin, so the
 #     v86 NIC and port tunnels Just Work from localhost.
 
-PORT="${1:-8000}"
+# Prefer the harness-assigned PORT env (autoPort), then a CLI arg, else 8000.
+PORT="${PORT:-${1:-8000}}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
 
 cd "$DIR" || exit 1
@@ -26,8 +27,9 @@ echo "  url:     http://localhost:$PORT/shell/"
 echo
 
 exec python3 -c '
-import http.server, socketserver, sys
+import http.server, socketserver, sys, os, datetime
 port = int(sys.argv[1])
+log_file = "/tmp/wasm-kernel-debug.log"
 class H(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         # Required for SharedArrayBuffer (v86 needs it)
@@ -35,12 +37,31 @@ class H(http.server.SimpleHTTPRequestHandler):
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
         # Avoid stale cached HTML/JS during iteration
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
         super().end_headers()
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.end_headers()
+    def do_POST(self):
+        if self.path == "/log":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8", errors="replace")
+            ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            line = "[%s] %s\n" % (ts, body)
+            with open(log_file, "a") as f:
+                f.write(line)
+            sys.stderr.write(line)
+            self.send_response(204)
+            self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
     def log_message(self, fmt, *args):
-        sys.stderr.write("  %s %s\n" % (self.command, self.path))
+        if self.path != "/log":
+            sys.stderr.write("  %s %s\n" % (self.command, self.path))
 socketserver.TCPServer.allow_reuse_address = True
 with socketserver.TCPServer(("", port), H) as srv:
-    print("ready on :%d (Ctrl+C to stop)\n" % port)
+    print("ready on :%d (log -> %s)\n" % (port, log_file))
     try: srv.serve_forever()
     except KeyboardInterrupt: print("\nbye")
 ' "$PORT"

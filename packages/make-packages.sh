@@ -63,7 +63,7 @@ EOF
     sha=$(shasum -a 256 "$OUT/$tarname" | cut -d' ' -f1)
     echo "PACKED: $tarname ($size bytes, sha256=$sha)"
 
-    # Emit JSON fragment for index update
+    # Emit JSON fragment — always use canonical https:// URL
     cat >> "$OUT/.index-fragments.txt" << EOF
   "$name": {
     "version": "$version",

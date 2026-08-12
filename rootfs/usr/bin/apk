@@ -7,7 +7,12 @@ APK_REPO_HTTP="https://linuxontab.com/packages"
 APK_REPO_VGWX="http://192.168.86.1/packages"  # virtual gateway (fast, in-rootfs)
 APK_LOCAL_REPO="/packages"
 APK_DB="/var/lib/apk"
-APK_INDEX="$APK_LOCAL_REPO/index.json"  # already in rootfs — no copy needed
+APK_CACHED_INDEX="/var/cache/apk/index.json"  # fetched by 'apk update'
+APK_INDEX="$APK_LOCAL_REPO/index.json"         # baked-in fallback
+# Prefer live-fetched index if available and valid (contains "packages" key)
+if [ -f "$APK_CACHED_INDEX" ] && grep -q '"packages"' "$APK_CACHED_INDEX" 2>/dev/null; then
+    APK_INDEX="$APK_CACHED_INDEX"
+fi
 
 _err()  { echo "apk: error: $*" >&2; exit 1; }
 _info() { echo ">>> $*"; }
@@ -41,81 +46,132 @@ _fetch() {
 #     }
 #   }
 _pkg_field() {
-    local pkg="$1" field="$2" _in=0 _l
-    while IFS= read -r _l; do
-        case "$_in:$_l" in
-            0:'    "'"$pkg"'": {'*)  _in=1 ;;
-            1:'      "'"$field"'": "'*)
-                _l="${_l#*\"$field\": \"}"; printf '%s\n' "${_l%%\"*}"; return 0 ;;
-            1:'    }'*)  return 1 ;;
-        esac
-    done < "$APK_INDEX"
+    # Use awk — avoids busybox ash WASM case-pattern quoting bugs.
+    # awk runs as a direct child of apk (fork depth 3), same as grep in cmd_update.
+    awk -v p="$1" -v f="$2" '
+        index($0, "\"" p "\": {") > 0 { in_pkg=1; next }
+        in_pkg && index($0, "\"" f "\": \"") > 0 {
+            i = index($0, "\"" f "\": \"") + length(f) + 5
+            v = substr($0, i); sub(/".*/, "", v); print v; exit
+        }
+        in_pkg && /}/ { exit }
+    ' "$APK_INDEX"
 }
 
 _pkg_field_num() {
-    local pkg="$1" field="$2" _in=0 _l
-    while IFS= read -r _l; do
-        case "$_in:$_l" in
-            0:'    "'"$pkg"'": {'*)  _in=1 ;;
-            1:'      "'"$field"'": '[0-9]*)
-                _l="${_l#*\"$field\": }"; printf '%s\n' "${_l%%[^0-9]*}"; return 0 ;;
-            1:'    }'*)  return 1 ;;
-        esac
-    done < "$APK_INDEX"
+    awk -v p="$1" -v f="$2" '
+        index($0, "\"" p "\": {") > 0 { in_pkg=1; next }
+        in_pkg && index($0, "\"" f "\": ") > 0 {
+            i = index($0, "\"" f "\": ") + length(f) + 4
+            v = substr($0, i) + 0; print v; exit
+        }
+        in_pkg && /}/ { exit }
+    ' "$APK_INDEX"
+}
+
+# Print a package's runtime dependencies (from its "depends": [...] array),
+# space-separated. Handles the multi-line array json.dump(indent=2) emits.
+_pkg_depends() {
+    awk -v p="$1" '
+        index($0, "\"" p "\": {") > 0 { in_pkg=1; next }
+        in_pkg && /"depends"/ { grab=1 }
+        grab {
+            buf = buf " " $0
+            if (index($0, "]") > 0) {
+                sub(/.*\[/, "", buf); sub(/\].*/, "", buf)
+                gsub(/[",]/, " ", buf); print buf; exit
+            }
+            next
+        }
+        in_pkg && /^[[:space:]]*\}/ { exit }
+    ' "$APK_INDEX"
 }
 
 cmd_update() {
-    # APK_INDEX points directly to /packages/index.json which is baked into the
-    # rootfs — no network fetch or file copy needed.
-    if [ -f "$APK_INDEX" ]; then
-        _ok "Package index ready ($APK_INDEX)"
+    local tmpidx="/tmp/apk-index-$$.json"
+    mkdir -p /var/cache/apk
+    _info "Fetching package index..."
+    # Try virtual gateway first (fast, served locally by wasm.html)
+    if wget -q -T 5 -O "$tmpidx" "$APK_REPO_VGWX/index.json" 2>/dev/null && \
+       [ -s "$tmpidx" ] && grep -q '"packages"' "$tmpidx" 2>/dev/null; then
+        mv "$tmpidx" "$APK_CACHED_INDEX"
+        APK_INDEX="$APK_CACHED_INDEX"
+        _ok "Package index updated from virtual gateway"
         return 0
     fi
-    _err "Package index missing — rootfs may be corrupt"
+    # Fall back to HTTPS registry
+    if wget -q -T 15 -O "$tmpidx" "$APK_REPO_HTTP/index.json" 2>/dev/null && \
+       [ -s "$tmpidx" ] && grep -q '"packages"' "$tmpidx" 2>/dev/null; then
+        mv "$tmpidx" "$APK_CACHED_INDEX"
+        APK_INDEX="$APK_CACHED_INDEX"
+        _ok "Package index updated from $APK_REPO_HTTP"
+        return 0
+    fi
+    rm -f "$tmpidx"
+    # Fall back gracefully
+    if [ -f "$APK_CACHED_INDEX" ]; then
+        APK_INDEX="$APK_CACHED_INDEX"
+        _info "Warning: could not reach package server — using cached index"
+    elif [ -f "$APK_LOCAL_REPO/index.json" ]; then
+        APK_INDEX="$APK_LOCAL_REPO/index.json"
+        _ok "Using baked-in package index"
+    else
+        _err "Package index unavailable"
+    fi
 }
 
 cmd_list() {
-    local filter="$1" _pkg _ver _desc _inst _in _l
+    local filter="$1" _tmp _pkg _ver _desc _inst _l
     [ -f "$APK_INDEX" ] || { _info "Index not found — run: apk update"; return 1; }
     echo "Available packages:"
     echo "-------------------"
-    _in=0; _pkg=""; _ver=""; _desc=""
-    while IFS= read -r _l; do
-        case "$_in:$_l" in
-            0:'    "'*'": {')
-                _pkg="${_l#    \"}"; _pkg="${_pkg%%\"*}"
-                _ver=""; _desc=""; _in=1 ;;
-            1:'      "version": "'*)
-                _ver="${_l#*\"version\": \"}"; _ver="${_ver%%\"*}" ;;
-            1:'      "description": "'*)
-                _desc="${_l#*\"description\": \"}"; _desc="${_desc%%\"*}" ;;
-            1:'    }'*)
-                if [ -n "$_pkg" ] && [ -n "$_ver" ]; then
-                    _inst=""
-                    [ -f "$APK_DB/installed/$_pkg" ] && _inst=" [installed]"
-                    if [ -z "$filter" ]; then
-                        printf "  %-16s %-12s %s%s\n" "$_pkg" "$_ver" "$_desc" "$_inst"
-                    else
-                        case "$_pkg $_ver $_desc" in
-                            *"$filter"*) printf "  %-16s %-12s %s%s\n" "$_pkg" "$_ver" "$_desc" "$_inst" ;;
-                        esac
-                    fi
-                fi
-                _in=0; _pkg="" ;;
-        esac
-    done < "$APK_INDEX"
+    _tmp="/tmp/apk-list-$$"
+    # awk extracts pkg|ver|desc lines; pure-shell loop handles install status
+    awk '
+        /"packages": \{/ { in_pkgs=1; next }
+        !in_pkgs { next }
+        /"[^"]+": \{/ {
+            s=$0; sub(/^[^"]*"/, "", s); sub(/": \{.*/, "", s)
+            pkg=s; ver=""; desc=""
+        }
+        pkg && /"version": "/ {
+            s=$0; sub(/.*"version": "/, "", s); sub(/".*/, "", s); ver=s
+        }
+        pkg && /"description": "/ {
+            s=$0; sub(/.*"description": "/, "", s); sub(/".*/, "", s); desc=s
+        }
+        pkg && /^[[:space:]]*\}/ && ver != "" {
+            print pkg "|" ver "|" desc; pkg=""; ver=""; desc=""
+        }
+    ' "$APK_INDEX" > "$_tmp"
+    while read -r _l; do
+        _pkg="${_l%%|*}"
+        _ver="${_l#*|}"; _ver="${_ver%%|*}"
+        _desc="${_l##*|}"
+        _inst=""
+        [ -f "$APK_DB/installed/$_pkg" ] && _inst=" [installed]"
+        if [ -z "$filter" ]; then
+            printf "  %-16s %-12s %s%s\n" "$_pkg" "$_ver" "$_desc" "$_inst"
+        else
+            case "$_pkg $_ver $_desc" in
+                *"$filter"*) printf "  %-16s %-12s %s%s\n" "$_pkg" "$_ver" "$_desc" "$_inst" ;;
+            esac
+        fi
+    done < "$_tmp"
+    rm -f "$_tmp"
 }
 
 cmd_info() {
-    local pkg="$1" ver desc url size sha _inst_ver
+    local pkg="$1" ver desc url size sha _inst_ver _tmpout
     [ -n "$pkg" ] || _err "Usage: apk info <package>"
     [ -f "$APK_INDEX" ] || _err "Index not found. Run: apk update"
-    ver=$(_pkg_field "$pkg" "version")
+    _tmpout="/tmp/apk-tmp-$$"
+    _pkg_field     "$pkg" "version"     > "$_tmpout" 2>/dev/null; read -r ver  < "$_tmpout"; rm -f "$_tmpout"
     [ -n "$ver" ] || _err "Unknown package: $pkg"
-    desc=$(_pkg_field "$pkg" "description")
-    url=$(_pkg_field "$pkg" "url")
-    size=$(_pkg_field_num "$pkg" "size")
-    sha=$(_pkg_field "$pkg" "sha256")
+    _pkg_field     "$pkg" "description" > "$_tmpout" 2>/dev/null; read -r desc < "$_tmpout"; rm -f "$_tmpout"
+    _pkg_field     "$pkg" "url"         > "$_tmpout" 2>/dev/null; read -r url  < "$_tmpout"; rm -f "$_tmpout"
+    _pkg_field_num "$pkg" "size"        > "$_tmpout" 2>/dev/null; read -r size < "$_tmpout"; rm -f "$_tmpout"
+    _pkg_field     "$pkg" "sha256"      > "$_tmpout" 2>/dev/null; read -r sha  < "$_tmpout"; rm -f "$_tmpout"
     echo "Package    : $pkg"
     echo "Version    : $ver"
     echo "Description: $desc"
@@ -123,7 +179,7 @@ cmd_info() {
     echo "Size       : $size bytes"
     echo "SHA256     : $sha"
     if [ -f "$APK_DB/installed/$pkg" ]; then
-        IFS= read -r _inst_ver < "$APK_DB/installed/$pkg"
+        read -r _inst_ver < "$APK_DB/installed/$pkg"
         echo "Status     : installed ($_inst_ver)"
     else
         echo "Status     : not installed"
@@ -133,18 +189,24 @@ cmd_info() {
 cmd_add() {
     [ -n "$*" ] || _err "Usage: apk add <package> [package...]"
     [ -f "$APK_INDEX" ] || cmd_update
+    APK_SEEN="/tmp/apk-seen-$$"; : > "$APK_SEEN"
     for pkg in "$@"; do
         _install_pkg "$pkg"
     done
+    rm -f "$APK_SEEN"
 }
 
 _install_pkg() {
-    local pkg="$1" ver url sha inst_ver tmptar workdir pkgroot manifest _entry _rel
-    ver=$(_pkg_field "$pkg" "version")
+    local pkg="$1" ver url sha inst_ver tmptar workdir pkgroot manifest _entry _rel _tmpout deps d
+    # Use redirect capture (not $(...)) so _pkg_field runs in the current shell
+    # with no extra fork — $() at depth 3 hangs in the asyncify fork chain.
+    _tmpout="/tmp/apk-tmp-$$"
+    _pkg_field "$pkg" "version" > "$_tmpout" 2>/dev/null
+    read -r ver < "$_tmpout" 2>/dev/null || ver=""; rm -f "$_tmpout"
     [ -n "$ver" ] || _err "Unknown package: $pkg (run 'apk update' to refresh index)"
 
     if [ -f "$APK_DB/installed/$pkg" ]; then
-        IFS= read -r inst_ver < "$APK_DB/installed/$pkg"
+        read -r inst_ver < "$APK_DB/installed/$pkg"
         if [ "$inst_ver" = "$ver" ]; then
             _info "$pkg-$ver is already installed"
             return 0
@@ -154,17 +216,40 @@ _install_pkg() {
         _info "Installing $pkg-$ver..."
     fi
 
-    url=$(_pkg_field "$pkg" "url")
-    sha=$(_pkg_field "$pkg" "sha256")
+    # Resolve + install runtime dependencies first (depth-first). The seen-list
+    # guards against cycles. Command substitution at fork depth is reliable now
+    # (kernel signal-handler pt_regs fix); the older $()-avoidance is no longer
+    # required, though the temp-file field extractors below are kept as-is.
+    APK_SEEN="${APK_SEEN:-/tmp/apk-seen-$$}"
+    case " $(cat "$APK_SEEN" 2>/dev/null) " in
+        *" $pkg "*) : ;; *) echo "$pkg" >> "$APK_SEEN" ;;
+    esac
+    deps=$(_pkg_depends "$pkg")
+    for d in $deps; do
+        [ -n "$d" ] || continue
+        case " $(cat "$APK_SEEN" 2>/dev/null) " in *" $d "*) continue ;; esac
+        if [ ! -f "$APK_DB/installed/$d" ]; then
+            _info "$pkg depends on $d — installing it first"
+            _install_pkg "$d"
+        fi
+    done
+
+    _pkg_field "$pkg" "url"    > "$_tmpout" 2>/dev/null
+    read -r url < "$_tmpout" 2>/dev/null || url=""; rm -f "$_tmpout"
+    _pkg_field "$pkg" "sha256" > "$_tmpout" 2>/dev/null
+    read -r sha < "$_tmpout" 2>/dev/null || sha=""; rm -f "$_tmpout"
     [ -n "$url" ] || _err "No URL for package $pkg"
 
     tmptar="/tmp/apk-$pkg.tar.gz"
     _info "Downloading $url"
     _fetch "$url" "$tmptar" || _err "Download failed for $pkg"
 
-    # Optional checksum verification (sha256sum is a single fork at depth 2 — OK)
+    # Checksum: run sha256sum as a direct depth-3 fork (not inside $(...)) to
+    # avoid creating a depth-4 process which hangs in the asyncify fork chain.
     if command -v sha256sum >/dev/null 2>&1 && [ -n "$sha" ]; then
-        actual=$(sha256sum "$tmptar"); actual="${actual%% *}"
+        sha256sum "$tmptar" > "$_tmpout" 2>/dev/null
+        read -r actual < "$_tmpout" 2>/dev/null || actual=""; rm -f "$_tmpout"
+        actual="${actual%% *}"
         if [ "$actual" != "$sha" ]; then
             rm -f "$tmptar"
             _err "Checksum mismatch for $pkg (expected $sha, got $actual)"
@@ -179,26 +264,36 @@ _install_pkg() {
     pkgroot="$workdir/pkg-$pkg"
     [ -d "$pkgroot" ] || _err "Malformed tarball: pkg-$pkg/ not found"
 
-    # Install: copy entire pkg tree to / preserving permissions.
-    # Packages are pre-asyncify-transformed at build time (make-packages.sh).
-    # cp -rp is a single depth-2 fork — safe in the asyncify fork chain.
+    # Build manifest and remove conflicting symlinks (e.g. busybox applet stubs)
+    # before installing — cp -rp would otherwise follow the symlink and overwrite
+    # the target binary (e.g. /bin/busybox) instead of replacing the symlink.
     mkdir -p "$APK_DB/files"
     manifest="$APK_DB/files/$pkg"
     : > "$manifest"
+    # Build from extracted filesystem tree instead of tar listing format.
+    # Some tar implementations prefix entries with ./ which breaks simple
+    # pattern matching and can skip symlink cleanup for /bin applet stubs.
+    find "$pkgroot" -type f | while read -r _entry; do
+        _rel="${_entry#$pkgroot/}"
+        _dest="/$_rel"
+        [ -L "$_dest" ] && rm -f "$_dest"
+        echo "$_dest" >> "$manifest"
+    done
+
+    # Install: copy entire pkg tree to / preserving permissions.
+    # Packages are pre-asyncify-transformed at build time (make-packages.sh).
+    # cp -rp is a single depth-2 fork — safe in the asyncify fork chain.
     cp -rp "$pkgroot/." / 2>/dev/null || _err "Failed to install files for $pkg"
+    # Make installed files executable (WASM binaries require +x).
+    # Use the manifest (installed paths) not pkgroot — cp already happened.
+    while read -r _f; do chmod +x "$_f" 2>/dev/null || true; done < "$manifest"
     _ok "Installed $pkg files to /"
 
-    # Build manifest via tar -t (single fork, no pipeline) then pure-shell parse
-    tar tzf "$tmptar" > "/tmp/apk-fl-$pkg.txt" 2>/dev/null || true
-    while IFS= read -r _entry; do
-        case "$_entry" in
-            */) continue ;;          # skip directory entries
-            pkg-*/*)
-                _rel="${_entry#*/}"  # strip "pkg-NAME/" prefix
-                echo "/$_rel" >> "$manifest" ;;
-        esac
-    done < "/tmp/apk-fl-$pkg.txt"
-    rm -f "/tmp/apk-fl-$pkg.txt" "$tmptar"
+    # Keep curl/wget HTTPS wrappers active even after package installs that
+    # may replace busybox applet links or install a non-TLS curl binary.
+    /usr/local/sbin/install-https-tools >/dev/null 2>&1 || true
+
+    rm -f "$tmptar"
 
     # Record installed version
     mkdir -p "$APK_DB/installed"
@@ -212,7 +307,7 @@ cmd_del() {
         [ -f "$APK_DB/installed/$pkg" ] || { echo "apk: $pkg is not installed"; continue; }
         local manifest="$APK_DB/files/$pkg"
         if [ -f "$manifest" ]; then
-            while IFS= read -r f; do
+            while read -r f; do
                 [ -z "$f" ] && continue
                 rm -f "$f" && _ok "Removed: $f"
             done < "$manifest"
@@ -237,10 +332,11 @@ cmd_search() {
 }
 
 cmd_version() {
-    echo "apk-linuxontab 0.3.0"
+    echo "apk-linuxontab 0.5.0"
     echo "WASM package manager for LinuxOnTab"
     echo "Local repo  : $APK_LOCAL_REPO"
     echo "Remote repo : $APK_REPO_HTTP"
+    echo "Cached index: $APK_CACHED_INDEX"
 }
 
 cmd_help() {
@@ -248,8 +344,8 @@ cmd_help() {
 apk - LinuxOnTab package manager (WASM packages)
 
 Commands:
-  apk update           Fetch/refresh the package index
-  apk add <pkg>...     Install package(s)
+  apk update           Fetch package index from linuxontab.com/packages
+  apk add <pkg>...     Install package(s) + their runtime dependencies
   apk del <pkg>...     Remove package(s)
   apk list [filter]    List available packages
   apk search <query>   Search packages by name/description
@@ -264,8 +360,10 @@ Notes:
   Wasmer.io / WAPM packages are NOT compatible — they use WASI
   (wasi_snapshot_preview1) rather than Linux syscall ABI.
 
-  To build a new package from source:
-    rebuild --skip-distro     (triggers GitHub Actions CI)
+  To build a new package from source (on the host Mac):
+    cd ~/.ai/LinuxOnTab-kernel
+    ./packages/build-package.sh <recipe-name>
+    # See packages/recipes/ for available recipes
 EOF
 }
 

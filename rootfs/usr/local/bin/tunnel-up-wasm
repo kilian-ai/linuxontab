@@ -1,0 +1,79 @@
+#!/bin/sh
+# tunnel-up-wasm — Expose local TCP ports through linuxontab-tunnel.fly.dev
+#
+# Replacement for tunnel-up.sh that works in the WASM guest without
+# websocat or curl.  Uses:
+#   - nc (busybox netcat) for plain HTTP POST to port 4344 (no TLS)
+#   - /sbin/ws-proxy for the WebSocket ↔ TCP bridges
+#
+# Usage: tunnel-up-wasm [port1 [port2 ...]]
+# Default ports: 22 (sshd)
+#
+# The Fly tunnel server accepts plain HTTP/WS on port 4344 (raw TCP, no TLS).
+#
+# NOTE: written WITHOUT command substitution ($(...) / backticks) — the
+# guest's busybox hush is built without HUSH_TICK and fails to parse it
+# ("syntax error: unexpected )"). Intermediate results go through /tmp
+# files + `read` instead.
+
+RELAY_HOST="linuxontab-tunnel.fly.dev"
+RELAY_PORT="4344"
+CODE_FILE="/tmp/tunnel.code"
+PIDS_FILE="/tmp/tunnel.pids"
+
+PORTS="${*:-22}"
+
+# ── Kill any prior bridges ────────────────────────────────────────────────────
+if [ -s "$PIDS_FILE" ]; then
+    while IFS= read -r pid; do
+        kill "$pid" 2>/dev/null
+    done < "$PIDS_FILE"
+    rm -f "$PIDS_FILE"
+fi
+rm -f "$CODE_FILE"
+
+# ── Register with tunnel server ───────────────────────────────────────────────
+# This busybox has neither nc nor wget (and its curl applet is a wget alias),
+# so do the HTTP POST with python3. Writes the code to $CODE_FILE.
+python3 -c "
+import json, sys, urllib.request
+ports = [int(p) for p in sys.argv[1:]]
+body = json.dumps({'ports': ports}).encode()
+req = urllib.request.Request(
+    'http://$RELAY_HOST:$RELAY_PORT/port/register',
+    data=body, headers={'Content-Type': 'application/json'})
+resp = json.load(urllib.request.urlopen(req, timeout=20))
+open('$CODE_FILE', 'w').write(resp['code'] + '\n')
+print('[tunnel] registered:', resp)
+" $PORTS
+
+if [ ! -s "$CODE_FILE" ]; then
+    echo "[tunnel] ERROR: registration with $RELAY_HOST:$RELAY_PORT failed" >&2
+    exit 1
+fi
+CODE=""
+read CODE < "$CODE_FILE"
+
+if [ -z "$CODE" ]; then
+    echo "[tunnel] ERROR: empty tunnel code" >&2
+    exit 1
+fi
+
+printf '%s' "$CODE" > "$CODE_FILE"
+echo "[tunnel] code: $CODE"
+echo "[tunnel] ports: $PORTS"
+
+# ── Spawn ws-proxy bridge for each port ───────────────────────────────────────
+for PORT in $PORTS; do
+    WS_PATH="/port/guest?code=${CODE}&port=${PORT}"
+    (
+        while true; do
+            /sbin/ws-proxy "$RELAY_HOST" "$RELAY_PORT" "$WS_PATH" 127.0.0.1 "$PORT" 2>/dev/null
+            sleep 2
+        done
+    ) &
+    echo $! >> "$PIDS_FILE"
+    echo "[tunnel]   bridge: ws://$RELAY_HOST:$RELAY_PORT$WS_PATH -> 127.0.0.1:$PORT (pid $!)"
+done
+
+echo "[tunnel] ready — on the host: sh local/tunnel-listen.sh CODE local_port guest_port"

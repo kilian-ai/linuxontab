@@ -1,0 +1,98 @@
+#!/bin/sh
+# Install HTTPS-capable wget/curl wrappers that use the browser gateway.
+#
+# These wrappers shell out to `busybox wget`. If this busybox build has no
+# wget applet, they are worse than nothing — every wrapper call dies with
+# "wget: applet not found", and because line ~77 used to copy the wrapper
+# over /usr/local/bin/curl on EVERY boot, it also clobbered a real curl
+# binary installed there (npm/pip then failed with "apk add curl for
+# HTTPS"). So: only install the wrappers if busybox actually provides the
+# applet, and never overwrite a real (non-wrapper) curl.
+
+MARKER=/tmp/.install_https_tools_done
+[ -f "$MARKER" ] && exit 0
+
+if ! busybox wget --help >/dev/null 2>&1; then
+    # No wget applet — the wrappers can't work. Leave real binaries alone.
+    touch "$MARKER"
+    exit 0
+fi
+
+cat > /bin/wget <<'EOF'
+#!/bin/sh
+# wget wrapper — rewrite https:// URLs into the JS gateway's _https/ prefix.
+args=
+for a in "$@"; do
+  case "$a" in
+    https://*) a="http://192.168.86.1/_https/${a#https://}" ;;
+  esac
+  args="$args $a"
+done
+http_proxy= https_proxy= HTTP_PROXY= HTTPS_PROXY= exec busybox wget $args
+EOF
+
+cat > /bin/curl <<'EOF'
+#!/bin/sh
+# curl wrapper backed by busybox wget via the browser HTTPS gateway.
+
+head_only=0
+quiet=0
+out='-'
+url=''
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -I|--head) head_only=1 ;;
+    -s|--silent) quiet=1 ;;
+    -S|--show-error) ;;
+    -f|--fail) ;;
+    -L|--location) ;;
+    -o|--output)
+      shift
+      [ $# -gt 0 ] && out="$1"
+      ;;
+    http://*|https://*)
+      url="$1"
+      ;;
+  esac
+  shift
+done
+
+[ -n "$url" ] || {
+  echo "curl: missing URL" >&2
+  exit 2
+}
+
+case "$url" in
+  https://*) url="http://192.168.86.1/_https/${url#https://}" ;;
+esac
+
+if [ "$head_only" = "1" ]; then
+  # BusyBox wget has no exact curl -I mode; print server response headers.
+  exec busybox wget -S -O /dev/null "$url"
+fi
+
+if [ "$quiet" = "1" ]; then
+  if [ "$out" = "-" ]; then
+    exec busybox wget -q -O - "$url"
+  fi
+  exec busybox wget -q -O "$out" "$url"
+fi
+
+if [ "$out" = "-" ]; then
+  exec busybox wget -O - "$url"
+fi
+exec busybox wget -O "$out" "$url"
+EOF
+
+chmod +x /bin/wget /bin/curl
+ln -sf /bin/wget /usr/bin/wget
+ln -sf /bin/curl /usr/bin/curl
+# Only shadow /usr/local/bin/curl if it is absent or is itself a wrapper
+# script — a real curl binary there must win (it does its own TLS).
+if [ ! -e /usr/local/bin/curl ] || head -c 2 /usr/local/bin/curl 2>/dev/null | grep -q '#!'; then
+    cp /bin/curl /usr/local/bin/curl
+    chmod +x /usr/local/bin/curl
+fi
+
+touch "$MARKER" 2>/dev/null || true

@@ -5,3 +5,10 @@ node_modules/
 commands
 .gitmodules
 kernels/linux
+
+# Guest root filesystem — a BUILD ARTIFACT, not source. 512 MiB, rebuilt by
+# ./build-rootfs.sh from rootfs/ + packages/, and distributed to users from
+# R2 (cloudflare/upload-rootfs.sh), not from git. It was tracked until
+# 2026-08; 122 versions of it in the unpushed history made the branch
+# impossible to push (GitHub rejects blobs over 100 MB).
+shell/linux-dist/rootfs.ext4

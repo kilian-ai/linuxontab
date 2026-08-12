@@ -1,0 +1,10 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "lot-dev",
+      "runtimeExecutable": "./serve.sh",
+      "autoPort": true
+    }
+  ]
+}

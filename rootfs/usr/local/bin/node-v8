@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""node-v8 — run JavaScript in the PAGE's JS engine, from inside the guest.
+
+Node.js can't be compiled for wasm32: V8 emits native machine code (no wasm
+backend, even --jitless embeds native builtins) and its heap needs mmap-backed
+reservations, which musl-wasm doesn't have at all. But the browser tab hosting
+this guest is already running a full, modern JS engine — so borrow it. Same
+"the browser does what wasm can't" pattern this project already uses for HTTPS,
+raw TCP and media streaming.
+
+Flow:  node-v8 app.js
+       -> resolve app.js + everything it require()s (relative paths and
+          ./node_modules) into ONE self-contained blob with a tiny CommonJS
+          registry
+       -> POST the blob to http://192.168.86.1/_v8/eval (the in-page gateway)
+       -> the page evaluates it in a throwaway Worker and returns the output
+       -> print that here
+
+What works: real ES2023+, native-speed execution, console/process.stdout,
+module.exports/require between bundled files, JSON requires.
+What doesn't (yet): runtime fs/net from the script (nothing is proxied back
+into the guest), native addons (never), streaming output (you get it all at
+the end), and require() of Node built-ins.
+"""
+import json
+import os
+import re
+import sys
+import urllib.request
+
+GATEWAY = os.environ.get("NODE_V8_GATEWAY", "http://192.168.86.1/_v8/eval")
+TIMEOUT = int(os.environ.get("NODE_V8_TIMEOUT", "120"))
+
+# require('x') / require("x") — good enough for CommonJS packages, which is
+# what npm installs here. Dynamic require(expr) can't be bundled statically.
+REQ_RE = re.compile(r"""require\(\s*['"]([^'"]+)['"]\s*\)""")
+
+
+def die(msg):
+    sys.stderr.write("node-v8: %s\n" % msg)
+    sys.exit(1)
+
+
+def resolve(spec, base_dir):
+    """Resolve a require() spec to a file path, Node-style (subset)."""
+    cands = []
+    if spec.startswith("./") or spec.startswith("../") or spec.startswith("/"):
+        p = os.path.normpath(os.path.join(base_dir, spec))
+        cands += [p, p + ".js", p + ".json",
+                  os.path.join(p, "index.js"), os.path.join(p, "index.json")]
+        pkg = os.path.join(p, "package.json")
+        if os.path.isfile(pkg):
+            cands.insert(0, _pkg_main(p, pkg))
+    else:
+        # bare specifier: walk up looking for node_modules/<spec>
+        d = os.path.abspath(base_dir)
+        while True:
+            root = os.path.join(d, "node_modules", spec)
+            pkg = os.path.join(root, "package.json")
+            if os.path.isfile(pkg):
+                cands.append(_pkg_main(root, pkg))
+            cands += [root + ".js", os.path.join(root, "index.js")]
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+    for c in cands:
+        if c and os.path.isfile(c):
+            return os.path.realpath(c)
+    return None
+
+
+def _pkg_main(root, pkg_path):
+    try:
+        with open(pkg_path) as f:
+            main = json.load(f).get("main") or "index.js"
+    except Exception:
+        main = "index.js"
+    p = os.path.normpath(os.path.join(root, main))
+    if os.path.isdir(p):
+        p = os.path.join(p, "index.js")
+    if not os.path.isfile(p) and not p.endswith(".js"):
+        p += ".js"
+    return p
+
+
+def bundle(entry_path):
+    """Return JS source: a module registry + require shim + entry invocation."""
+    modules = {}          # real path -> source
+    id_of = {}            # real path -> stable numeric id
+    order = []
+
+    def add(path):
+        path = os.path.realpath(path)
+        if path in id_of:
+            return id_of[path]
+        with open(path, "r", errors="replace") as f:
+            src = f.read()
+        if path.endswith(".json"):
+            src = "module.exports = " + src + ";"
+        mid = len(order)
+        id_of[path] = mid
+        order.append(path)
+        modules[path] = src
+        # Recurse into this module's requires, mapping spec -> id.
+        deps = {}
+        for spec in set(REQ_RE.findall(src)):
+            dep = resolve(spec, os.path.dirname(path))
+            if dep:
+                deps[spec] = add(dep)
+            # Unresolved (Node built-in or dynamic): left to fail at runtime
+            # with a clear message from the page-side require shim.
+        modules[path] = (src, deps)
+        return mid
+
+    add(entry_path)
+
+    parts = ["var __defs = {};", "var __cache = {};"]
+    for path in order:
+        src, deps = modules[path]
+        mid = id_of[path]
+        parts.append(
+            "__defs[%d] = { deps: %s, fn: function(module, exports, require) {\n%s\n} };"
+            % (mid, json.dumps(deps), src)
+        )
+    parts.append("""
+function __require(id) {
+  if (__cache[id]) return __cache[id].exports;
+  var def = __defs[id];
+  if (!def) throw new Error('module ' + id + ' not bundled');
+  var module = { exports: {} };
+  __cache[id] = module;
+  def.fn(module, module.exports, function (spec) {
+    // Bundled module? use it. Otherwise fall through to the page-side
+    // built-in shims (fs/path/os/http/... provided by __builtin), which is
+    // what makes fs proxy back into the guest.
+    if (spec in def.deps) return __require(def.deps[spec]);
+    if (typeof __builtin === 'function') return __builtin(spec);
+    throw new Error("require('" + spec + "') is not available");
+  });
+  return module.exports;
+}
+__require(0);
+""")
+    return "\n".join(parts)
+
+
+AGENT_PORT = int(os.environ.get("NODE_V8_AGENT_PORT", "9008"))
+
+
+def _b64(b):
+    import base64
+    return base64.b64encode(b).decode()
+
+
+def _unb64(s):
+    import base64
+    return base64.b64decode(s.encode())
+
+
+def handle_fs(op, args):
+    """Execute one filesystem op on behalf of the page-side script."""
+    if op == "readFile":
+        with open(args["path"], "rb") as f:
+            return _b64(f.read())
+    if op == "writeFile":
+        with open(args["path"], "wb") as f:
+            f.write(_unb64(args["data"]))
+        return True
+    if op == "appendFile":
+        with open(args["path"], "ab") as f:
+            f.write(_unb64(args["data"]))
+        return True
+    if op == "exists":
+        return os.path.exists(args["path"])
+    if op == "readdir":
+        return sorted(os.listdir(args["path"]))
+    if op == "mkdir":
+        if args.get("recursive"):
+            os.makedirs(args["path"], exist_ok=True)
+        else:
+            os.mkdir(args["path"])
+        return True
+    if op == "unlink":
+        os.unlink(args["path"])
+        return True
+    if op == "rename":
+        os.replace(args["from"], args["to"])
+        return True
+    if op == "stat":
+        st = os.stat(args["path"])
+        import stat as statmod
+        return {"size": st.st_size, "mtimeMs": st.st_mtime * 1000,
+                "isFile": statmod.S_ISREG(st.st_mode),
+                "isDir": statmod.S_ISDIR(st.st_mode), "mode": st.st_mode}
+    raise ValueError("unknown fs op: %s" % op)
+
+
+def serve_until_done(sock):
+    """Accept agent connections until the page reports the run finished.
+
+    One JSON request per connection, newline-terminated reply — the page opens
+    a fresh injected TCP connection per call (same shape as the wf-live bridge).
+    """
+    while True:
+        conn, _ = sock.accept()
+        try:
+            buf = b""
+            while b"\n" not in buf:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                buf += chunk
+            if not buf.strip():
+                continue
+            req = json.loads(buf.decode("utf-8", "replace").strip())
+            op = req.get("op")
+            if op == "done":                       # final delivery: the output
+                sys.stdout.write(req.get("args", {}).get("out", ""))
+                sys.stdout.flush()
+                conn.sendall(b'{"result":true}\n')
+                return req.get("args", {}).get("code", 0)
+            try:
+                reply = {"result": handle_fs(op, req.get("args") or {})}
+            except Exception as e:                 # surface as a JS exception
+                reply = {"error": "%s: %s" % (type(e).__name__, e),
+                         "code": getattr(e, "errno", None) and os.strerror(e.errno) or "EIO"}
+            conn.sendall((json.dumps(reply) + "\n").encode())
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    if args[0] in ("-v", "--version"):
+        print("v20.0.0-page-v8 (node-v8: guest JS on the page's engine)")
+        return 0
+
+    script_args = []
+    if args[0] == "-e":
+        if len(args) < 2:
+            die("-e needs a script argument")
+        code = args[1]
+        script_args = args[2:]
+    else:
+        path = args[0]
+        script_args = args[1:]
+        if not os.path.isfile(path):
+            die("cannot find module '%s'" % path)
+        code = bundle(path)
+
+    # Bring up the fs agent BEFORE handing the script to the page, so the very
+    # first fs call can be served. The page reaches this port through slirp's
+    # injectConnect (page -> guest), the mirror of the gateway path we use to
+    # send the script (guest -> page).
+    import socket
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    port = AGENT_PORT
+    for attempt in range(20):
+        try:
+            srv.bind(("0.0.0.0", port))
+            break
+        except OSError:
+            port += 1
+    else:
+        die("could not bind an fs-agent port")
+    srv.listen(8)
+
+    payload = json.dumps({
+        "code": code,
+        "agentPort": port,
+        "cwd": os.getcwd(),
+        "argv": script_args,
+    })
+    req = urllib.request.Request(
+        GATEWAY, data=payload.encode("utf-8"),
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        # The page replies immediately ("started"); the real output comes back
+        # later as a {"op":"done"} call on the agent socket. That inversion is
+        # what lets this stay single-threaded — no polling, no background work.
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            ack = r.read().decode("utf-8", errors="replace").strip()
+    except Exception as e:
+        srv.close()
+        die("page eval failed: %r (is the LinuxOnTab tab still open?)" % e)
+    if ack.startswith("node-v8:"):
+        srv.close()
+        die(ack)
+
+    try:
+        return serve_until_done(srv) or 0
+    finally:
+        srv.close()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

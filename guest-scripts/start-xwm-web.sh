@@ -37,7 +37,7 @@ DISP_NUM_ONLY="${DISPLAY_NUM#:}"
 
 log "[xwm] stopping previous X stack"
 pkill -f "Xvfb ${DISPLAY_NUM}" >/dev/null 2>&1 || true
-pkill -f "x11vnc .*rfbport ${VNC_PORT}" >/dev/null 2>&1 || true
+pkill -f "x11vnc .*display ${DISPLAY_NUM}.*port ${VNC_PORT}" >/dev/null 2>&1 || true
 pkill -f "websockify .* ${WEB_PORT} " >/dev/null 2>&1 || true
 pkill -f "python3 -m websockify .* ${WEB_PORT} " >/dev/null 2>&1 || true
 pkill -f "openbox" >/dev/null 2>&1 || true
@@ -45,17 +45,17 @@ pkill -f "xterm .*LinuxOnTab X session" >/dev/null 2>&1 || true
 rm -f "/tmp/.X${DISP_NUM_ONLY}-lock" 2>/dev/null || true
 
 log "[xwm] starting Xvfb on ${DISPLAY_NUM} (${RESOLUTION})"
-Xvfb "${DISPLAY_NUM}" -screen 0 "${RESOLUTION}" >/tmp/xwm-xvfb.log 2>&1 &
+Xvfb "${DISPLAY_NUM}" -screen 0 "${RESOLUTION}" </dev/null >/tmp/xwm-xvfb.log 2>&1 &
 sleep 1
 
 export DISPLAY="${DISPLAY_NUM}"
 
 log "[xwm] starting Openbox + xterm"
-openbox >/tmp/xwm-openbox.log 2>&1 &
-xterm -geometry 120x34+20+20 -T "LinuxOnTab X session" >/tmp/xwm-xterm.log 2>&1 &
+openbox </dev/null >/tmp/xwm-openbox.log 2>&1 &
+xterm -geometry 120x34+20+20 -T "LinuxOnTab X session" </dev/null >/tmp/xwm-xterm.log 2>&1 &
 
 log "[xwm] starting x11vnc on 127.0.0.1:${VNC_PORT}"
-x11vnc -display "${DISPLAY_NUM}" -forever -shared -nopw -listen 127.0.0.1 -rfbport "${VNC_PORT}" >/tmp/xwm-x11vnc.log 2>&1 &
+x11vnc -display "${DISPLAY_NUM}" -port "${VNC_PORT}" </dev/null >/tmp/xwm-x11vnc.log 2>&1 &
 
 NOVNC_WEB=""
 for CAND in /usr/share/novnc /usr/share/webapps/novnc; do
@@ -71,9 +71,9 @@ fi
 
 log "[xwm] starting noVNC on :${WEB_PORT}"
 if command -v websockify >/dev/null 2>&1; then
-  websockify --web "${NOVNC_WEB}" "${WEB_PORT}" "127.0.0.1:${VNC_PORT}" >/tmp/xwm-novnc.log 2>&1 &
+  websockify --web "${NOVNC_WEB}" "${WEB_PORT}" "127.0.0.1:${VNC_PORT}" </dev/null >/tmp/xwm-novnc.log 2>&1 &
 else
-  python3 -m websockify --web "${NOVNC_WEB}" "${WEB_PORT}" "127.0.0.1:${VNC_PORT}" >/tmp/xwm-novnc.log 2>&1 &
+  python3 -m websockify --web "${NOVNC_WEB}" "${WEB_PORT}" "127.0.0.1:${VNC_PORT}" </dev/null >/tmp/xwm-novnc.log 2>&1 &
 fi
 
 CODE="$(cat /tmp/tunnel.code 2>/dev/null || true)"

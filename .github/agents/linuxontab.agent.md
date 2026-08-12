@@ -381,6 +381,15 @@ unless intentionally diverging.
 
 ---
 
+## WASM Kernel Variant
+
+This repo also contains a `feature/linux-kernel-integration` branch with a full
+**WASM Linux kernel** variant (`shell/wasm.html`, `build-rootfs.sh`, `rootfs/`).
+For that branch, see `.github/agents/lot-kernel.agent.md` instead — it has all
+WASM-specific rules, binary porting lessons, and the OpenSSH integration notes.
+
+---
+
 ## AGENT RULES
 
 - Always commit to git after making changes, with a clear message.

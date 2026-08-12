@@ -1,0 +1,20 @@
+{
+  // Cloudflare Pages project for LinuxOnTab 2.0 (wasm-native).
+  //
+  // Pages serves the small static bundle (HTML, xterm, the kernel .wasm, the
+  // dist/ JS, initramfs) with COOP/COEP headers from ./public/_headers.
+  // The one asset too big for Pages' 25 MiB/file limit — the 491 MB
+  // rootfs.ext4 — lives in R2 and is streamed by the Pages Function at
+  // functions/linux-dist/rootfs.ext4.js, which binds the bucket below as ROOTFS.
+  //
+  // Because that Function serves the image on the SAME origin as the page,
+  // COEP: require-corp is satisfied with no CORS/CORP dance.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "linuxontab2",
+  "pages_build_output_dir": "./public",
+  "compatibility_date": "2026-08-10",
+
+  "r2_buckets": [
+    { "binding": "ROOTFS", "bucket_name": "linuxontab-rootfs" }
+  ]
+}

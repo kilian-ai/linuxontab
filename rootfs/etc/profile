@@ -15,3 +15,7 @@ export https_proxy=http://192.168.86.1/
 export HTTP_PROXY=$http_proxy
 export HTTPS_PROXY=$https_proxy
 export no_proxy=localhost,127.0.0.1
+
+# System CA bundle for guest-side TLS (Python httpx/urllib). See /etc/rc.
+export SSL_CERT_FILE=/etc/ssl/cert.pem
+export SSL_CERT_DIR=/etc/ssl/certs

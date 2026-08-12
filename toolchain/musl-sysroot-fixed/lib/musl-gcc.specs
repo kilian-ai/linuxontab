@@ -1,0 +1,32 @@
+%rename cpp_options old_cpp_options
+
+*cpp_options:
+-nostdinc -isystem /Users/kilian/.ai/LinuxOnTab-kernel/toolchain/musl-sysroot-fixed/include -isystem include%s %(old_cpp_options)
+
+*cc1:
+%(cc1_cpu) -nostdinc -isystem /Users/kilian/.ai/LinuxOnTab-kernel/toolchain/musl-sysroot-fixed/include -isystem include%s
+
+*link_libgcc:
+-L/Users/kilian/.ai/LinuxOnTab-kernel/toolchain/musl-sysroot-fixed/lib -L .%s
+
+*libgcc:
+libgcc.a%s %:if-exists(libgcc_eh.a%s)
+
+*startfile:
+%{!shared: /Users/kilian/.ai/LinuxOnTab-kernel/toolchain/musl-sysroot-fixed/lib/Scrt1.o} /Users/kilian/.ai/LinuxOnTab-kernel/toolchain/musl-sysroot-fixed/lib/crti.o crtbeginS.o%s
+
+*endfile:
+crtendS.o%s /Users/kilian/.ai/LinuxOnTab-kernel/toolchain/musl-sysroot-fixed/lib/crtn.o
+
+*link:
+-dynamic-linker /Users/kilian/.ai/LinuxOnTab-kernel/toolchain/musl-sysroot-fixed/ld-musl-wasm32.so.1 -nostdlib %{shared:-shared} %{static:-static} %{rdynamic:-export-dynamic}
+
+*esp_link:
+
+
+*esp_options:
+
+
+*esp_cpp_options:
+
+

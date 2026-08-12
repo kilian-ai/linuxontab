@@ -13,7 +13,18 @@ export function kernel_imports({ is_worker, memory, spawn_worker, boot_console_w
             throw HALT_KERNEL;
         },
         boot_console_write: (msg, len) => {
-            boot_console_write(memory.buffer.slice(msg, msg + len));
+            const buf = memory.buffer.slice(msg, msg + len);
+            // HARNESS: kernel sched-trace lines are prefixed "@K@"; route those
+            // to the host debug log so they survive a guest wedge. Everything
+            // else goes to the boot console (xterm) as before.
+            try {
+                const s = new TextDecoder().decode(new Uint8Array(buf));
+                if (s.indexOf("@K@") >= 0) {
+                    fetch('/log', { method: 'POST', body: '[ksched] ' + s.replace(/@K@/g, '').trim() }).catch(() => {});
+                    return;
+                }
+            } catch (_) {}
+            boot_console_write(buf);
         },
         boot_console_close,
         return_address: (_level) => {

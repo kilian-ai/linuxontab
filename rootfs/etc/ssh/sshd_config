@@ -1,0 +1,22 @@
+Port 22
+HostKey /etc/ssh/ssh_host_ed25519_key
+PermitRootLogin yes
+PasswordAuthentication yes
+ChallengeResponseAuthentication no
+UseDNS no
+PidFile /run/sshd.pid
+PrintMotd no
+LogLevel VERBOSE
+Subsystem sftp /usr/local/libexec/sftp-server
+
+# Reap dead/stuck sessions. The browser tunnel can drop a connection without
+# a clean FIN/RST reaching the guest (the sshd-session then blocks in read()
+# forever — a process leak). These make sshd itself detect and kill such
+# sessions instead of relying on TCP teardown:
+#   - LoginGraceTime: kill a session whose SSH auth never completes (e.g. a
+#     handshake that half-opened then the client vanished). MUST be non-zero.
+#   - ClientAlive*: after auth, probe the peer every 20s; kill the session
+#     after 3 unanswered probes (~60s) — catches a silently-dead tunnel.
+LoginGraceTime 45
+ClientAliveInterval 20
+ClientAliveCountMax 3

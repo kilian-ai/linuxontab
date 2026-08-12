@@ -728,6 +728,7 @@ static void handle_packet(const uint8_t *pkt, size_t plen) {
 }
 
 int main(void) {
+    write(STDERR_FILENO, "sftp-server: started\n", 21);
     uint8_t lenbuf[4];
     uint8_t *pkt = NULL;
     size_t pkt_cap = 0;

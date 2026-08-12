@@ -10,61 +10,66 @@
  * Responsibilities split between WASM (this file) and JS (worker.js):
  *
  *   WASM (here):
- *     __THREW__         — TLS int at __tls_base+0: set to jmp_buf ptr by longjmp
- *     __threwValue      — TLS int at __tls_base+4: longjmp value
- *     __wasm_setjmp     — registers a setjmp frame in the table
- *     __wasm_setjmp_test — checks if __THREW__ matches our registered setjmp
- *     setTempRet0 / getTempRet0 — side-channel for returning longjmp val
+ *     __THREW__           — TLS int at __tls_base+0: set to jmp_buf ptr on longjmp
+ *     __threwValue        — TLS int at __tls_base+4: longjmp value
+ *     __sjlj_set_threw    — EXPORTED setter so JS can write the two TLS slots
+ *                           without knowing the TLS base (link with
+ *                           -Wl,--export=__sjlj_set_threw)
+ *     __wasm_setjmp       — records {invocation_id, label} in the jmp_buf
+ *     __wasm_setjmp_test  — returns the recorded label iff the longjmp'd
+ *                           jmp_buf belongs to THIS function invocation
+ *     setTempRet0/getTempRet0 — side-channel used by the generated code
  *
- *   JS imports from "env" (must be provided by worker.js):
- *     emscripten_longjmp(buf, val) — writes TLS, throws JS exception
- *     invoke_v(fn)                 — void fn()    wrapped in try/catch
- *     invoke_vi(fn, a0)            — void fn(i32)
- *     invoke_vii(fn, a0, a1)       — void fn(i32, i32)
- *     invoke_viii(fn, a0, a1, a2)  — void fn(i32, i32, i32)
- *     invoke_viiii(...)            — void fn(i32 x4)
- *     invoke_i(fn)                 — i32 fn()
- *     invoke_ii(fn, a0)            — i32 fn(i32)
- *     invoke_iii(fn, a0, a1)       — i32 fn(i32, i32)
- *     invoke_iiii(fn, a0, a1, a2)  — i32 fn(i32, i32, i32)
- *     invoke_iiiii(...)            — i32 fn(i32 x4)
+ *   JS imports from "env" (provided by worker.js):
+ *     emscripten_longjmp(buf, val) — records via __sjlj_set_threw, throws a
+ *                                    JS sentinel that invoke_* catches
+ *     invoke_*(fn_idx, ...)        — table call wrapped in try/catch
+ *
+ * ABI (LLVM 17+ "new" SjLj lowering, verified against LLVM 19 codegen):
+ *   setjmp site:   __wasm_setjmp(env, label, func_invocation_id)
+ *     env                = the user's jmp_buf pointer
+ *     label              = 1-based id of this setjmp site within the function
+ *     func_invocation_id = address of a stack alloca unique to this live
+ *                          function invocation
+ *   landing pad:   label = __wasm_setjmp_test(threw_env, func_invocation_id)
+ *     Returns the label to dispatch to, or 0 if the longjmp targets some
+ *     OTHER frame (the pad then rethrows to propagate further up).
+ *
+ * The {invocation_id, label} pair lives in the first 8 bytes of the user's
+ * jmp_buf (musl's wasm32 jmp_buf is 6x u64 — plenty). Matching on
+ * invocation_id is what routes a longjmp past inner frames to the exact
+ * setjmp that created the jmp_buf; the previous stub returned "1" for any
+ * registered frame, so the innermost setjmp caught every longjmp and
+ * multi-frame consumers (busybox ash) spun forever.
  */
+
+struct __wasm_sjlj_jb {
+	void *invocation_id;
+	unsigned label;
+};
 
 /* __THREW__ and __threwValue live at tls_base+0 and tls_base+4 */
 _Thread_local int __THREW__ = 0;
 _Thread_local int __threwValue = 0;
 
-/*
- * __wasm_setjmp(env, id, table)
- *   env   = jmp_buf pointer (not used here; setjmp ID is what matters)
- *   id    = unique integer id for this setjmp call site (assigned by LLVM)
- *   table = pointer to an i32 slot in the current stack frame
- *
- * We store id in *table so __wasm_setjmp_test can match it later.
- */
-void __wasm_setjmp(void *env, int id, int *table) {
-    (void)env;
-    *table = id;
+/* Exported: lets JS record a longjmp without computing the TLS base. */
+void __sjlj_set_threw(int buf, int val)
+{
+	__THREW__ = buf;
+	__threwValue = val;
 }
 
-/*
- * __wasm_setjmp_test(threw_val, table)
- *   threw_val = current value of __THREW__ (= jmp_buf address that was passed
- *               to emscripten_longjmp; the LLVM transform passes the whole
- *               __THREW__ TLS value here, not the jmp_buf id)
- *   table     = the setjmp table slot for this frame (set by __wasm_setjmp)
- *
- * Returns non-zero if this setjmp frame matches the longjmp target,
- * i.e. if *table != 0 (frame was registered) AND we are the right target.
- *
- * The LLVM transform compares (threw_val == jmp_buf address of this frame).
- * Since each jmp_buf is at a unique address, matching threw_val to the address
- * of jb passed to setjmp identifies the right setjmp frame.
- * *table is non-zero iff this setjmp was reached (registered) — if it is 0
- * then we were never setjmp'd and should not catch the longjmp.
- */
-int __wasm_setjmp_test(int threw_val, int *table) {
-    return *table != 0 && threw_val != 0 ? 1 : 0;
+void __wasm_setjmp(void *env, unsigned label, void *func_invocation_id)
+{
+	struct __wasm_sjlj_jb *jb = env;
+	jb->invocation_id = func_invocation_id;
+	jb->label = label;
+}
+
+unsigned __wasm_setjmp_test(void *env, void *func_invocation_id)
+{
+	struct __wasm_sjlj_jb *jb = env;
+	return (jb->invocation_id == func_invocation_id) ? jb->label : 0;
 }
 
 /* Side-channel for returning the longjmp value (second return value) */

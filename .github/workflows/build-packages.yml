@@ -29,8 +29,59 @@ on:
         default: "false"
 
 jobs:
+  # ── Fast validation — runs on every push, no Nix required ──────────────────
+  validate-registry:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate packages/index.json
+        run: |
+          python3 - << 'PY'
+          import json, sys, os
+
+          errors = []
+          for idx_path in ["packages/index.json", "rootfs/packages/index.json"]:
+              print(f"\nChecking {idx_path}")
+              try:
+                  with open(idx_path) as f:
+                      idx = json.load(f)
+              except Exception as e:
+                  errors.append(f"{idx_path}: invalid JSON: {e}")
+                  continue
+
+              pkgs = idx.get("packages", {})
+              print(f"  {len(pkgs)} packages listed")
+
+              for name, pkg in pkgs.items():
+                  for field in ["version", "url", "sha256", "bins"]:
+                      if field not in pkg:
+                          errors.append(f"{idx_path}/{name}: missing field '{field}'")
+                  url = pkg.get("url", "")
+                  if not url.startswith("https://linuxontab.com/packages/"):
+                      errors.append(f"{idx_path}/{name}: URL should start with https://linuxontab.com/packages/ (got: {url})")
+                  tarname = url.split("/")[-1]
+                  pkg_dir = os.path.dirname(idx_path)
+                  tarpath = os.path.join(pkg_dir, tarname)
+                  if not os.path.exists(tarpath):
+                      errors.append(f"{idx_path}/{name}: tarball missing: {tarpath}")
+                  else:
+                      actual_size = os.path.getsize(tarpath)
+                      declared_size = pkg.get("size", 0)
+                      if declared_size and actual_size != declared_size:
+                          errors.append(f"{idx_path}/{name}: size mismatch (declared {declared_size}, actual {actual_size})")
+
+          if errors:
+              print("\nValidation FAILED:")
+              for e in errors:
+                  print(f"  ERROR: {e}")
+              sys.exit(1)
+          print("\nAll index files valid.")
+          PY
+
   build:
     runs-on: ubuntu-latest
+    needs: validate-registry
     permissions:
       contents: write   # needed to push rebuilt rootfs back to branch
 
@@ -182,6 +233,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add \
+            packages/index.json \
+            packages/*.tar.gz \
             rootfs/packages/ \
             rootfs/sbin/tcplisten \
             rootfs/usr/lib/sftp-server \

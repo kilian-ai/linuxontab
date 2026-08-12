@@ -1,0 +1,21 @@
+[unstable]
+build-std = ["std", "panic_abort"]
+
+[target.wasm32-wali-linux-musl]
+rustflags = [
+  "-Clink-self-contained=no",
+  "-Clink-arg=-L/tmp/rustlibs",
+  "-Clink-arg=-L/Users/kilian/.ai/LinuxOnTab-kernel/toolchain/musl-sysroot-fixed/lib",
+  "-Clink-arg=/Users/kilian/.ai/LinuxOnTab-kernel/toolchain/musl-sysroot-fixed/lib/crt1.o",
+  "-Clink-arg=-lc",
+  "-Clink-arg=/Users/kilian/.ai/LinuxOnTab-kernel/toolchain/musl-sysroot-fixed/lib/clang/19/lib/wasm32-unknown-linux-musl/libclang_rt.builtins.a",
+  "-Clink-arg=--import-memory",
+  "-Clink-arg=--export-memory",
+  "-Clink-arg=--export-table",
+  "-Clink-arg=--export=__heap_base",
+  "-Clink-arg=--export=__data_end",
+  "-Clink-arg=--shared-memory",
+  "-Clink-arg=--max-memory=268435456",
+  "-Clink-arg=-z",
+  "-Clink-arg=stack-size=8388608",
+]
