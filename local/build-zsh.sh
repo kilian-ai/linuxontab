@@ -21,6 +21,13 @@ export PATH="$LLVM:$PATH"
 [ -d "$W" ] || { echo "ERROR: extract zsh to $W first"; exit 1; }
 cd "$W"
 
+# wasm call_indirect signature fix — zsh registers two ZERO-arg functions
+# (accept_last, invalidate_list) as 2-arg Hookfn. Harmless on x86/ARM, fatal
+# on wasm32: the first ZLE widget dispatch traps ("function signature
+# mismatch" => SIGSEGV), so every interactive zsh died right after printing
+# its prompt. See toolchain/patches/zsh-5.9-wasm-call-indirect.py.
+python3 "$REPO/toolchain/patches/zsh-5.9-wasm-call-indirect.py"
+
 # fork thunk + wasm-EH sjlj runtime (runtime MUST be built with the sjlj pass).
 "$CLANG" -target wasm32 --sysroot="$SYS" -O2 -matomics -mbulk-memory \
     -c "$REPO/sysroot/wasm_fork.c" -o "$W/wasm_fork.o"
@@ -93,3 +100,10 @@ echo "==> configure"
     2>&1 | tail -45
 
 echo "==> configure done — inspect config.log on failure"
+
+# ── after configure ────────────────────────────────────────────────────────
+#   make -j4
+#   wasm-opt --asyncify -O1 -g Src/zsh -o $REPO/rootfs/bin/zsh
+# Keep -g: it preserves the name section, which is what turns a wasm trap
+# stack into named frames (that is how the Hookfn mismatch above was found).
+# Then swap into the image with debugfs, per [[linuxontab-guest-debug]].
