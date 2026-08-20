@@ -19,10 +19,16 @@
               substitution, subshells & job control all work
    Languages  python3 + pip · node · clang (self-hosting toolchain)
    Tools      curl · jq · sqlite3 · wasm-ld · wasm-opt
-   Graphics   xeyes · Xvfb · x11vnc   (X display demo — top bar)
+   X11        xtiny &     a real X server + desktop on :5900. Then open
+                          the X display panel (top bar) and hit connect.
+              Launch apps from its taskbar, or by hand:
+                DISPLAY=:1 xterm -fn fixed -e /bin/sh </dev/null &
+                DISPLAY=:1 xeyes </dev/null &
+              Keep the </dev/null — an X client left on the console
+              busy-reads it and pegs the CPU.
    VNC demos  vnc-server  eyes whose pupils track your mouse
               vnc-snake   snake game — arrows/WASD steer, p pause, r restart
-              run one, then watch the X display panel (top bar) · :5900
+              run these INSTEAD of xtiny — all three share port 5900
    AI         claw   (LLM REPL — export ANTHROPIC_API_KEY, then: claw)
 
    Tip: TERM is xterm-256color, so mc/nano/tmux come up in full color.
