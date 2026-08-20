@@ -55,10 +55,15 @@ for f in "$WORK"/rootfs.ext4.part-*; do
   echo ok
 done
 
-# Manifest last — authoritative order + total size.
+# Manifest last — authoritative order + total size + content hash.
+# The sha256 becomes the HTTP ETag the Function serves, which is how a browser
+# decides whether its cached 512 MiB copy is stale WITHOUT re-downloading it
+# (see bootImageVersion() in shell/wasm.html). Without a hash, a rebuilt image
+# of identical size would look unchanged to every returning visitor.
 SIZE=$(wc -c < "$SRC" | tr -d ' ')
+SHA=$(shasum -a 256 "$SRC" | awk '{print $1}')
 KEYS=$(ls "$WORK"/rootfs.ext4.part-* | sed 's#.*/##' | sed 's/^/"/; s/$/"/' | paste -sd, -)
-printf '{"parts":[%s],"size":%s}' "$KEYS" "$SIZE" > "$WORK/manifest.json"
+printf '{"parts":[%s],"size":%s,"sha256":"%s"}' "$KEYS" "$SIZE" "$SHA" > "$WORK/manifest.json"
 printf 'uploading manifest (%d parts, %s bytes) … ' "$TOTAL" "$SIZE"
 put "rootfs.ext4.manifest" "$WORK/manifest.json" application/json || { echo "FAILED"; exit 1; }
 echo ok

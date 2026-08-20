@@ -37,7 +37,10 @@ async function resolveParts(env) {
           typeof m.size === "number"
             ? m.size
             : (await listParts(env)).reduce((n, p) => n + p.size, 0);
-        return { keys: m.parts, total };
+        // sha256 of the assembled image, written by upload-rootfs.sh. It is
+        // what lets a browser tell "same image" from "new image" without
+        // downloading 512 MiB — see bootImageVersion() in wasm.html.
+        return { keys: m.parts, total, sha256: m.sha256 || null };
       }
     } catch (_) {
       /* fall through to listing */
@@ -129,7 +132,7 @@ export const onRequestGet = async (ctx) => {
   }
 
   // ── Assembled path: stream the ordered parts as one body ─────────────────
-  const { keys, total } = await resolveParts(env);
+  const { keys, total, sha256 } = await resolveParts(env);
   if (keys.length === 0) {
     return new Response(
       "rootfs.ext4 not found in R2 (no whole object and no parts).\n" +
@@ -141,6 +144,9 @@ export const onRequestGet = async (ctx) => {
   // The parts are opaque slices of one file; range requests aren't supported
   // on the assembled view (the loader does a single full GET anyway).
   headers.set("accept-ranges", "none");
+  // Same version marker as HEAD, so a client that skipped the HEAD still
+  // learns which image it just downloaded.
+  headers.set("etag", '"' + (sha256 || "size-" + total) + '"');
   headers.set("content-length", String(total));
   headers.set("x-rootfs-parts", String(keys.length));
   return new Response(concatStream(env, keys, ctx), { status: 200, headers });
@@ -159,9 +165,13 @@ export const onRequestHead = async ({ env }) => {
     headers.set("etag", whole.httpEtag);
     return new Response(null, { status: 200, headers });
   }
-  const { keys, total } = await resolveParts(env);
+  const { keys, total, sha256 } = await resolveParts(env);
   if (keys.length === 0) return new Response(null, { status: 404 });
   const headers = baseHeaders();
+  // Version marker for client-side caches. Falls back to the size when an
+  // older manifest has no hash — better than nothing, though a same-size
+  // rebuild would not be detected, so keep upload-rootfs.sh writing sha256.
+  headers.set("etag", '"' + (sha256 || "size-" + total) + '"');
   headers.set("content-length", String(total));
   headers.set("accept-ranges", "none");
   headers.set("x-rootfs-parts", String(keys.length));

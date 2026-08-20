@@ -2397,6 +2397,35 @@ async function openBootCache() {
   try { return ('caches' in self) ? await caches.open(BOOT_CACHE) : null; }
   catch (_) { return null; }
 }
+// What version of a boot image does the SERVER have right now? Answered by a
+// HEAD (a few hundred bytes) rather than by downloading 512 MiB. Production
+// serves an ETag derived from the rootfs sha256; the local dev server has no
+// ETag but does send Last-Modified + Content-Length, which changes on every
+// rebuild — either way the value changes exactly when the image does.
+//
+// This replaces a hand-written '?v=tag' that had to be bumped by a human on
+// every rootfs change. It was missed twice, and a missed bump is invisible:
+// the browser silently keeps booting a months-old image while the server has
+// a new one. Deriving it from the server means nobody has to remember.
+async function bootImageVersion(path) {
+  try {
+    // Cache-bust the probe itself: these responses are marked immutable, so
+    // an edge/browser copy from a previous deploy would report the OLD
+    // version forever. The probe is a few hundred bytes, so this is free.
+    const probe = path + (path.includes('?') ? '&' : '?') + '_hv=' +
+                  Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    const r = await fetch(probe, { method: 'HEAD', cache: 'no-store' });
+    if (!r.ok) return null;
+    const clean = (v) => String(v).replace(/[^A-Za-z0-9._-]/g, '');
+    const etag = r.headers.get('etag');
+    if (etag) return clean(etag);
+    const lm = r.headers.get('last-modified');
+    const cl = r.headers.get('content-length');
+    if (lm || cl) return clean((lm || '') + '-' + (cl || ''));
+    return null;                       // server tells us nothing — see below
+  } catch (_) { return null; }
+}
+
 function fmtMB(b) { return (b / 1048576).toFixed(b >= 10485760 ? 0 : 1) + ' MB'; }
 function showDlProgress() { const p = $('dl-progress'); if (p) p.hidden = false; }
 function hideDlProgress() { const p = $('dl-progress'); if (p) { p.hidden = true; p.classList.remove('indet'); } }
@@ -2544,10 +2573,19 @@ async function doBoat() {
     label = label || path.split('/').pop().split('?')[0];
     const cache = await openBootCache();
 
+    // Cache under a key that carries the SERVER's current version, so a
+    // rebuilt image can never be masked by a stale entry. When the server
+    // reports no version at all we fall back to the bare path — same
+    // behaviour as before, still cached, just not auto-invalidating.
+    const ver = await bootImageVersion(path);
+    const cacheKey = ver
+      ? path + (path.includes('?') ? '&' : '?') + '_cv=' + ver
+      : path;
+
     // 1. Local cache first (survives reloads). Validate before trusting it.
     if (cache) {
       try {
-        const hit = await cache.match(path);
+        const hit = await cache.match(cacheKey);
         if (hit) {
           setDlProgress('loading ' + label + ' (cached)', 0, 0);
           const buf = await hit.arrayBuffer();
@@ -2555,7 +2593,7 @@ async function doBoat() {
           return buf;
         }
       } catch (e) {
-        try { await cache.delete(path); } catch (_) {}   // poisoned entry — drop it
+        try { await cache.delete(cacheKey); } catch (_) {}  // poisoned entry — drop it
       }
     }
 
@@ -2564,8 +2602,8 @@ async function doBoat() {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         const url = attempt === 1
-          ? path
-          : path + (path.includes('?') ? '&' : '?') + '_r=' + attempt + Date.now().toString(36);
+          ? cacheKey
+          : cacheKey + (cacheKey.includes('?') ? '&' : '?') + '_r=' + attempt + Date.now().toString(36);
         const resp = await fetch(url, { cache: 'no-store' });
         if (!resp.ok) throw new Error('HTTP ' + resp.status + ' for ' + path);
         const total = +(resp.headers.get('content-length') || 0);
@@ -2590,7 +2628,13 @@ async function doBoat() {
         validateFn(new Uint8Array(buf));
         if (cache) {
           try {
-            await cache.put(path, new Response(buf, { headers: {
+            // Evict any other cached version of this same image first, so
+            // the cache holds one copy per image, not one per deploy.
+            const base = path.split('?')[0];
+            for (const req of await cache.keys()) {
+              if (req.url.split('?')[0].endsWith(base.replace('./', ''))) await cache.delete(req);
+            }
+            await cache.put(cacheKey, new Response(buf, { headers: {
               'content-type': 'application/octet-stream',
               'content-length': String(buf.byteLength),
             } }));
@@ -2605,16 +2649,6 @@ async function doBoat() {
     throw lastErr || new Error('failed to load ' + path);
   };
 
-  // Drop stale cached boot images (a previous ?v=) so the cache can't grow
-  // unbounded or serve an outdated rootfs.
-  try {
-    const _bc = await openBootCache();
-    if (_bc) {
-      const _keep = ['./linux-dist/initramfs.cpio', './linux-dist/rootfs.ext4?v=motd1']
-        .map(p => new URL(p, location.href).href);
-      for (const _req of await _bc.keys()) if (!_keep.includes(_req.url)) await _bc.delete(_req);
-    }
-  } catch (_) {}
   showDlProgress();
 
   // Load userspace initramfs (pivot-root stub that hands off to rootfs.ext4).
@@ -2629,7 +2663,7 @@ async function doBoat() {
   const initcpio = new Uint8Array(initcpioBuffer);
 
   // Load Alpine-like rootfs as a virtio block device (/dev/vda inside guest).
-  const rootfsBuffer = await fetchBootImage('./linux-dist/rootfs.ext4?v=motd1', (bytes) => {
+  const rootfsBuffer = await fetchBootImage('./linux-dist/rootfs.ext4', (bytes) => {
     // ext4 superblock magic at offset 0x438 should be 0x53 0xEF (little-endian 0xEF53)
     if (bytes.length < 0x43A || bytes[0x438] !== 0x53 || bytes[0x439] !== 0xEF) {
       throw new Error('invalid rootfs ext4 magic');
