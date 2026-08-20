@@ -4,8 +4,9 @@ The wasm-native 2.0 build (`shell/wasm.html` + `shell/linux-dist/`) can't ship o
 GitHub Pages: the root filesystem `rootfs.ext4` is **512 MiB**, over GitHub's
 100 MB/file hard limit. This directory deploys it to **Cloudflare Pages + R2**.
 
-> **Status: LIVE** at **https://linuxontab2.pages.dev** (production branch `main`).
-> Custom domain `next.linuxontab.com` is the only manual step left — see below.
+> **Status: LIVE** at **https://next.linuxontab.com** (production branch `main`).
+> `linuxontab2.pages.dev` still works and is what `wrangler pages deploy` prints;
+> the custom domain is the public name.
 
 ## How it fits together
 
@@ -72,21 +73,35 @@ If not, set it once in the dashboard and redeploy:
 > Pages → **linuxontab2** → Settings → Functions → **R2 bindings** →
 > `ROOTFS` → bucket `linuxontab-rootfs`.
 
-### Point next.linuxontab.com at it  ← the remaining manual step
+### next.linuxontab.com  ← done (2026-08-20)
 
-> Pages → **linuxontab2** → Custom domains → **Set up a custom domain** →
-> `next.linuxontab.com`. The CNAME is created automatically (zone is on
-> Cloudflare) and HTTPS issues in ~1 min.
+The custom domain is attached to the Pages project AND the DNS record exists:
+
+```
+CNAME  next  →  linuxontab2.pages.dev   (proxied)
+```
+
+Two gotchas, both hit while setting this up:
+
+* Pages is documented to create that CNAME for you when the zone is in the
+  same account. It did not — the domain sat `active` on the project with no
+  DNS record at all, so the hostname simply did not resolve. If a custom
+  domain looks configured but does not answer, check DNS before touching
+  anything else.
+* `wrangler`'s stored OAuth token has `zone:read`, which does NOT include
+  reading DNS records: the API cheerfully returns *zero records for the whole
+  zone* instead of a permission error. Do not read that as "no record" — use
+  `dig` against `1.1.1.1`, which is authoritative for this purpose.
 
 ## Verify
 
 ```bash
 # cross-origin isolation on the document:
-curl -sI https://linuxontab2.pages.dev/ | grep -i cross-origin
+curl -sI https://next.linuxontab.com/ | grep -i cross-origin
 #   → require-corp + same-origin  (else SharedArrayBuffer is blocked)
 
 # the reassembled image:
-curl -sI https://linuxontab2.pages.dev/linux-dist/rootfs.ext4 | grep -iE 'content-length|x-rootfs-parts'
+curl -sI 'https://next.linuxontab.com/linux-dist/rootfs.ext4?cb=1' | grep -iE 'etag|content-length|x-rootfs-parts'
 #   → content-length: 536870912 · x-rootfs-parts: 21
 ```
 
