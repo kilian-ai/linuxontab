@@ -31,6 +31,10 @@ import http.server, socketserver, sys, os, datetime
 port = int(sys.argv[1])
 log_file = "/tmp/wasm-kernel-debug.log"
 class H(http.server.SimpleHTTPRequestHandler):
+    # HTTP/1.1 + threading: Chrome fetches service-worker scripts on their own
+    # connections and gives up with "An unknown error occurred when fetching
+    # the script" when a single-threaded HTTP/1.0 server makes it queue.
+    protocol_version = "HTTP/1.1"
     def end_headers(self):
         # Required for SharedArrayBuffer (v86 needs it)
         self.send_header("Cross-Origin-Opener-Policy",   "same-origin")
@@ -59,8 +63,9 @@ class H(http.server.SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         if self.path != "/log":
             sys.stderr.write("  %s %s\n" % (self.command, self.path))
-socketserver.TCPServer.allow_reuse_address = True
-with socketserver.TCPServer(("", port), H) as srv:
+socketserver.ThreadingTCPServer.allow_reuse_address = True
+socketserver.ThreadingTCPServer.daemon_threads = True
+with socketserver.ThreadingTCPServer(("", port), H) as srv:
     print("ready on :%d (log -> %s)\n" % (port, log_file))
     try: srv.serve_forever()
     except KeyboardInterrupt: print("\nbye")

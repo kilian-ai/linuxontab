@@ -4272,12 +4272,13 @@ const guestWeb = (() => {
       const fin = (rst) => {
         if (done) return; done = true;
         resolve(total ? cat() : null);
-        // Tear down ONLY on timeout/abort. We send Connection: close, so on a
-        // completed response the GUEST closes the connection cleanly — and
-        // injecting an RST at that point has been observed to corrupt the
-        // guest python interpreter mid-serve_forever ("unknown opcode").
-        // A timed-out conn must still be RST so it can't wedge the server.
-        if (rst) setTimeout(() => { try { adapter.onclose && adapter.onclose(); } catch (_) {} }, 0);
+        // Teardown policy: a timed-out conn is RST immediately (it must not
+        // wedge the server). A completed response is torn down DELAYED — the
+        // guest is mid-close (Connection: close) and an instant RST races its
+        // write/close path, but never tearing down leaks half-open conns in
+        // the slirp table. 600 ms is far beyond the server's close latency.
+        const delay = rst ? 0 : 600;
+        setTimeout(() => { try { adapter.onclose && adapter.onclose(); } catch (_) {} }, delay);
       };
       const adapter = {
         binaryType: 'arraybuffer',
@@ -4396,7 +4397,7 @@ const guestWeb = (() => {
     if (r.headers['location'] && mode === 'navigate') {
       out.push(['location', (prefix || '/guest/' + port) + toGuestPath(r.headers['location'], curPath)]);
     }
-    return { status: r.status, headers: out, body: r.body.length ? r.body.slice().buffer : null };
+    return { status: r.status, headers: out, finalPath: curPath, body: r.body.length ? r.body.slice().buffer : null };
   }
 
   function enqueue(msg) {
@@ -4430,19 +4431,123 @@ function wvEnsureSw() {
   return wvSwReady;
 }
 
+// ── fallback mini-browser: no Service Worker needed ──────────────────────────
+// Renders guest pages by fetching them through guestWeb directly, rewriting
+// subresources (css/js/img) to blob: URLs, and intercepting link clicks and
+// form submits inside the iframe. Used when SW registration is unavailable
+// (some embedded webviews and dev servers) — a plain server-rendered app like
+// sqlite-web is fully usable this way.
+const wvFallback = (() => {
+  let port = 8080, curPath = '/';
+  const blobCache = new Map();               // "port path" → blob: URL (assets are stable per server run)
+  const setWv = (t) => { $('wv-status').textContent = t; };
+  const enq = (m) => window.guestWeb.enqueue(Object.assign({ type: 'guest-proxy', port, prefix: '' }, m));
+  const ctOf = (r) => (r.headers && (r.headers.find((h) => h[0] === 'content-type') || [])[1]) || '';
+  const abs = (href) => {
+    try { const u = new URL(href, 'http://g' + curPath); return u.pathname + u.search; }
+    catch (_) { return href; }
+  };
+  async function blobFor(path) {
+    const key = port + ' ' + path;
+    if (blobCache.has(key)) return blobCache.get(key);
+    const r = await enq({ method: 'GET', path, mode: 'subresource', headers: {}, body: null });
+    if (r.error || !r.body) return null;
+    const b = URL.createObjectURL(new Blob([r.body], { type: ctOf(r) }));
+    blobCache.set(key, b);
+    return b;
+  }
+  async function render(method, path, bodyU8, ctype) {
+    setWv('loading ' + path + ' …');
+    const hdrs = { accept: 'text/html' };
+    if (ctype) hdrs['content-type'] = ctype;
+    const r = await enq({ method, path, mode: 'fallback', headers: hdrs, body: bodyU8 ? bodyU8.buffer : null });
+    if (r.error) { setWv('error: ' + r.error); return; }
+    curPath = r.finalPath || path;
+    const ct = ctOf(r);
+    const frame = $('wv-frame');
+    if (!/text\/html/i.test(ct)) {
+      const d = frame.contentDocument;
+      d.open(); d.write('<!doctype html><pre style="white-space:pre-wrap;font:12px monospace;padding:8px"></pre>'); d.close();
+      d.querySelector('pre').textContent = r.body ? new TextDecoder().decode(new Uint8Array(r.body)) : '(' + r.status + ', empty)';
+      setWv('guest :' + port + curPath + ' · ' + (ct || r.status));
+      return;
+    }
+    const html = new TextDecoder().decode(new Uint8Array(r.body || new ArrayBuffer(0)));
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    // Rewrite subresources to blob: URLs fetched through the engine.
+    for (const el of parsed.querySelectorAll('link[rel="stylesheet"][href]')) {
+      const b = await blobFor(abs(el.getAttribute('href'))); if (b) el.setAttribute('href', b);
+    }
+    for (const el of parsed.querySelectorAll('script[src]')) {
+      const b = await blobFor(abs(el.getAttribute('src')));
+      if (b) el.setAttribute('src', b); else el.removeAttribute('src');
+    }
+    for (const el of parsed.querySelectorAll('img[src]')) {
+      const b = await blobFor(abs(el.getAttribute('src'))); if (b) el.setAttribute('src', b);
+    }
+    const doc = frame.contentDocument;
+    doc.open(); doc.write('<!doctype html>' + parsed.documentElement.outerHTML); doc.close();
+    hook(doc);
+    setWv('guest :' + port + curPath + ' · no-SW proxy (links & forms routed in-page)');
+  }
+  function hook(doc) {
+    doc.addEventListener('click', (e) => {
+      const a = e.target && e.target.closest ? e.target.closest('a[href]') : null;
+      if (!a) return;
+      const href = a.getAttribute('href');
+      if (!href || href.startsWith('#') || /^(https?:|mailto:|javascript:)/i.test(href)) return;
+      e.preventDefault();
+      render('GET', abs(href), null, null);
+    }, true);
+    doc.addEventListener('submit', (e) => {
+      const f = e.target;
+      if (!f || f.tagName !== 'FORM') return;
+      e.preventDefault();
+      const method = (f.getAttribute('method') || 'GET').toUpperCase();
+      const action = abs(f.getAttribute('action') || curPath);
+      const params = new URLSearchParams();
+      for (const [k, v] of new FormData(f).entries()) params.append(k, typeof v === 'string' ? v : '');
+      if (method === 'GET') {
+        const q = params.toString();
+        render('GET', action.split('?')[0] + (q ? '?' + q : ''), null, null);
+      } else {
+        render(method, action, new TextEncoder().encode(params.toString()), 'application/x-www-form-urlencoded');
+      }
+    }, true);
+  }
+  return {
+    open(p) {
+      if (p !== port) { for (const b of blobCache.values()) URL.revokeObjectURL(b); blobCache.clear(); }
+      port = p; curPath = '/';
+      return render('GET', '/', null, null);
+    },
+    reload() { return render('GET', curPath, null, null); },
+  };
+})();
+
+let wvMode = null;   // 'sw' | 'fallback'
 function wvOpen() {
   const port = parseInt($('wv-port').value, 10);
   if (!(port > 0 && port < 65536)) { $('wv-status').textContent = 'invalid port'; return; }
   if (!window.__slirp) { $('wv-status').textContent = 'guest not booted yet — boot first'; return; }
   $('wv-status').textContent = 'starting proxy…';
   wvEnsureSw().then(() => {
+    wvMode = 'sw';
     $('wv-frame').src = new URL('guest/' + port + '/', location.href).pathname;
     $('wv-reload').disabled = false;
     $('wv-status').textContent = 'proxying guest :' + port + ' — serialized; first request can take ~2 s';
-  }).catch((e) => { $('wv-status').textContent = 'proxy failed: ' + ((e && e.message) || e); });
+  }).catch(() => {
+    // No SW here (embedded webview / dev-server quirk) — use the in-page proxy.
+    wvMode = 'fallback';
+    $('wv-reload').disabled = false;
+    wvFallback.open(port);
+  });
 }
 $('wv-open').onclick = wvOpen;
-$('wv-reload').onclick = () => { try { $('wv-frame').contentWindow.location.reload(); } catch (_) { wvOpen(); } };
+$('wv-reload').onclick = () => {
+  if (wvMode === 'fallback') { wvFallback.reload(); return; }
+  try { $('wv-frame').contentWindow.location.reload(); } catch (_) { wvOpen(); }
+};
 $('web-view-btn').onclick = () => {
   const showing = !$('web-view').hidden;
   $('web-view').hidden = showing;
