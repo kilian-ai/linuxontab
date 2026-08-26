@@ -221,6 +221,13 @@ int main(int argc, char **argv) {
             if (n >= 0) break;
             if (isatty(2))
                 fprintf(stderr, "\rlotfetch: retry %d/%d at %ld KB   ", a, RETRIES, pos >> 10);
+            /* Back off before retrying: failures correlate with guest/page
+             * churn, and an instant retry re-enters the storm. Growing pause
+             * lets the ring drain and the RTO/GBN state die down. */
+            struct timespec bo = { 0, 0 };
+            long ms = 250L * a; if (ms > 1500) ms = 1500;
+            bo.tv_nsec = (ms % 1000) * 1000000L; bo.tv_sec = ms / 1000;
+            nanosleep(&bo, 0);
         }
         if (n < 0) return die("slice failed after retries");
         if (got200) { pos += n; break; }   /* whole body already streamed */

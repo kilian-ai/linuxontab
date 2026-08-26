@@ -29,6 +29,27 @@ _dl() {
     fi
 }
 
+# Fast path: ask the page to load the tarball into the package drop disk
+# (/dev/vdb, virtio-blk — immune to the guest TCP bulk-RX wedge), then read
+# it back block-side. The HTTP exchange here is a tiny JSON only.
+_fetch_pkgdrop() {
+    local rel="$1" out="$2" _resp _size
+    [ -x /usr/bin/lotfetch ] || return 1
+    [ -b /dev/vdb ] || return 1
+    _resp="/tmp/apk-drop-$$.json"
+    /usr/bin/lotfetch "http://192.168.86.1/_pkgdrop/$rel" "$_resp" 2>/dev/null || { rm -f "$_resp"; return 1; }
+    grep -q '"ok": *1' "$_resp" 2>/dev/null || { rm -f "$_resp"; return 1; }
+    awk -F'"size": *' '{ if (NF>1) { v=$2; sub(/[^0-9].*/,"",v); print v; exit } }' \
+        "$_resp" > "$_resp.size" 2>/dev/null
+    _size=""
+    read -r _size < "$_resp.size" 2>/dev/null || _size=""
+    rm -f "$_resp" "$_resp.size"
+    [ -n "$_size" ] && [ "$_size" -gt 0 ] 2>/dev/null || return 1
+    head -c "$_size" /dev/vdb > "$out" 2>/dev/null || return 1
+    [ -s "$out" ] || return 1
+    return 0
+}
+
 # Resolve a package URL: prefer local copy in /packages/, fall back to HTTP.
 _fetch() {
     local url="$1" out="$2" rel=""
@@ -40,7 +61,12 @@ _fetch() {
         cp "$APK_LOCAL_REPO/$rel" "$out"
         return $?
     fi
-    # Gateway first: origin-form /packages/<rel> is served same-origin by the
+    # Drop-disk first: bulk bytes via virtio-blk, tiny JSON via HTTP. The
+    # sha256 check in _install_pkg still guards the result.
+    if [ -n "$rel" ] && _fetch_pkgdrop "$rel" "$out"; then
+        return 0
+    fi
+    # Gateway next: origin-form /packages/<rel> is served same-origin by the
     # page (dev server or the deployed site), no TLS in the guest. Fall back
     # to the absolute URL from the index (via the wget https->gateway rewrite).
     if [ -n "$rel" ]; then

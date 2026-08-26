@@ -956,6 +956,44 @@ class WispSlirp {
       return;
     }
 
+    // ── /_pkgdrop/<rel>: load a package tarball into the drop disk ─────────
+    // Bulk-into-guest TCP wedges (guest RX bug); virtio-blk doesn't. The page
+    // fetches /packages/<rel> and fills the /dev/vdb buffer; the guest reads
+    // it back with `head -c <size> /dev/vdb`. The HTTP response here is a tiny
+    // JSON — small transfers are reliable.
+    if (__v8path.startsWith('/_pkgdrop/')) {
+      const rel = __v8path.slice('/_pkgdrop/'.length);
+      let reply;
+      try {
+        if (!/^[A-Za-z0-9._+-]+$/.test(rel)) throw new Error('bad name');
+        const base = window.location.hostname === 'localhost'
+          ? window.location.origin : 'https://linuxontab.com';
+        const resp = await fetch(base + '/packages/' + rel, { cache: 'no-store' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const bytes = new Uint8Array(await resp.arrayBuffer());
+        const drop = window.__pkgDropBytes;
+        if (!drop) throw new Error('drop disk not initialized');
+        if (bytes.length > drop.length) throw new Error('too large for drop disk (' + bytes.length + ')');
+        drop.set(bytes, 0);
+        reply = JSON.stringify({ ok: 1, size: bytes.length });
+        console.log('[PKGDROP]', rel, bytes.length, 'bytes → /dev/vdb');
+      } catch (e) {
+        reply = JSON.stringify({ ok: 0, error: String(e && e.message || e) });
+        console.log('[PKGDROP] failed', rel, String(e));
+      }
+      const body = new TextEncoder().encode(reply + '\n');
+      const hdr = new TextEncoder().encode(
+        'HTTP/1.0 200 OK\r\nContent-Length: ' + body.length +
+        '\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n');
+      const respBytes2 = new Uint8Array(hdr.length + body.length);
+      respBytes2.set(hdr); respBytes2.set(body, hdr.length);
+      await this.#tcpToGuest(conn, respBytes2);
+      await new Promise(r => setTimeout(r, 50));
+      this.#tcpSendFin(conn);
+      this.#tcpConns.delete(conn.srcPort);
+      return;
+    }
+
     // Resolve target → absolute URL
     const GW = '192.168.86.1';
     let url;
@@ -2884,13 +2922,29 @@ async function doBoat() {
     flush: () => rootfsOverlay ? rootfsOverlay.persistNow().then(() => undefined) : Promise.resolve(),
   });
 
+  // ── Package drop disk (/dev/vdb) ──────────────────────────────────────────
+  // Bulk bytes into the guest over TCP wedge probabilistically (guest RX bug),
+  // but the virtio-blk path is rock solid (the whole rootfs rides it). So
+  // package tarballs skip TCP entirely: apk asks the gateway (tiny HTTP
+  // request — small transfers are reliable) to load a tarball, the page
+  // fetches it and fills this buffer, and the guest reads it from /dev/vdb.
+  // Single-buffer: installs are serial (apk holds the flow), so no locking.
+  window.__pkgDropBytes = window.__pkgDropBytes || new Uint8Array(64 * 1024 * 1024);
+  const pkgDropBytes = window.__pkgDropBytes;
+  const pkgDropDev = new BlockDevice({
+    capacity: pkgDropBytes.byteLength,
+    read: (offset, length) => Promise.resolve(pkgDropBytes.slice(offset, offset + length)),
+    write: (offset, data) => { pkgDropBytes.set(data, offset); return Promise.resolve(data.byteLength); },
+    flush: () => Promise.resolve(),
+  });
+
   // Connect xterm keyboard → guest console input (track disposable to avoid double-registration on reset).
   onDataDisposable = term.onData(data => {
     guestWrite(new TextEncoder().encode(data));
   });
 
   machine = new Machine({
-    devices: [consoleDev, entropyDev, blockDev, netDev],
+    devices: [consoleDev, entropyDev, blockDev, pkgDropDev, netDev],
     memoryMib: 2048,
     cpus: 1,
     initcpio,
