@@ -343,7 +343,11 @@ _install_pkg() {
     cp -rp "$pkgroot/." / 2>/dev/null || _err "Failed to install files for $pkg"
     # Make installed files executable (WASM binaries require +x).
     # Use the manifest (installed paths) not pkgroot — cp already happened.
-    while read -r _f; do chmod +x "$_f" 2>/dev/null || true; done < "$manifest"
+    # BATCHED via xargs: a per-file `chmod` loop forks once per file — ~10k
+    # forks for python3 — and every nommu fork needs a ~2.2 MB contiguous
+    # allocation; under the page-cache pressure of a big extract that
+    # fragments and fails (nommu alloc failures -> RCU stall).
+    tr '\n' '\0' < "$manifest" | xargs -0 chmod +x 2>/dev/null || true
     _ok "Installed $pkg files to /"
 
     # Keep curl/wget HTTPS wrappers active even after package installs that
