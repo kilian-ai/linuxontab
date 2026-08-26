@@ -11,6 +11,13 @@
 # Re-run after any rootfs.ext4 rebuild — the manifest is authoritative, so a
 # smaller rebuilt image can't be corrupted by leftover parts.
 #
+# ATOMICITY: parts alternate between two key generations ("a"/"b" slots,
+# rootfs.ext4.<slot>.part-*). Each upload writes the INACTIVE slot and flips
+# the manifest last, so a visitor booting mid-upload keeps streaming the old,
+# consistent generation — never a mix of old and new parts. (The previous
+# in-place scheme corrupted any boot that raced an upload.) Storage is bounded
+# at two generations; the next upload overwrites the stale slot.
+#
 # Tunables:
 #   PART_MB   part size in MiB (default 25 — small, resilient over flaky links)
 #   RETRIES   attempts per part (default 8)
@@ -29,6 +36,13 @@ unset CF_ACCOUNT_ID CLOUDFLARE_ACCOUNT_ID 2>/dev/null || true
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+
+# Pick the inactive slot: read the live manifest's slot and use the other one.
+# No manifest / no slot field (legacy in-place layout) → start with "a".
+CUR_SLOT=$(npx --yes wrangler r2 object get "$BUCKET/rootfs.ext4.manifest" --pipe --remote 2>/dev/null \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin).get("slot",""))' 2>/dev/null || echo "")
+if [ "$CUR_SLOT" = "a" ]; then SLOT="b"; else SLOT="a"; fi
+echo "live slot: '${CUR_SLOT:-none}' → uploading to slot '$SLOT'"
 
 echo "splitting $(du -h "$SRC" | cut -f1) into ${PART_MB} MiB parts…"
 split -b "${PART_MB}m" "$SRC" "$WORK/rootfs.ext4.part-"
@@ -49,21 +63,23 @@ put() { # key file
 n=0
 for f in "$WORK"/rootfs.ext4.part-*; do
   n=$((n+1))
-  key="rootfs.ext4.$(basename "$f" | sed 's/^rootfs.ext4.//')"
+  key="rootfs.ext4.${SLOT}.$(basename "$f" | sed 's/^rootfs.ext4.//')"
   printf 'uploading [%d/%d] %s … ' "$n" "$TOTAL" "$key"
   put "$key" "$f" application/octet-stream || { echo "FAILED after $RETRIES tries"; exit 1; }
   echo ok
 done
 
-# Manifest last — authoritative order + total size + content hash.
-# The sha256 becomes the HTTP ETag the Function serves, which is how a browser
-# decides whether its cached 512 MiB copy is stale WITHOUT re-downloading it
-# (see bootImageVersion() in shell/wasm.html). Without a hash, a rebuilt image
-# of identical size would look unchanged to every returning visitor.
+# Manifest last — the ATOMIC FLIP. Until this succeeds, readers keep streaming
+# the previous slot's parts, which are untouched. It carries order + total
+# size + content hash. The sha256 becomes the HTTP ETag the Function serves,
+# which is how a browser decides whether its cached 512 MiB copy is stale
+# WITHOUT re-downloading it (see bootImageVersion() in shell/wasm.html).
+# Without a hash, a rebuilt image of identical size would look unchanged to
+# every returning visitor.
 SIZE=$(wc -c < "$SRC" | tr -d ' ')
 SHA=$(shasum -a 256 "$SRC" | awk '{print $1}')
-KEYS=$(ls "$WORK"/rootfs.ext4.part-* | sed 's#.*/##' | sed 's/^/"/; s/$/"/' | paste -sd, -)
-printf '{"parts":[%s],"size":%s,"sha256":"%s"}' "$KEYS" "$SIZE" "$SHA" > "$WORK/manifest.json"
+KEYS=$(ls "$WORK"/rootfs.ext4.part-* | sed 's#.*/##' | sed "s/^rootfs.ext4./\"rootfs.ext4.${SLOT}./; s/\$/\"/" | paste -sd, -)
+printf '{"slot":"%s","parts":[%s],"size":%s,"sha256":"%s"}' "$SLOT" "$KEYS" "$SIZE" "$SHA" > "$WORK/manifest.json"
 printf 'uploading manifest (%d parts, %s bytes) … ' "$TOTAL" "$SIZE"
 put "rootfs.ext4.manifest" "$WORK/manifest.json" application/json || { echo "FAILED"; exit 1; }
 echo ok
