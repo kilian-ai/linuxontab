@@ -1,0 +1,4 @@
+#!/bin/sh
+# sqlite-web — browser GUI for SQLite (Flask), baked into the image.
+# Usage: sqlite-web [opts] <database.db>     e.g.  sqlite-web -H 0.0.0.0 -p 8080 -x /root/demo.db
+exec python3 -m sqlite_web "$@"

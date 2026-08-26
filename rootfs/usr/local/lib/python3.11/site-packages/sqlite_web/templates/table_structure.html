@@ -1,0 +1,167 @@
+{% extends "base_table.html" %}
+
+{% block structure_tab_class %} active{% endblock %}
+
+{% block inner_content %}
+  <h3 id="sql">SQL</h3>
+  {{ table_sql|format_create_table|highlight }}
+
+  <h3 id="columns">
+    {% if not dataset.is_readonly and not is_view %}
+      <p class="float-right"><a class="btn btn-primary btn-sm" href="{{ url_for('add_column', table=table) }}">+ Add column</a></p>
+    {% endif %}
+    Columns
+  </h3>
+  <table class="table table-striped">
+    <thead>
+      <tr>
+        <th>Column</th>
+        <th>Data type</th>
+      {% if not is_view %}
+        <th>Allow null</th>
+        <th>Primary key</th>
+        <th>Actions</th>
+      {% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for column in columns %}
+        <tr>
+          <td><code>{{ column.name }}</code></td>
+          <td><code>{{ column.data_type }}</code></td>
+        {% if not is_view %}
+          <td>{% if column.null %}&check;{% endif %}</td>
+          <td>{% if column.primary_key %}&check;{% endif %}</td>
+          <td>
+            {% if dataset.is_readonly %}
+              <strong>read-only</strong>
+            {% else %}
+              <a href="{{ url_for('rename_column', table=table, rename=column.name) }}">Rename</a>
+              <span class="separator">|</span>
+              <a href="{{ url_for('drop_column', table=table, name=column.name) }}">Drop</a>
+            {% endif %}
+          </td>
+        {% endif %}
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <hr />
+
+  {% if foreign_keys %}
+    <h3 id="foreign-keys">Foreign Keys</h3>
+    <table class="table table-striped">
+      <thead>
+        <tr>
+          <th>Column</th>
+          <th>Destination</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for foreign_key in foreign_keys %}
+          <tr>
+            <td><code>{{ foreign_key.column }}</code></td>
+            <td><code>{{ foreign_key.dest_table }}.{{ foreign_key.dest_column }}</code></td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <hr />
+  {% endif %}
+
+  {% if not is_view %}
+  <h3 id="indexes">
+    {% if not dataset.is_readonly %}
+      <p class="float-right"><a class="btn btn-primary btn-sm" href="{{ url_for('add_index', table=table) }}">+ Add index</a></p>
+    {% endif %}
+    Indexes
+  </h3>
+  <table class="table table-striped">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Columns</th>
+        <th>Unique</th>
+        <th>SQL</th>
+        <th>Drop?</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for index in indexes %}
+        <tr>
+          <td>{{ index.name }}</td>
+          <td>
+            {% if index.columns|length == 1 %}
+              <code>{{ index.columns[0] }}</code>
+            {% else %}
+              <ul>
+                {% for column in index.columns %}
+                  <li><code>{{ column }}</code></li>
+                {% endfor %}
+              </ul>
+            {% endif %}
+          </td>
+          <td>{% if index.unique %}&check;{% endif %}</td>
+          <td>
+            <a class="view-sql" data-name="{{ index.name }}" href="#">SQL</a>
+            <div style="display:none;">{% if index.sql %}{{ index.sql|format_index|highlight }}{% else %}-- no sql found --{% endif %}</div>
+          </td>
+          <td>
+            {% if dataset.is_readonly %}
+              <strong>read-only</strong>
+            {% else %}
+              <a href="{{ url_for('drop_index', table=table, name=index.name) }}">Drop</a>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <hr />
+  {% endif %}
+
+  {% if triggers %}
+    <h3 id="triggers">
+      {#<p class="float-right"><a class="btn btn-primary btn-sm" href="{{ url_for('add_trigger', table=table) }}">Add trigger</a></p>#}
+      Triggers
+    </h3>
+    <table class="table table-striped">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>SQL</th>
+          <th>Drop?</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for trigger in triggers %}
+          <tr>
+            <td>{{ trigger.name }}</td>
+            <td>
+              <a class="view-sql" data-name="{{ trigger.name }}" href="#">SQL</a>
+              <div style="display:none;">{{ trigger.sql|highlight }}</div>
+            </td>
+            <td>
+              {% if dataset.is_readonly %}
+                <strong>read-only</strong>
+              {% else %}
+                <a href="{{ url_for('drop_trigger', table=table, name=trigger.name) }}">Drop</a>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+  <div class="modal fade" id="sql-modal">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title"></h5>
+          <button type="button" class="close" data-dismiss="modal"><span aria-hidden="true">&times;</span><span class="sr-only">Close</span></button>
+        </div>
+        <div class="modal-body"></div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

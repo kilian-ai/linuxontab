@@ -1,0 +1,3 @@
+[console_scripts]
+sqlite_web = sqlite_web.sqlite_web:main
+sqlite_wsgi = sqlite_web.wsgi_server:main
