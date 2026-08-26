@@ -293,7 +293,11 @@ _install_pkg() {
     read -r sha < "$_tmpout" 2>/dev/null || sha=""; rm -f "$_tmpout"
     [ -n "$url" ] || _err "No URL for package $pkg"
 
-    tmptar="/tmp/apk-$pkg.tar.gz"
+    # /var/tmp (ext4), NOT /tmp (tmpfs = guest RAM): a 45 MB tarball plus its
+    # ~250 MB extracted tree in tmpfs exhausts guest memory (nommu alloc
+    # failures -> RCU stall). The rootfs has ~500 MB free.
+    mkdir -p /var/tmp
+    tmptar="/var/tmp/apk-$pkg.tar.gz"
     _info "Downloading $url"
     _fetch "$url" "$tmptar" || _err "Download failed for $pkg"
 
@@ -310,7 +314,7 @@ _install_pkg() {
     fi
 
     _info "Extracting $pkg..."
-    workdir="/tmp/apk-work-$pkg"
+    workdir="/var/tmp/apk-work-$pkg"
     rm -rf "$workdir" && mkdir -p "$workdir"
     tar xzf "$tmptar" -C "$workdir" 2>/dev/null || _err "Failed to extract tarball"
 
