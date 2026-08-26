@@ -1,4 +1,7 @@
 #!/bin/sh
-# sqlite-web — browser GUI for SQLite (Flask), baked into the image.
-# Usage: sqlite-web [opts] <database.db>     e.g.  sqlite-web -H 0.0.0.0 -p 8080 -x /root/demo.db
-exec python3 -m sqlite_web "$@"
+# sqlite-web — browser GUI for SQLite, baked into the image.
+# Served by lot_sqlite_web (pure-asyncio loop): werkzeug's socketserver poll
+# loop corrupts the interpreter on this kernel, asyncio/epoll is stable.
+# Binds 0.0.0.0 by default so the page's "web view" panel can reach it.
+# Usage: sqlite-web [-p PORT] <database.db>     then: top bar → web view
+exec python3 -m lot_sqlite_web "$@"

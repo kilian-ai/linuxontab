@@ -19,7 +19,7 @@
               substitution, subshells & job control all work
    Languages  python3 + pip · node · clang (self-hosting toolchain)
    Tools      curl · jq · sqlite3 · wasm-ld · wasm-opt
-   DB GUI     sqlite-web -p 8080 /root/demo.db   (SQLite browser — a demo db ships)
+   DB GUI     sqlite-web -p 8080 /root/demo.db   → top bar: web view
    X11        xtiny &     a real X server + desktop on :5900. Then open
                           the X display panel (top bar) and hit connect.
               Launch apps from its taskbar, or by hand:

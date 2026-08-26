@@ -19,6 +19,7 @@ mkdir -p "$PUB/linux-dist"
 # Document + terminal front-end. wasm.html becomes the site index.
 cp "$SRC/wasm.html"            "$PUB/index.html"
 cp "$SRC/coi-serviceworker.js" "$PUB/coi-serviceworker.js"
+cp "$SRC/sw-guest-proxy.js"    "$PUB/sw-guest-proxy.js"
 cp "$SRC/xterm.js"             "$PUB/xterm.js"
 cp "$SRC/xterm.css"           "$PUB/xterm.css"
 cp "$SRC/xterm-addon-fit.js"  "$PUB/xterm-addon-fit.js"
@@ -28,9 +29,12 @@ cp "$SRC/xterm-addon-fit.js"  "$PUB/xterm-addon-fit.js"
 rsync -a \
   --exclude='rootfs.ext4' \
   --exclude='rootfs.ext4?*' \
+  --exclude='rootfs-lean.ext4' \
   --exclude='*.bak' \
   --exclude='*.map' \
   "$SRC/linux-dist/" "$PUB/linux-dist/"
+# (rootfs-lean.data + rootfs-lean.manifest.json ride along — a few MB, well
+# under the Pages 25 MiB cap. Only the two 512 MiB .ext4 files stay out.)
 
 # COOP/COEP + caching rules.
 cp "$HERE/_headers" "$PUB/_headers"

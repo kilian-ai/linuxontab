@@ -63,6 +63,16 @@
   /* cursor is set by the server via rfb_set_cursor (ServerCutText marker);
      "default" is just the starting shape, not a fixed one */
   #x-canvas { display:block; image-rendering:pixelated; cursor:default; }
+  /* ── web view (guest HTTP apps via sw-guest-proxy) ── */
+  #web-view { flex:1; min-height:0; display:flex; flex-direction:column; background:#111; }
+  #web-view[hidden] { display:none; }
+  #wv-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:4px 8px; font-size:12px; background:#0b0d10; border-bottom:1px solid #2a2f36; flex-shrink:0; }
+  #wv-toolbar button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
+  #wv-toolbar button:hover:not(:disabled) { background:#2d343d; }
+  #wv-toolbar button:disabled { opacity:0.4; cursor:not-allowed; }
+  #wv-toolbar input { background:#0e1217; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:2px 6px; width:56px; font:inherit; }
+  #wv-status { color:#7a8392; flex:1; min-width:120px; }
+  #wv-frame { flex:1; border:0; background:#fff; }
 
   /* ── lot-bridge panel ── */
   #lot-bridge-panel { position:absolute; right:0; top:36px; bottom:0; width:480px; max-width:60vw; display:flex; flex-direction:column; background:#0b0d10; border-left:1px solid #2a2f36; z-index:50; box-shadow:-4px 0 12px rgba(0,0,0,0.5); }
@@ -226,6 +236,7 @@
     <button id="tunnels" disabled>tunnels</button>
     <button id="lot-bridge-btn" disabled>lot-bridge</button>
     <button id="x-display-btn" disabled>X display</button>
+    <button id="web-view-btn" disabled title="render a guest web server (e.g. sqlite-web on :8080) in the page">web view</button>
   </div>
   <div id="term"></div>
   <div id="x-view" hidden>
@@ -238,6 +249,16 @@
     <div id="x-canvas-wrap">
       <canvas id="x-canvas" width="640" height="480"></canvas>
     </div>
+  </div>
+  <div id="web-view" hidden>
+    <div id="wv-toolbar">
+      <b>web view</b>
+      <label>guest port <input id="wv-port" value="8080" inputmode="numeric"></label>
+      <button id="wv-open">open</button>
+      <button id="wv-reload" disabled>reload</button>
+      <span id="wv-status">idle — start a server in the guest first, e.g.: sqlite-web -p 8080 /root/demo.db</span>
+    </div>
+    <iframe id="wv-frame" title="guest web app" sandbox="allow-scripts allow-forms allow-same-origin"></iframe>
   </div>
   <div id="cgi-view" hidden>
     <div id="cgi-toolbar">
@@ -385,6 +406,9 @@ class WispSlirp {
   #streamId = 1;
   #streams = new Map();   // id → { onData, onClose }
   #tcpConns = new Map();  // guestSrcPort → TcpConn
+  // One-URL response buffer for the local HTTP gateway's Range slicing
+  // (large downloads are pulled as small chunks; see #handleLocalHttp).
+  #gwBuf = null; #gwBufUrl = null; #gwBufType = null;
   #guestMac = null;
   #dnsCache = new Map();    // ipStr → hostname (from snooped DNS responses)
   #serverConns = new Map();  // 'guestPort:remotePort' → InboundConn (injected inbound TCP)
@@ -740,8 +764,14 @@ class WispSlirp {
 
     // New connection SYN
     if ((flags & SYN) && !(flags & ACK)) {
-      // Ignore SYN retransmits — connection already in progress
-      if (this.#tcpConns.has(srcPort)) return;
+      // SYN retransmit: the connection exists but our SYN-ACK may have been
+      // lost in the guest — RE-SEND it (silently ignoring the dup made a lost
+      // SYN-ACK unrecoverable: the guest retried SYNs into a void forever).
+      if (this.#tcpConns.has(srcPort)) {
+        const c = this.#tcpConns.get(srcPort);
+        if (c && c.synAckSeq !== undefined) this.#tcpSynAck(c, c.synAckSeq);
+        return;
+      }
       const dstStr = Array.from(dstIp).join('.');
       console.log('[TCP] SYN', Array.from(srcIp).join('.')+':'+srcPort, '→', dstStr+':'+dstPort);
       const myIsn  = (Math.random() * 0x80000000 | 0) >>> 0;
@@ -752,9 +782,13 @@ class WispSlirp {
           mySeq: myIsn, guestSeq: (seq + 1) >>> 0,
           srcIp: [...srcIp], srcPort,
           dstIp: [...dstIp], dstPort,
+          synAckSeq: seq,
         };
         this.#tcpConns.set(srcPort, conn);
-        this.#tcpSynAck(conn, seq);
+        // Deferred, not same-tick: an immediate SYN-ACK can race the guest's
+        // own send path and get dropped (same class as the buffered-response
+        // race in #handleLocalHttp).
+        setTimeout(() => { if (this.#tcpConns.get(srcPort) === conn) this.#tcpSynAck(conn, seq); }, 10);
         return;
       }
       const wispId = this.#wispConnect(dstStr, dstPort);
@@ -763,6 +797,7 @@ class WispSlirp {
         guestSeq: (seq + 1) >>> 0,
         srcIp: [...srcIp], srcPort,
         dstIp: [...dstIp], dstPort,
+        synAckSeq: seq,
       };
       this.#tcpConns.set(srcPort, conn);
       const s = this.#streams.get(wispId);
@@ -779,7 +814,14 @@ class WispSlirp {
     }
 
     const conn = this.#tcpConns.get(srcPort);
-    if (!conn) return;
+    if (!conn) {
+      if (window.__gwdbg && dstPort === 80)
+        console.log('[GWRX] no-conn', srcPort, 'fl=0x' + flags.toString(16), 'seq=' + seq, 'len=' + data.length);
+      return;
+    }
+    if (window.__gwdbg && conn.httpBuf !== undefined)
+      console.log('[GWRX]', srcPort, 'fl=0x' + flags.toString(16), 'seq=' + seq,
+        'expect=' + conn.guestSeq, 'len=' + data.length, 'ack=' + ackNum, 'mySeq=' + conn.mySeq);
 
     if (flags & FIN) {
       if (conn.wispId) this.#wispClose(conn.wispId);
@@ -962,19 +1004,66 @@ class WispSlirp {
       }
     } catch (_) {}
 
-    console.log('[HTTP-GW]', method, url, 'via', fetchUrl);
+    // Guest Range header: bulk TCP into the guest stalls somewhere below
+    // ~800 KB (see lotfetch), so large downloads are pulled as small Range
+    // slices on fresh connections. Serve slices from a one-URL buffer so the
+    // upstream is fetched only once per file.
+    let wantRange = null;   // {start, end} inclusive, or null
+    for (let i = 1; i < lines.length; i++) {
+      const ln = lines[i];
+      if (!ln) break;
+      const m = /^range:\s*bytes=(\d+)-(\d*)\s*$/i.exec(ln);
+      if (m) { wantRange = { start: +m[1], end: m[2] === '' ? Infinity : +m[2] }; break; }
+    }
+
+    console.log('[HTTP-GW]', method, url, 'via', fetchUrl, wantRange ? `range=${wantRange.start}-${wantRange.end}` : '');
     let respBytes;
     try {
       // Pass through method; for now only GET/HEAD have no body — sufficient
       // for wget/curl downloads. POST bodies could be added later.
-      const resp = await fetch(fetchUrl, { method: method || 'GET', redirect: 'follow' });
-      const body = new Uint8Array(await resp.arrayBuffer());
-      const status = resp.status + ' ' + (resp.statusText || 'OK');
-      const ctype  = resp.headers.get('content-type') || 'application/octet-stream';
+      let full, ctype;
+      // NB: deliberately NO page-side buffer/cache for repeat slices. Serving
+      // a slice from a buffer (same-tick or near-same-tick response) makes the
+      // guest drop most of the segments — only responses that follow a real
+      // awaited fetch() transfer cleanly. The browser HTTP cache still absorbs
+      // repeat fetches of the same URL where headers allow.
+      {
+        const resp = await fetch(fetchUrl, { method: method || 'GET', redirect: 'follow' });
+        if (!resp.ok && wantRange) throw new Error('upstream HTTP ' + resp.status);
+        full = new Uint8Array(await resp.arrayBuffer());
+        ctype = resp.headers.get('content-type') || 'application/octet-stream';
+        if (!resp.ok) {
+          // non-2xx, non-range: pass the status through as before
+          const status = resp.status + ' ' + (resp.statusText || 'OK');
+          const hdr = new TextEncoder().encode(
+            'HTTP/1.0 ' + status + '\r\n' +
+            'Content-Length: ' + full.length + '\r\n' +
+            'Content-Type: ' + ctype + '\r\n' +
+            'Connection: close\r\n\r\n');
+          respBytes = new Uint8Array(hdr.length + full.length);
+          respBytes.set(hdr); respBytes.set(full, hdr.length);
+          await this.#tcpToGuest(conn, respBytes);
+          await new Promise(r => setTimeout(r, 50));
+          this.#tcpSendFin(conn);
+          this.#tcpConns.delete(conn.srcPort);
+          return;
+        }
+      }
+      let body, statusLine, extra = '';
+      if (wantRange) {
+        const start = Math.min(wantRange.start, full.length);
+        const end = Math.min(wantRange.end === Infinity ? full.length - 1 : wantRange.end, full.length - 1);
+        body = full.subarray(start, end + 1);
+        statusLine = '206 Partial Content';
+        extra = 'Content-Range: bytes ' + start + '-' + end + '/' + full.length + '\r\n';
+      } else {
+        body = full;
+        statusLine = '200 OK';
+      }
       const hdr = new TextEncoder().encode(
-        'HTTP/1.0 ' + status + '\r\n' +
+        'HTTP/1.0 ' + statusLine + '\r\n' +
         'Content-Length: ' + body.length + '\r\n' +
-        'Content-Type: ' + ctype + '\r\n' +
+        'Content-Type: ' + ctype + '\r\n' + extra +
         'Connection: close\r\n\r\n');
       respBytes = new Uint8Array(hdr.length + body.length);
       respBytes.set(hdr); respBytes.set(body, hdr.length);
@@ -988,7 +1077,34 @@ class WispSlirp {
       respBytes = new Uint8Array(hdr.length + body.length);
       respBytes.set(hdr); respBytes.set(body, hdr.length);
     }
-    await this.#tcpToGuest(conn, respBytes);
+    // PACED delivery: hand the sender small pieces and await each piece's
+    // full ACK before queueing the next. A single monster write floods the
+    // guest's RX path and most segments are lost (GBN then loops on the same
+    // holes) — WISP-relayed downloads only ever worked because relay chunking
+    // paced them naturally. 8 KB per piece, fully ACK-clocked, is reliable.
+    const GW_PIECE = 8192;
+    for (let off = 0; off < respBytes.length; off += GW_PIECE) {
+      // Wedge watchdog: a transfer occasionally stops draining (the guest ACKs
+      // freeze and every GBN round loses the same segments — root cause in the
+      // guest RX path, unresolved). The guest cannot time out on its own
+      // (neither poll() deadlines nor SIGALRM interrupt a blocked read in this
+      // kernel), so the PAGE aborts: RST the connection, which surfaces as
+      // ECONNRESET in the guest's read() — lotfetch retries the slice fresh.
+      const drained = await Promise.race([
+        this.#tcpToGuest(conn, respBytes.subarray(off, off + GW_PIECE)).then(() => true),
+        new Promise((r) => setTimeout(() => r(false), 4000)),
+      ]);
+      if (!this.#tcpConns.has(conn.srcPort)) return;  // guest FINned mid-send
+      if (!drained) {
+        console.log('[HTTP-GW] wedged transfer — RST', conn.srcPort,
+          'unacked=' + (conn.unacked ? conn.unacked.length : 0));
+        this.#sendRstRaw(conn.dstIp, conn.dstPort, conn.srcPort,
+          (conn.sndUna !== undefined ? conn.sndUna : conn.mySeq), conn.guestSeq);
+        this.#clearRtoOut(conn);
+        this.#tcpConns.delete(conn.srcPort);
+        return;
+      }
+    }
     // Brief yield so the guest can ACK and read before we FIN.
     await new Promise(r => setTimeout(r, 50));
     this.#tcpSendFin(conn);
@@ -2662,14 +2778,68 @@ async function doBoat() {
   });
   const initcpio = new Uint8Array(initcpioBuffer);
 
-  // Load Alpine-like rootfs as a virtio block device (/dev/vda inside guest).
-  const rootfsBuffer = await fetchBootImage('./linux-dist/rootfs.ext4', (bytes) => {
-    // ext4 superblock magic at offset 0x438 should be 0x53 0xEF (little-endian 0xEF53)
-    if (bytes.length < 0x43A || bytes[0x438] !== 0x53 || bytes[0x439] !== 0xEF) {
-      throw new Error('invalid rootfs ext4 magic');
+  // ── Lean rootfs (default): sparse manifest + a few MB of extents ──────────
+  // The 512 MiB ext4 is ~99% zeros in the lean build (busybox + apk + stubs;
+  // software auto-installs on first use). We download only the non-zero
+  // extents (rootfs-lean.data) plus a tiny manifest, and scatter them into a
+  // locally-allocated 512 MiB buffer. ?disk=full forces the classic image.
+  const fetchLeanRootfs = async () => {
+    // Manifest is tiny — always fetched fresh so it can never go stale vs data.
+    const mr = await fetch('./linux-dist/rootfs-lean.manifest.json', { cache: 'no-store' });
+    if (!mr.ok) throw new Error('no lean manifest (HTTP ' + mr.status + ')');
+    const man = await mr.json();
+    if (!man || !man.size || !Array.isArray(man.extents)) throw new Error('bad lean manifest');
+    const wantLen = man.extents.reduce((n, e) => n + e[1], 0);
+    const validateLen = (bytes) => {
+      if (bytes.length !== wantLen) throw new Error('lean data length ' + bytes.length + ' != ' + wantLen);
+    };
+    let data = new Uint8Array(await fetchBootImage('./linux-dist/rootfs-lean.data', validateLen, 'rootfs (lean)'));
+    // Bind the data to THIS manifest. A mismatch means a stale cached copy
+    // from a previous deploy — drop it and refetch once.
+    const sha256hex = async (u8) => Array.from(new Uint8Array(
+      await crypto.subtle.digest('SHA-256', u8)
+    )).map((b) => b.toString(16).padStart(2, '0')).join('');
+    if (man.dataSha256 && (await sha256hex(data)) !== man.dataSha256) {
+      const cache = await openBootCache();
+      if (cache) {
+        for (const req of await cache.keys()) {
+          if (req.url.includes('rootfs-lean.data')) await cache.delete(req);
+        }
+      }
+      data = new Uint8Array(await fetchBootImage('./linux-dist/rootfs-lean.data', validateLen, 'rootfs (lean)'));
+      if ((await sha256hex(data)) !== man.dataSha256) {
+        throw new Error('lean data sha mismatch after refetch');
+      }
     }
-  });
-  const rootfsBytes = new Uint8Array(rootfsBuffer);
+    const out = new Uint8Array(man.size);
+    let off = 0;
+    for (const [o, l] of man.extents) { out.set(data.subarray(off, off + l), o); off += l; }
+    if (out.length < 0x43A || out[0x438] !== 0x53 || out[0x439] !== 0xEF) {
+      throw new Error('lean image: bad ext4 magic after reassembly');
+    }
+    term.write(`\r\n\x1b[32m[boot] lean rootfs: ${(data.length / 1048576).toFixed(1)} MB downloaded → ${(man.size / 1048576) | 0} MiB disk\x1b[0m\r\n`);
+    return out;
+  };
+
+  const wantFullDisk = new URLSearchParams(location.search).get('disk') === 'full';
+  let rootfsBytes = null;
+  if (!wantFullDisk) {
+    try {
+      rootfsBytes = await fetchLeanRootfs();
+    } catch (e) {
+      term.write(`\r\n\x1b[33m[boot] lean rootfs unavailable (${e.message || e}) — using full image\x1b[0m\r\n`);
+    }
+  }
+  if (!rootfsBytes) {
+    // Classic path: the full 512 MiB image as one download.
+    const rootfsBuffer = await fetchBootImage('./linux-dist/rootfs.ext4', (bytes) => {
+      // ext4 superblock magic at offset 0x438 should be 0x53 0xEF (little-endian 0xEF53)
+      if (bytes.length < 0x43A || bytes[0x438] !== 0x53 || bytes[0x439] !== 0xEF) {
+        throw new Error('invalid rootfs ext4 magic');
+      }
+    });
+    rootfsBytes = new Uint8Array(rootfsBuffer);
+  }
   hideDlProgress();
 
   // Persisted overlay is OPT-IN. It snapshots individual dirty blocks of a live,
@@ -2782,6 +2952,7 @@ async function doBoat() {
     $('tunnels').disabled = false;
     $('lot-bridge-btn').disabled = false;
     $('x-display-btn').disabled = false;
+    $('web-view-btn').disabled = false;
     term.focus();
   } catch (err) {
     hideDlProgress();
@@ -4071,10 +4242,221 @@ function xDisconnect() {
 }
 
 // ── Toolbar buttons ──────────────────────────────────────────────────────────
+// ── web view: guest HTTP apps via a service-worker reverse proxy ─────────────
+// sw-guest-proxy.js intercepts <base>guest/<port>/* (and absolute-path
+// requests referred by guest-framed documents) and forwards each request here
+// over a one-shot MessageChannel. We answer it by speaking HTTP/1.1 over an
+// injected TCP connection into the guest — the same primitive as the VNC
+// viewer — with a page-side cookie jar (SW responses can't Set-Cookie),
+// redirect handling, and chunked decoding. Requests are strictly serialized:
+// concurrent injected connections wedge single-threaded guest servers.
+const guestWeb = (() => {
+  const jars = new Map();                    // port → Map(cookieName → value)
+  let queue = Promise.resolve();
+
+  const findHdrEnd = (raw) => {
+    for (let i = 0; i + 3 < raw.length; i++)
+      if (raw[i] === 13 && raw[i + 1] === 10 && raw[i + 2] === 13 && raw[i + 3] === 10) return i + 4;
+    return -1;
+  };
+
+  // One HTTP exchange over one injected connection. Resolves with the raw
+  // response bytes (headers+body) on Content-Length reached / FIN / timeout.
+  function oneShot(port, reqBytes, timeoutMs) {
+    return new Promise((resolve) => {
+      const slirp = window.__slirp;
+      if (!slirp) { resolve(null); return; }
+      const chunks = []; let total = 0, done = false, hdrEnd = -1, contentLen = -1;
+      const cat = () => { const o = new Uint8Array(total); let p = 0; for (const c of chunks) { o.set(c, p); p += c.length; } return o; };
+      const fin = (rst) => {
+        if (done) return; done = true;
+        resolve(total ? cat() : null);
+        // Tear down ONLY on timeout/abort. We send Connection: close, so on a
+        // completed response the GUEST closes the connection cleanly — and
+        // injecting an RST at that point has been observed to corrupt the
+        // guest python interpreter mid-serve_forever ("unknown opcode").
+        // A timed-out conn must still be RST so it can't wedge the server.
+        if (rst) setTimeout(() => { try { adapter.onclose && adapter.onclose(); } catch (_) {} }, 0);
+      };
+      const adapter = {
+        binaryType: 'arraybuffer',
+        readyState: WebSocket.OPEN,          // slirp only forwards when OPEN
+        send(g) {
+          const u = g instanceof Uint8Array ? g : new Uint8Array(g);
+          chunks.push(u); total += u.length;
+          if (hdrEnd < 0) {
+            const raw = cat(); hdrEnd = findHdrEnd(raw);
+            if (hdrEnd >= 0) {
+              const head = new TextDecoder().decode(raw.subarray(0, hdrEnd));
+              const m = head.match(/content-length:\s*(\d+)/i);
+              if (m) contentLen = parseInt(m[1], 10);
+            }
+          }
+          if (hdrEnd >= 0 && contentLen >= 0 && total >= hdrEnd + contentLen) fin(false);
+        },
+        close() { fin(false); },          // guest closed cleanly — no RST
+      };
+      slirp.injectConnect(port, adapter);
+      // injectConnect sets adapter.onmessage synchronously and buffers until
+      // the TCP handshake completes.
+      if (adapter.onmessage) adapter.onmessage({ data: reqBytes.buffer.slice(reqBytes.byteOffset, reqBytes.byteOffset + reqBytes.byteLength) });
+      setTimeout(() => fin(true), timeoutMs);   // timeout — RST so it can't wedge
+    });
+  }
+
+  function dechunk(b) {
+    const out = []; let i = 0, total = 0;
+    while (i < b.length) {
+      let j = i;
+      while (j + 1 < b.length && !(b[j] === 13 && b[j + 1] === 10)) j++;
+      const size = parseInt(new TextDecoder().decode(b.subarray(i, j)).trim(), 16);
+      if (!(size > 0)) break;
+      const s = j + 2;
+      out.push(b.subarray(s, Math.min(s + size, b.length))); total += out[out.length - 1].length;
+      i = s + size + 2;
+    }
+    const o = new Uint8Array(total); let p = 0; for (const c of out) { o.set(c, p); p += c.length; }
+    return o;
+  }
+
+  function parseResponse(raw) {
+    const hdrEnd = findHdrEnd(raw);
+    if (hdrEnd < 0) return null;
+    const lines = new TextDecoder().decode(raw.subarray(0, hdrEnd - 4)).split('\r\n');
+    const status = parseInt(lines[0].split(' ')[1] || '0', 10) || 0;
+    const headers = {}; const setCookies = [];
+    for (let i = 1; i < lines.length; i++) {
+      const c = lines[i].indexOf(':'); if (c <= 0) continue;
+      const k = lines[i].slice(0, c).trim().toLowerCase(), v = lines[i].slice(c + 1).trim();
+      if (k === 'set-cookie') setCookies.push(v); else headers[k] = v;
+    }
+    let body = raw.subarray(hdrEnd);
+    if (/chunked/i.test(headers['transfer-encoding'] || '')) body = dechunk(body);
+    return { status, headers, setCookies, body };
+  }
+
+  async function once(port, method, path, hdrLines, bodyU8) {
+    let head = method + ' ' + path + ' HTTP/1.1\r\nHost: 127.0.0.1:' + port +
+      '\r\nConnection: close\r\nAccept-Encoding: identity\r\n';
+    for (const l of hdrLines) head += l + '\r\n';
+    if (bodyU8 && bodyU8.length) head += 'Content-Length: ' + bodyU8.length + '\r\n';
+    head += '\r\n';
+    const hb = new TextEncoder().encode(head);
+    let req = hb;
+    if (bodyU8 && bodyU8.length) { req = new Uint8Array(hb.length + bodyU8.length); req.set(hb); req.set(bodyU8, hb.length); }
+    // Cold injected connections need a retry or two (gateway ARP ~1.5 s).
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const raw = await oneShot(port, req, 20000);
+      if (raw) { const r = parseResponse(raw); if (r && r.status >= 100) return r; }
+      await new Promise((x) => setTimeout(x, 150));
+    }
+    return null;
+  }
+
+  // Resolve a Location value to a guest-absolute path.
+  function toGuestPath(loc, curPath) {
+    try {
+      if (/^https?:\/\//i.test(loc)) { const u = new URL(loc); return u.pathname + u.search; }
+      if (loc.startsWith('/')) return loc;
+      const u = new URL(loc, 'http://g' + curPath);
+      return u.pathname + u.search;
+    } catch (_) { return loc; }
+  }
+
+  async function handle(msg) {
+    const { port, method, path, mode, headers, body, prefix } = msg;
+    const jar = jars.get(port) || jars.set(port, new Map()).get(port);
+    const fwd = [];
+    for (const k of ['content-type', 'accept', 'accept-language', 'if-none-match', 'if-modified-since', 'x-requested-with']) {
+      if (headers && headers[k]) fwd.push(k + ': ' + headers[k]);
+    }
+    if (jar.size) fwd.push('Cookie: ' + [...jar.entries()].map(([k, v]) => k + '=' + v).join('; '));
+
+    let curMethod = method, curPath = path, curBody = body ? new Uint8Array(body) : null, r = null;
+    for (let hop = 0; hop < 4; hop++) {
+      r = await once(port, curMethod, curPath, fwd, curBody);
+      if (!r) return { error: 'no response from guest :' + port + ' — is the server running (and bound to 0.0.0.0)?' };
+      for (const sc of r.setCookies) {
+        const eq = sc.indexOf('='), sem = sc.indexOf(';');
+        if (eq > 0) jar.set(sc.slice(0, eq).trim(), sc.slice(eq + 1, sem > 0 ? sem : undefined).trim());
+      }
+      const loc = r.headers['location'];
+      // Navigations pass redirects through (rewritten below); subresource
+      // fetches follow them here, per browser semantics.
+      if (!loc || ![301, 302, 303, 307, 308].includes(r.status) || mode === 'navigate') break;
+      curPath = toGuestPath(loc, curPath);
+      if (r.status === 303 || ((r.status === 301 || r.status === 302) && curMethod !== 'GET')) { curMethod = 'GET'; curBody = null; }
+    }
+
+    const out = [];
+    for (const k of ['content-type', 'etag', 'last-modified', 'content-disposition']) {
+      if (r.headers[k]) out.push([k, r.headers[k]]);
+    }
+    if (r.headers['location'] && mode === 'navigate') {
+      out.push(['location', (prefix || '/guest/' + port) + toGuestPath(r.headers['location'], curPath)]);
+    }
+    return { status: r.status, headers: out, body: r.body.length ? r.body.slice().buffer : null };
+  }
+
+  function enqueue(msg) {
+    const run = () => handle(msg).catch((e) => ({ error: String((e && e.message) || e) }));
+    const p = queue.then(run, run);
+    queue = p.catch(() => {});
+    return p;
+  }
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.addEventListener('message', (ev) => {
+      const d = ev.data;
+      if (!d || d.type !== 'guest-proxy' || !ev.ports || !ev.ports[0]) return;
+      enqueue(d).then((r) => {
+        try { ev.ports[0].postMessage(r, r && r.body ? [r.body] : []); }
+        catch (e) { try { ev.ports[0].postMessage({ error: String(e) }); } catch (_) {} }
+      });
+    });
+  }
+  return { enqueue };
+})();
+window.guestWeb = guestWeb;   // console/debug access to the proxy engine
+
+let wvSwReady = null;
+function wvEnsureSw() {
+  if (!('serviceWorker' in navigator)) return Promise.reject(new Error('no ServiceWorker support'));
+  if (!wvSwReady) {
+    wvSwReady = navigator.serviceWorker.register('./sw-guest-proxy.js')
+      .then(() => navigator.serviceWorker.ready);
+  }
+  return wvSwReady;
+}
+
+function wvOpen() {
+  const port = parseInt($('wv-port').value, 10);
+  if (!(port > 0 && port < 65536)) { $('wv-status').textContent = 'invalid port'; return; }
+  if (!window.__slirp) { $('wv-status').textContent = 'guest not booted yet — boot first'; return; }
+  $('wv-status').textContent = 'starting proxy…';
+  wvEnsureSw().then(() => {
+    $('wv-frame').src = new URL('guest/' + port + '/', location.href).pathname;
+    $('wv-reload').disabled = false;
+    $('wv-status').textContent = 'proxying guest :' + port + ' — serialized; first request can take ~2 s';
+  }).catch((e) => { $('wv-status').textContent = 'proxy failed: ' + ((e && e.message) || e); });
+}
+$('wv-open').onclick = wvOpen;
+$('wv-reload').onclick = () => { try { $('wv-frame').contentWindow.location.reload(); } catch (_) { wvOpen(); } };
+$('web-view-btn').onclick = () => {
+  const showing = !$('web-view').hidden;
+  $('web-view').hidden = showing;
+  if (!showing) {
+    $('term').hidden = true; $('x-view').hidden = true; $('cgi-view').hidden = true;
+  } else {
+    $('term').hidden = false; term.focus();
+  }
+};
+
 $('x-display-btn').onclick = () => {
   const showing = !$('x-view').hidden;
   $('term').hidden      = !showing;
   $('cgi-view').hidden  = true;
+  $('web-view').hidden  = true;
   $('x-view').hidden    = showing;
   if (!showing) {
     // switched to X view — show terminal in background, keep xterm alive
