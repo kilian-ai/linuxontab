@@ -8,6 +8,12 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 /bin/busybox mkdir -p /dev/pts /tmp /run /var/log /var/run 2>/dev/null
 /bin/busybox chmod 1777 /tmp 2>/dev/null
 
+# PTYs: mount the devpts instance so /dev/pts/N slave nodes appear. Without
+# this, opening /dev/ptmx allocates a pty but no slave node shows up, so every
+# pty user (xterm, sshd ptys, script, screen, expect) fails. /dev/ptmx from
+# devtmpfs is already 0666, so this single mount makes pty allocation work.
+/bin/busybox mount -t devpts devpts /dev/pts 2>/dev/null
+
 /bin/busybox hostname linuxontab
 
 /bin/busybox ifconfig lo 127.0.0.1 netmask 255.0.0.0 up

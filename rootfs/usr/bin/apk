@@ -18,6 +18,17 @@ _err()  { echo "apk: error: $*" >&2; exit 1; }
 _info() { echo ">>> $*"; }
 _ok()   { echo "OK: $*"; }
 
+# Download one URL to a file. Prefer lotfetch (tiny HTTP client that proxies
+# any http/https URL through the JS gateway — no DNS/TLS in the guest; the
+# lean busybox has no wget applet). Fall back to wget where lotfetch is absent.
+_dl() {
+    if [ -x /usr/bin/lotfetch ]; then
+        /usr/bin/lotfetch "$1" "$2" 2>/dev/null
+    else
+        wget -q -O "$2" "$1"
+    fi
+}
+
 # Resolve a package URL: prefer local copy in /packages/, fall back to HTTP.
 _fetch() {
     local url="$1" out="$2" rel=""
@@ -29,8 +40,20 @@ _fetch() {
         cp "$APK_LOCAL_REPO/$rel" "$out"
         return $?
     fi
-    wget -q -O "$out" "$url" || true
-    [ -s "$out" ] || { echo "apk: download failed: $url" >&2; return 1; }
+    # Gateway first: origin-form /packages/<rel> is served same-origin by the
+    # page (dev server or the deployed site), no TLS in the guest. Fall back
+    # to the absolute URL from the index (via the wget https->gateway rewrite).
+    if [ -n "$rel" ]; then
+        if _dl "$APK_REPO_VGWX/$rel" "$out" && [ -s "$out" ]; then
+            return 0
+        fi
+        rm -f "$out"   # never keep a partial download
+    fi
+    if _dl "$url" "$out" && [ -s "$out" ]; then
+        return 0
+    fi
+    rm -f "$out"
+    echo "apk: download failed: $url" >&2; return 1
 }
 
 # Pure-shell JSON field extractors — no external commands (awk/sed/grep hang at
@@ -92,7 +115,7 @@ cmd_update() {
     mkdir -p /var/cache/apk
     _info "Fetching package index..."
     # Try virtual gateway first (fast, served locally by wasm.html)
-    if wget -q -T 5 -O "$tmpidx" "$APK_REPO_VGWX/index.json" 2>/dev/null && \
+    if _dl "$APK_REPO_VGWX/index.json" "$tmpidx" 2>/dev/null && \
        [ -s "$tmpidx" ] && grep -q '"packages"' "$tmpidx" 2>/dev/null; then
         mv "$tmpidx" "$APK_CACHED_INDEX"
         APK_INDEX="$APK_CACHED_INDEX"
@@ -100,7 +123,7 @@ cmd_update() {
         return 0
     fi
     # Fall back to HTTPS registry
-    if wget -q -T 15 -O "$tmpidx" "$APK_REPO_HTTP/index.json" 2>/dev/null && \
+    if _dl "$APK_REPO_HTTP/index.json" "$tmpidx" 2>/dev/null && \
        [ -s "$tmpidx" ] && grep -q '"packages"' "$tmpidx" 2>/dev/null; then
         mv "$tmpidx" "$APK_CACHED_INDEX"
         APK_INDEX="$APK_CACHED_INDEX"
@@ -150,12 +173,10 @@ cmd_list() {
         _desc="${_l##*|}"
         _inst=""
         [ -f "$APK_DB/installed/$_pkg" ] && _inst=" [installed]"
-        if [ -z "$filter" ]; then
+        # NB: no quoted case patterns (*"$filter"*) — the wasm hush build
+        # misparses them ("syntax error: unexpected )"). grep instead.
+        if [ -z "$filter" ] || echo "$_pkg $_ver $_desc" | grep -q "$filter"; then
             printf "  %-16s %-12s %s%s\n" "$_pkg" "$_ver" "$_desc" "$_inst"
-        else
-            case "$_pkg $_ver $_desc" in
-                *"$filter"*) printf "  %-16s %-12s %s%s\n" "$_pkg" "$_ver" "$_desc" "$_inst" ;;
-            esac
         fi
     done < "$_tmp"
     rm -f "$_tmp"
@@ -217,17 +238,23 @@ _install_pkg() {
     fi
 
     # Resolve + install runtime dependencies first (depth-first). The seen-list
-    # guards against cycles. Command substitution at fork depth is reliable now
-    # (kernel signal-handler pt_regs fix); the older $()-avoidance is no longer
-    # required, though the temp-file field extractors below are kept as-is.
+    # guards against cycles. NB: this whole script must contain NO $(...) at
+    # all and NO quoted case patterns — the wasm hush build fails to PARSE
+    # both ("syntax error: unexpected )"), which kills the entire script.
+    # NB: no quoted case patterns (*" $pkg "*) — the wasm hush build misparses
+    # them ("syntax error: unexpected )"). The seen-list is one name per line,
+    # so whole-line grep does the same membership test.
     APK_SEEN="${APK_SEEN:-/tmp/apk-seen-$$}"
-    case " $(cat "$APK_SEEN" 2>/dev/null) " in
-        *" $pkg "*) : ;; *) echo "$pkg" >> "$APK_SEEN" ;;
-    esac
-    deps=$(_pkg_depends "$pkg")
+    grep -qx "$pkg" "$APK_SEEN" 2>/dev/null || echo "$pkg" >> "$APK_SEEN"
+    # Redirect capture, not deps=$(...): the wasm hush build fails to parse
+    # $(...) in assignments at all ("syntax error: unexpected )").
+    _pkg_depends "$pkg" > "$_tmpout" 2>/dev/null
+    deps=""
+    read -r deps < "$_tmpout" 2>/dev/null || deps=""
+    rm -f "$_tmpout"
     for d in $deps; do
         [ -n "$d" ] || continue
-        case " $(cat "$APK_SEEN" 2>/dev/null) " in *" $d "*) continue ;; esac
+        grep -qx "$d" "$APK_SEEN" 2>/dev/null && continue
         if [ ! -f "$APK_DB/installed/$d" ]; then
             _info "$pkg depends on $d — installing it first"
             _install_pkg "$d"
@@ -331,8 +358,36 @@ cmd_search() {
     cmd_list "$1"
 }
 
+# ── Auto-install stubs (lean boot) ──────────────────────────────────────────
+# The lean image ships a tiny stub script at every package binary path:
+#   #!/bin/sh
+#   exec /usr/bin/apk exec-install <pkg> /path/to/bin "$@"
+# First invocation lands here: install the package (which overwrites the stub
+# with the real binary), then exec that real binary. The stub uses `exec`, so
+# apk runs at the same fork depth as the command the user typed.
+_is_stub() {
+    # NB: no quoted case patterns here — the wasm hush build misparses them
+    # ("syntax error: unexpected )"). A grep for the stub marker is enough:
+    # real binaries never contain this exact string.
+    [ -f "$1" ] || return 1
+    grep -q 'apk exec-install' "$1" 2>/dev/null
+}
+
+cmd_exec_install() {
+    [ $# -ge 2 ] || _err "Usage: apk exec-install <pkg> <bin-path> [args...]"
+    local pkg="$1" bin="$2"
+    shift 2
+    if ! _is_stub "$bin"; then
+        exec "$bin" "$@"       # already installed (raced with another shell)
+    fi
+    echo "[apk] first use of ${bin##*/} — installing $pkg ..." >&2
+    cmd_add "$pkg" >&2 || _err "auto-install of $pkg failed"
+    _is_stub "$bin" && _err "$bin is still a stub after installing $pkg"
+    exec "$bin" "$@"
+}
+
 cmd_version() {
-    echo "apk-linuxontab 0.5.0"
+    echo "apk-linuxontab 0.6.0"
     echo "WASM package manager for LinuxOnTab"
     echo "Local repo  : $APK_LOCAL_REPO"
     echo "Remote repo : $APK_REPO_HTTP"
@@ -374,6 +429,7 @@ shift 2>/dev/null || true
 case "$CMD" in
     update)   cmd_update ;;
     add)      cmd_add "$@" ;;
+    exec-install) cmd_exec_install "$@" ;;
     del|remove|delete) cmd_del "$@" ;;
     list)     cmd_list "$@" ;;
     search)   cmd_search "$1" ;;

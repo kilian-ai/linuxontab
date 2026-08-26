@@ -406,9 +406,6 @@ class WispSlirp {
   #streamId = 1;
   #streams = new Map();   // id → { onData, onClose }
   #tcpConns = new Map();  // guestSrcPort → TcpConn
-  // One-URL response buffer for the local HTTP gateway's Range slicing
-  // (large downloads are pulled as small chunks; see #handleLocalHttp).
-  #gwBuf = null; #gwBufUrl = null; #gwBufType = null;
   #guestMac = null;
   #dnsCache = new Map();    // ipStr → hostname (from snooped DNS responses)
   #serverConns = new Map();  // 'guestPort:remotePort' → InboundConn (injected inbound TCP)
@@ -1104,6 +1101,10 @@ class WispSlirp {
         this.#tcpConns.delete(conn.srcPort);
         return;
       }
+      // Settle between pieces: give the guest ISR/reader time to fully drain
+      // the ring before the next burst — back-to-back pieces are where RX
+      // frames get lost (loss climbs with guest busyness).
+      await new Promise((r) => setTimeout(r, 40));
     }
     // Brief yield so the guest can ACK and read before we FIN.
     await new Promise(r => setTimeout(r, 50));
