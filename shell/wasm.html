@@ -2793,7 +2793,13 @@ async function doBoat() {
 
 $('boot').onclick = () => doBoat();
 $('reset').onclick = () => doBoat();
-if (new URLSearchParams(location.search).has('autoboot')) doBoat();
+// Boot automatically on load. Opt out with ?noboot or ?autoboot=0 (e.g. to land
+// on the idle shell). The explicit ?autoboot flag still gates test-automation
+// extras like the auto-tunnel below.
+{
+  const _qs = new URLSearchParams(location.search);
+  if (_qs.get('autoboot') !== '0' && !_qs.has('noboot')) doBoat();
+}
 $('break').onclick = () => guestWrite(new Uint8Array([0x03]));
 $('output-mode').onclick = () => setOutputMode(outputMode === 'terminal' ? 'browser' : 'terminal');
 // WebFuse UI (guest :8080) can still be rendered in the browser panel from the
