@@ -1,0 +1,3 @@
+[console_scripts]
+iredis=iredis.entry:main
+

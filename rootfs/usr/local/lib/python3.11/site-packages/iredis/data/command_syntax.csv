@@ -1,0 +1,278 @@
+Group,Command,Syntax,Callback
+cluster,CLUSTER ADDSLOTS,command_slots,render_simple_string
+cluster,CLUSTER BUMPEPOCH,command,render_simple_string
+cluster,CLUSTER COUNT-FAILURE-REPORTS,command_node,render_int
+cluster,CLUSTER COUNTKEYSINSLOT,command_slot,render_int
+cluster,CLUSTER DELSLOTS,command_slots,render_simple_string
+cluster,CLUSTER FAILOVER,command_failoverchoice,render_simple_string
+cluster,CLUSTER FLUSHSLOTS,command,render_simple_string
+cluster,CLUSTER FORGET,command_node,render_simple_string
+cluster,CLUSTER GETKEYSINSLOT,command_slot_count,render_list
+cluster,CLUSTER INFO,command,render_bulk_string_decode
+cluster,CLUSTER KEYSLOT,command_key,render_int
+cluster,CLUSTER MEET,command_ip_port,render_simple_string
+cluster,CLUSTER MYID,command,render_bulk_string_decode
+cluster,CLUSTER NODES,command,render_bulk_string_decode
+cluster,CLUSTER REPLICAS,command_node,render_bulk_string_decode
+cluster,CLUSTER REPLICATE,command_node,render_simple_string
+cluster,CLUSTER RESET,command_resetchoice,render_simple_string
+cluster,CLUSTER SAVECONFIG,command,render_simple_string
+cluster,CLUSTER SET-CONFIG-EPOCH,command_epoch,render_simple_string
+cluster,CLUSTER SETSLOT,command_slot_slotsubcmd_nodex,render_simple_string
+cluster,CLUSTER SLAVES,command_node,render_bulk_string_decode
+cluster,CLUSTER SLOTS,command,render_list
+cluster,READONLY,command,render_simple_string
+cluster,READWRITE,command,render_simple_string
+connection,AUTH,command_password,render_simple_string
+connection,ECHO,command_message,render_bulk_string
+connection,HELLO,command_any,render_list
+connection,PING,command_messagex,render_bulk_string
+connection,QUIT,command,render_simple_string
+connection,SELECT,command_index,render_simple_string
+connection,CLIENT CACHING,command_yes,render_simple_string
+connection,CLIENT GETREDIR,command,render_int
+connection,CLIENT TRACKING,command_client_tracking,render_simple_string
+connection,CLIENT TRACKINGINFO,command,render_list
+connection,CLIENT LIST,command_client_list,render_bulk_string_decode
+connection,CLIENT GETNAME,command,render_bulk_string
+connection,CLIENT ID,command,render_int
+connection,CLIENT INFO,command,render_bulk_string_decode
+connection,CLIENT KILL,command_clientkill,render_string_or_int
+connection,CLIENT PAUSE,command_pause,render_simple_string
+connection,CLIENT UNPAUSE,command,render_simple_string
+connection,CLIENT REPLY,command_switch,render_simple_string
+connection,CLIENT SETNAME,command_value,render_simple_string
+connection,CLIENT UNBLOCK,command_clientid_errorx,render_int
+generic,COPY,command_copy,render_int
+generic,DEL,command_keys,render_int
+generic,DUMP,command_key,render_bulk_string
+generic,EXISTS,command_keys,render_int
+generic,EXPIRE,command_key_second,render_int
+generic,EXPIREAT,command_key_timestamp,render_int
+generic,EXPIRETIME,command_key,render_int
+generic,KEYS,command_pattern,command_keys
+generic,MIGRATE,command_migrate,render_simple_string
+generic,MOVE,command_key_index,render_int
+generic,OBJECT,command_object_key,render_string_or_int
+generic,PERSIST,command_key,render_int
+generic,PEXPIRE,command_key_millisecond,render_int
+generic,PEXPIREAT,command_key_timestampms,render_int
+generic,PTTL,command_key,render_int
+generic,RANDOMKEY,command,render_bulk_string
+generic,RENAME,command_key_newkey,render_simple_string
+generic,RENAMENX,command_key_newkey,render_int
+generic,RESTORE,command_restore,render_simple_string
+generic,SCAN,command_cursor_match_pattern_count_type,command_scan
+generic,SORT,command_any,render_list_or_string
+generic,TOUCH,command_keys,render_int
+generic,TTL,command_key,render_int
+generic,TYPE,command_key,render_bulk_string
+generic,UNLINK,command_keys,render_int
+generic,WAIT,command_count_timeout,render_int
+geo,GEOADD,command_key_longitude_latitude_members,render_int
+geo,GEODIST,command_geodist,render_bulk_string
+geo,GEOHASH,command_key_members,render_list
+geo,GEOPOS,command_key_members,render_list
+geo,GEORADIUS,command_any,render_list_or_string
+geo,GEORADIUSBYMEMBER,command_any,render_list_or_string
+geo,GEOSEARCH,command_key_any,render_list
+geo,GEOSEARCHSTORE,command_key_key_any,render_list
+hash,HDEL,command_key_fields,render_int
+hash,HEXISTS,command_key_field,render_int
+hash,HGET,command_key_field,render_bulk_string
+hash,HGETALL,command_key,render_hash_pairs
+hash,HINCRBY,command_key_field_delta,render_int
+hash,HINCRBYFLOAT,command_key_field_float,render_bulk_string
+hash,HKEYS,command_key,command_hkeys
+hash,HLEN,command_key,render_int
+hash,HMGET,command_key_fields,render_list
+hash,HMSET,command_key_fieldvalues,render_bulk_string
+hash,HRANDFIELD,command_key_count_withvalues,render_list_or_string
+hash,HSCAN,command_key_cursor_match_pattern_count,command_hscan
+hash,HSET,command_key_field_value,render_int
+hash,HSETNX,command_key_field_value,render_int
+hash,HSTRLEN,command_key_field,render_int
+hash,HVALS,command_key,render_list
+hyperloglog,PFADD,command_key_values,render_int
+hyperloglog,PFCOUNT,command_keys,render_int
+hyperloglog,PFMERGE,command_newkey_keys,render_simple_string
+list,BLMOVE,command_key_key_lr_lr_timeout, render_bulk_string
+list,BLPOP,command_keys_timeout,render_list_or_string
+list,BRPOP,command_keys_timeout,render_list_or_string
+list,BRPOPLPUSH,command_key_newkey_timeout,render_bulk_string
+list,LINDEX,command_key_position,render_bulk_string
+list,LINSERT,command_key_positionchoice_pivot_value,render_int
+list,LLEN,command_key,render_int
+list,LPOS,command_lpos,render_list_or_string
+list,LPOP,command_key,render_list_or_string
+list,LPUSH,command_key_values,render_int
+list,LPUSHX,command_key_values,render_int
+list,LRANGE,command_key_start_end,render_list
+list,LREM,command_key_position_value,render_int
+list,LSET,command_key_position_value,render_simple_string
+list,LTRIM,command_key_start_end,render_simple_string
+list,RPOP,command_key,render_list_or_string
+list,RPOPLPUSH,command_key_newkey,render_bulk_string
+list,RPUSH,command_key_values,render_int
+list,RPUSHX,command_key_value,render_int
+pubsub,PSUBSCRIBE,command_channels,render_subscribe
+pubsub,PUBLISH,command_channel_message,render_int
+pubsub,PUBSUB,command_pubsubcmd_channels,render_list_or_string
+pubsub,PUNSUBSCRIBE,command_channels,render_subscribe
+pubsub,SUBSCRIBE,command_channels,render_subscribe
+pubsub,UNSUBSCRIBE,command_channels,render_subscribe
+scripting,EVAL,command_lua_any,render_list_or_string
+scripting,EVAL_RO,command_lua_any,render_list_or_string
+scripting,EVALSHA,command_any,render_list_or_string
+scripting,EVALSHA_RO,command_any,render_list_or_string
+scripting,SCRIPT DEBUG,command_scriptdebug,render_simple_string
+scripting,SCRIPT EXISTS,command_any,render_list
+scripting,SCRIPT FLUSH,command,render_simple_string
+scripting,SCRIPT KILL,command,render_simple_string
+scripting,SCRIPT LOAD,command_lua_any,render_bulk_string_decode
+server,ACL CAT,command_categorynamex,render_list
+server,ACL DELUSER,command_usernames,render_int
+server,ACL GENPASS,command_countx,render_bulk_string
+server,ACL GETUSER,command_username,render_list
+server,ACL HELP,command,render_help
+server,ACL LIST,command,render_list
+server,ACL LOAD,command,render_simple_string
+server,ACL LOG,command_count_or_resetx,render_list_or_string
+server,ACL SAVE,command,render_simple_string
+server,ACL SETUSER,command_username_rules,render_simple_string
+server,ACL USERS,command,render_list
+server,ACL WHOAMI,command,render_bulk_string
+server,SWAPDB,command_index_index,render_simple_string
+server,BGREWRITEAOF,command,render_simple_string
+server,BGSAVE,command_schedulex,render_simple_string
+server,COMMAND,command,render_list
+server,COMMAND COUNT,command,render_int
+server,COMMAND GETKEYS,command_any,render_list
+server,COMMAND INFO,command_commandname,render_list
+server,CONFIG GET,command_parameter,render_nested_pair
+server,CONFIG RESETSTAT,command,render_simple_string
+server,CONFIG REWRITE,command,render_simple_string
+server,CONFIG SET,command_parameter_value,render_simple_string
+server,DBSIZE,command,render_int
+server,DEBUG OBJECT,command_key,render_simple_string
+server,DEBUG SEGFAULT,command,render_simple_string
+server,FAILOVER,command_failover,render_simple_string
+server,FLUSHALL,command_asyncx,render_simple_string
+server,FLUSHDB,command_asyncx,render_simple_string
+server,INFO,command_sectionx,render_bulk_string_decode
+server,LOLWUT,command_version,render_bytes
+server,LASTSAVE,command,render_unixtime
+server,LATENCY DOCTOR,command,render_bulk_string_decode
+server,LATENCY GRAPH,command_graphevent,render_bulk_string_decode
+server,LATENCY HELP,command,render_help
+server,LATENCY HISTORY,command_graphevent,render_list
+server,LATENCY LATEST,command,render_list
+server,LATENCY RESET,command_graphevents,render_int
+server,MEMORY DOCTOR,command,render_bulk_string_decode
+server,MEMORY HELP,command,render_help
+server,MEMORY MALLOC-STATS,command,render_bulk_string_decode
+server,MEMORY PURGE,command,render_simple_string
+server,MEMORY STATS,command,render_nested_pair
+server,MEMORY USAGE,command_key_samples_count,render_int
+server,MODULE LIST,command,render_list
+server,MODULE LOAD,command_any,render_simple_string
+server,MODULE UNLOAD,command_any,render_simple_string
+server,MONITOR,command,render_simple_string
+server,PSYNC,command_replicationid_offset,render_bulk_string_decode
+server,REPLICAOF,command_any,render_simple_string
+server,ROLE,command,render_list
+server,SAVE,command,render_simple_string
+server,SHUTDOWN,command_shutdown,render_simple_string
+server,SLAVEOF,command_any,render_simple_string
+server,SLOWLOG,command_slowlog,render_slowlog
+server,SYNC,command,render_bulk_string
+server,TIME,command,render_time
+set,SADD,command_key_members,render_int
+set,SCARD,command_key,render_int
+set,SDIFF,command_keys,render_list
+set,SDIFFSTORE,command_destination_keys,render_int
+set,SINTER,command_keys,render_list
+set,SINTERSTORE,command_destination_keys,render_int
+set,SISMEMBER,command_key_member,render_int
+set,SMEMBERS,command_key,render_list
+set,SMOVE,command_key_newkey_member,render_int
+set,SPOP,command_key_count_x,render_list_or_string
+set,SRANDMEMBER,command_key_count_x,render_list_or_string
+set,SREM,command_key_members,render_int
+set,SSCAN,command_key_cursor_match_pattern_count,command_sscan
+set,SUNION,command_keys,render_list
+set,SUNIONSTORE,command_destination_keys,render_int
+sorted_set,BZPOPMAX,command_keys_timeout,render_list_or_string
+sorted_set,BZPOPMIN,command_keys_timeout,render_list_or_string
+sorted_set,ZADD,command_key_condition_changed_incr_score_members,render_string_or_int
+sorted_set,ZCARD,command_key,render_int
+sorted_set,ZCOUNT,command_key_min_max,render_int
+sorted_set,ZINCRBY,command_key_float_member,render_bulk_string
+sorted_set,ZINTERSTORE,command_any,render_int
+sorted_set,ZLEXCOUNT,command_key_lexmin_lexmax,render_int
+sorted_set,ZPOPMAX,command_key_count_x,render_members
+sorted_set,ZPOPMIN,command_key_count_x,render_members
+sorted_set,ZRANGE,command_key_start_end_withscores_x,render_members
+sorted_set,ZRANGEBYLEX,command_key_lexmin_lexmax_limit_offset_count,render_list
+sorted_set,ZRANGEBYSCORE,command_key_min_max_withscore_x_limit_offset_count_x,render_members
+sorted_set,ZRANK,command_key_member,render_int
+sorted_set,ZREM,command_key_members,render_int
+sorted_set,ZREMRANGEBYLEX,command_key_lexmin_lexmax,render_int
+sorted_set,ZREMRANGEBYRANK,command_key_start_end,render_int
+sorted_set,ZREMRANGEBYSCORE,command_key_min_max,render_int
+sorted_set,ZREVRANGE,command_key_start_end_withscores_x,render_list
+sorted_set,ZREVRANGEBYLEX,command_key_lexmin_lexmax_limit_offset_count,render_list
+sorted_set,ZREVRANGEBYSCORE,command_key_min_max_withscore_x_limit_offset_count_x,render_list
+sorted_set,ZREVRANK,command_key_member,render_int
+sorted_set,ZSCAN,command_key_cursor_match_pattern_count,command_sscan
+sorted_set,ZSCORE,command_key_member,render_bulk_string
+sorted_set,ZUNIONSTORE,command_any,render_int
+stream,XACK,command_key_group_ids,render_int
+stream,XADD,command_xadd,render_bulk_string
+stream,XCLAIM,command_xclaim,render_list
+stream,XDEL,command_key_ids,render_int
+stream,XGROUP,command_xgroup,render_list_or_int_or_string
+stream,XINFO,command_xinfo,render_list
+stream,XLEN,command_key,render_int
+stream,XPENDING,command_xpending,render_list
+stream,XRANGE,command_key_start_end_countx,render_list
+stream,XREAD,command_xread,render_list
+stream,XREADGROUP,command_xreadgroup,render_list
+stream,XREVRANGE,command_key_start_end_countx,render_list
+stream,XTRIM,command_key_maxlen,render_int
+string,APPEND,command_key_value,render_int
+bitmap,BITCOUNT,command_key_start_end_x,render_int
+bitmap,BITFIELD,command_bitfield,render_list
+bitmap,BITOP,command_operation_key_keys,render_int
+bitmap,BITPOS,command_key_bit_start_end,render_int
+string,DECR,command_key,render_int
+string,DECRBY,command_key_delta,render_int
+string,GET,command_key,render_bulk_string
+string,GETEX,command_key_expire,render_bulk_string
+string,GETBIT,command_key_offset,render_int
+string,GETDEL,command_key,render_bulk_string
+string,GETRANGE,command_key_start_end,render_bulk_string
+string,GETSET,command_key_value,render_bulk_string
+string,INCR,command_key,render_int
+string,INCRBY,command_key_delta,render_int
+string,INCRBYFLOAT,command_key_float,render_bulk_string
+string,MGET,command_keys,render_list
+string,MSET,command_key_valuess,render_simple_string
+string,MSETNX,command_key_valuess,render_int
+string,PSETEX,command_key_millisecond_value,render_bulk_string
+string,SET,command_set,render_simple_string
+string,SETBIT,command_key_offset_bit,render_int
+string,SETEX,command_key_second_value,render_bulk_string
+string,SETNX,command_key_value,render_int
+string,SETRANGE,command_key_offset_value,render_int
+string,STRALGO,command_stralgo,render_list_or_string
+string,STRLEN,command_key,render_int
+transactions,DISCARD,command,render_simple_string
+transactions,EXEC,command,render_list_or_string
+transactions,MULTI,command,render_simple_string
+transactions,UNWATCH,command,render_simple_string
+transactions,WATCH,command_keys,render_simple_string
+iredis,HELP,command_command,
+iredis,PEEK,command_key,
+iredis,CLEAR,command,
+iredis,EXIT,command,

@@ -1,0 +1,86 @@
+# vi: ft=dosini
+[main]
+# weather display raw redis response
+raw = False
+
+# iredis use a LRU strategy to store the completions, like keys, set members,
+# etc, this will set how many completions can iredis keep at most.
+completer_max = 300
+
+# Completion casing preference, options are: "lower", "upper", "auto"
+completion_casing = auto
+
+# if in newbie_mode, a description of commands and options will showup along
+# with completion, encourage to enable it to who is new to redis
+newbie_mode = False
+
+# show prompt in a ranibow color
+rainbow = False
+
+# retry times for connection error and timeout
+retry_times = 2
+
+socket_keepalive = True
+
+# IRedis support running shell command to parse the response, like this:
+# > get json-str | jq .
+# However that will allow any shell command to execute under iredis REPL,
+# you can disable this feature by setting this to False.
+# Default is True.
+shell = True
+
+# decode redis response, default None
+decode =
+
+# enable pager? default to True, you can disable it by changing it to False
+enable_pager = True
+
+# pager setting when line is too tall
+# By default 'PAGER' environment variable is used
+# pager = less -SRXF
+
+# iredis will send a `INFO` command to get the server's version, this option can
+# disable it
+no_info = False
+
+# iredis will show command hint on bottom bar, this option can disable it
+bottom_bar = True
+
+# Dangerous command warning mode will alert you before executing a dangerous
+# command, that may cause harm to the redis-server or hang server,
+# such as "KEYS", "DEL" or "SHUTDOWN".
+warning = True
+
+# IRedis log for debugging, leave this blank will disable log.
+# You don't need this unless you are debugging iredis.
+# Be careful this will log your commands input (include AUTH with password) to
+# log file.
+# eg. ~/.iredis.log
+log_location =
+
+# You can change the prompt str, if left blank, the default prompt would be:
+# 127.0.0.1:6379> 
+# which is rendered by "{host}:{port}[{db}]> "
+# supported interpolations:
+# {client_name}
+# {db}
+# {host}
+# {path}
+# {port}
+# {username}
+# {client_addr}
+# {client_id}
+# The prompt string uses python string format engine
+prompt = 
+
+# History file location
+history_location = ~/.iredis_history
+
+# if set to True, will display version information on startup
+# can set to False to disable it.
+greetings = True
+
+[alias_dsn]
+# example_dsn = redis://[[username]:[password]]@localhost:6379/0
+# example_dsn = rediss://[[username]:[password]]@localhost:6379/0
+# example_dsn = unix://[[username]:[password]]@/path/to/socket.sock?db=0
