@@ -622,6 +622,19 @@
         "libXaw"
       ],
       "status": "available"
+    },
+    "redis": {
+      "version": "7.2.5",
+      "description": "Redis key/value database server + CLI",
+      "url": "https://linuxontab.com/packages/redis-7.2.5.tar.gz",
+      "size": 2150271,
+      "sha256": "410ff1ee7de883bbaf1eae301bccbe112f22b31ad05e3efb5ce8bd45cf001d61",
+      "bins": [
+        "redis-server",
+        "redis-cli"
+      ],
+      "depends": [],
+      "status": "available"
     }
   }
 }
