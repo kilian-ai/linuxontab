@@ -101,8 +101,25 @@ esac
 
 hostname linuxontab
 
+# Container identity: the page passes lot_ip= (this tab's LAN address) and
+# lot_hosts=name:ip,name:ip (peer services) on the kernel cmdline.
+_IP="192.168.86.100"
+case "$_CMDLINE" in
+*lot_ip=*)
+	_IP="${_CMDLINE##*lot_ip=}"
+	_IP="${_IP%% *}"
+	;;
+esac
+case "$_CMDLINE" in
+*lot_hosts=*)
+	_H="${_CMDLINE##*lot_hosts=}"
+	_H="${_H%% *}"
+	echo "$_H" | tr ',' '\n' | awk -F: 'NF==2 {print $2" "$1}' >> /etc/hosts
+	;;
+esac
+
 /bin/busybox ifconfig lo 127.0.0.1 netmask 255.0.0.0 up
-/bin/busybox ifconfig eth0 192.168.86.100 netmask 255.255.255.0 broadcast 192.168.86.255 up
+/bin/busybox ifconfig eth0 "$_IP" netmask 255.255.255.0 broadcast 192.168.86.255 up
 /bin/busybox route add default gw 192.168.86.1
 /bin/busybox arp -s 192.168.86.1 52:54:00:01:02:03
 echo "nameserver 192.168.86.1" > /etc/resolv.conf

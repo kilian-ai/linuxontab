@@ -440,6 +440,7 @@ class WispSlirp {
   constructor(url = 'wss://linuxontab-net.fly.dev/wisp') {
     this.#url = url;
     this.#connectWisp();
+    this.#lanInit();
     // Half-open-socket watchdog: the WISP WS can silently stop passing data
     // without firing onclose/onerror (idle relay / proxy timeout), which left
     // the guest cut off from the internet with no reconnect. Detect it and
@@ -447,6 +448,40 @@ class WispSlirp {
     if (!new URLSearchParams(location.search).has('nowatchdog')) {
       this.#watchdogTimer = setInterval(() => this.#wispWatchdog(), 5000);
     }
+  }
+
+  // ── Inter-tab virtual LAN (tabs-as-containers, phase 1) ───────────────────
+  // Same-origin tabs form an Ethernet HUB over BroadcastChannel: outbound
+  // frames addressed to 192.168.86.x peers (or broadcast) are posted to the
+  // channel, and every tab injects frames addressed to its own guest MAC or
+  // broadcast. The guests then ARP / TCP with each other natively — the page
+  // never parses peer traffic, it only forwards frames. Give a tab an
+  // identity with ?name=db&ip=192.168.86.101 (default ip .100).
+  #lanId = Math.random().toString(36).slice(2);
+  #lan = null;
+  #lanInit() {
+    try { this.#lan = new BroadcastChannel('lot-lan'); } catch (_) { return; }
+    this.#lan.onmessage = (ev) => {
+      const m = ev.data;
+      if (!m || m.from === this.#lanId || !m.frame) return;
+      const frame = new Uint8Array(m.frame);
+      if (frame.length < 14) return;
+      const bcast = frame[0] === 0xff && frame[1] === 0xff && frame[2] === 0xff &&
+                    frame[3] === 0xff && frame[4] === 0xff && frame[5] === 0xff;
+      const g = this.#guestMac;
+      const mine = g && frame[0] === g[0] && frame[1] === g[1] && frame[2] === g[2] &&
+                        frame[3] === g[3] && frame[4] === g[4] && frame[5] === g[5];
+      if (!bcast && !mine) return;
+      if (window.__landbg) console.log('[LAN] rx', frame.length, bcast ? 'bcast' : 'unicast');
+      if (this.backend.receive) this.backend.receive(frame);
+    };
+  }
+  #lanPost(frame) {
+    if (!this.#lan) return;
+    // slice() so the posted buffer is a compact copy (structured clone).
+    const copy = frame.slice().buffer;
+    if (window.__landbg) console.log('[LAN] tx', frame.length);
+    try { this.#lan.postMessage({ from: this.#lanId, frame: copy }); } catch (_) {}
   }
 
   // Fires every 5 s. A healthy WISP link that has traffic in flight keeps
@@ -575,8 +610,32 @@ class WispSlirp {
     if (frame.length < 14) return;
     if (!this.#guestMac) this.#guestMac = frame.slice(6, 12).slice(); // learn guest MAC
     const ethertype = (frame[12] << 8) | frame[13];
-    if (ethertype === 0x0806) this.#handleArp(frame.slice(14));
-    else if (ethertype === 0x0800) this.#handleIpv4(frame.slice(14));
+    if (ethertype === 0x0806) {
+      // ARP not about the gateway (requests for peers, replies to peers) goes
+      // to the inter-tab hub; only gateway ARP is answered locally.
+      const arp = frame.slice(14);
+      if (arp.length >= 28 && !WispSlirp.#ipEq(arp.slice(24, 28), WispSlirp.GW_IP)) {
+        this.#lanPost(frame);
+        return;
+      }
+      this.#handleArp(arp);
+    } else if (ethertype === 0x0800) {
+      // IPv4 for a 192.168.86.x peer (not the gateway, not ourselves) is
+      // bridged to the hub instead of being NAT'd to the internet. Subnet /
+      // limited broadcasts go to the hub too (and are not NAT'd).
+      const d0 = frame[30], d1 = frame[31], d2 = frame[32], d3 = frame[33];
+      const isGw    = d0 === 192 && d1 === 168 && d2 === 86 && d3 === 1;
+      const isSelf  = d0 === WispSlirp.GUEST_IP[0] && d1 === WispSlirp.GUEST_IP[1] &&
+                      d2 === WispSlirp.GUEST_IP[2] && d3 === WispSlirp.GUEST_IP[3];
+      const isPeer  = d0 === 192 && d1 === 168 && d2 === 86 && !isGw && !isSelf && d3 !== 255;
+      const isBcast = (d0 === 192 && d1 === 168 && d2 === 86 && d3 === 255) ||
+                      (d0 === 255 && d1 === 255 && d2 === 255 && d3 === 255);
+      if (isPeer || isBcast) {
+        this.#lanPost(frame);
+        if (!isBcast) return;   // broadcast also falls through (e.g. DNS probes)
+      }
+      this.#handleIpv4(frame.slice(14));
+    }
   }
 
   // ── ARP ───────────────────────────────────────────────────────────────────
@@ -2676,6 +2735,24 @@ async function doBoat() {
   // enough that WS message dispatch stops and the WISP watchdog tears down a
   // healthy link (looked exactly like "flaky relay" for weeks).
   window.__netdebug = new URLSearchParams(location.search).has('netdebug');
+  // ── Container identity (tabs-as-containers) ───────────────────────────────
+  // ?ip=192.168.86.NNN gives this tab's guest its address on the inter-tab
+  // LAN (default .100); ?hosts=db:192.168.86.101,api:... seeds /etc/hosts so
+  // services find each other by name. The guest reads both from the kernel
+  // cmdline (lot_ip= / lot_hosts=) in /etc/rc.
+  const lotParams = new URLSearchParams(location.search);
+  let lotGuestIp = '192.168.86.100';
+  {
+    const p = lotParams.get('ip');
+    if (p && /^192\.168\.86\.(\d{1,3})$/.test(p)) {
+      const last = +p.split('.')[3];
+      if (last >= 2 && last <= 254) lotGuestIp = '192.168.86.' + last;  // .1 = gateway
+    }
+  }
+  WispSlirp.GUEST_IP = new Uint8Array(lotGuestIp.split('.').map(Number));
+  let lotHosts = lotParams.get('hosts') || '';
+  if (!/^[A-Za-z0-9.,:_-]*$/.test(lotHosts)) lotHosts = '';
+
   const slirp = new WispSlirp(wispUrl);
   const guestMac = crypto.getRandomValues(new Uint8Array(6));
   guestMac[0] &= 0xfe;  // clear multicast bit
@@ -2955,7 +3032,7 @@ async function doBoat() {
     // lot_epoch: current host Unix time — /etc/init.d/rcS uses it to set the
     // guest wall clock (`date -s @N`). Setting it kernel-side at an initcall
     // breaks inbound TCP handshakes, so it must happen from userspace.
-    cmdline: 'console=hvc0 loglevel=4 nr_cpus=1 rdinit=/init ip=192.168.86.100::192.168.86.1:255.255.255.0::eth0:off lot_epoch=' + Math.floor(Date.now() / 1000),
+    cmdline: 'console=hvc0 loglevel=4 nr_cpus=1 rdinit=/init ip=' + lotGuestIp + '::192.168.86.1:255.255.255.0::eth0:off lot_ip=' + lotGuestIp + (lotHosts ? ' lot_hosts=' + lotHosts : '') + ' lot_epoch=' + Math.floor(Date.now() / 1000),
   });
 
   // Pipe the early boot console (pre-virtio kernel messages) to xterm.
