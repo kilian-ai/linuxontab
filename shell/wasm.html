@@ -2752,6 +2752,61 @@ async function doBoat() {
   WispSlirp.GUEST_IP = new Uint8Array(lotGuestIp.split('.').map(Number));
   let lotHosts = lotParams.get('hosts') || '';
   if (!/^[A-Za-z0-9.,:_-]*$/.test(lotHosts)) lotHosts = '';
+  // ?name= labels this container (heartbeats / manager GUI).
+  let lotName = (lotParams.get('name') || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32);
+  if (!lotName) lotName = 'lot-' + Math.random().toString(36).slice(2, 6);
+  // ?image= is either a package list ("redis" / "redis,python3" → the guest
+  // apk-installs + autostarts via /etc/lot-services.conf) or "@name" — a
+  // COMMITTED overlay image: boot = lean base + stored dirty-block overlay.
+  let lotImage = lotParams.get('image') || '';
+  if (!/^[A-Za-z0-9_.,@-]*$/.test(lotImage)) lotImage = '';
+  const lotOverlayName = lotImage.startsWith('@') ? lotImage.slice(1) : '';
+  const lotSvcs = (lotImage && !lotOverlayName) ? lotImage : '';
+
+  // ── Committed images: IndexedDB store of {name, baseSha, extents, data} ──
+  const lotImgDb = () => new Promise((res, rej) => {
+    const rq = indexedDB.open('lot-images', 1);
+    rq.onupgradeneeded = () => rq.result.createObjectStore('images', { keyPath: 'name' });
+    rq.onsuccess = () => res(rq.result);
+    rq.onerror = () => rej(rq.error);
+  });
+  const lotImgGet = async (name) => {
+    const db = await lotImgDb();
+    return new Promise((res, rej) => {
+      const rq = db.transaction('images').objectStore('images').get(name);
+      rq.onsuccess = () => res(rq.result || null);
+      rq.onerror = () => rej(rq.error);
+    });
+  };
+  const lotImgPut = async (rec) => {
+    const db = await lotImgDb();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('images', 'readwrite');
+      tx.objectStore('images').put(rec);
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error);
+    });
+  };
+  window.lotImages = async () => {
+    const db = await lotImgDb();
+    return new Promise((res, rej) => {
+      const rq = db.transaction('images').objectStore('images').getAll();
+      rq.onsuccess = () => res(rq.result.map(r => ({
+        name: r.name, baseSha: r.baseSha, bytes: r.data.byteLength,
+        blocks: r.extents.length, created: r.created,
+      })));
+      rq.onerror = () => rej(rq.error);
+    });
+  };
+  window.lotImageDelete = async (name) => {
+    const db = await lotImgDb();
+    return new Promise((res, rej) => {
+      const tx = db.transaction('images', 'readwrite');
+      tx.objectStore('images').delete(name);
+      tx.oncomplete = () => res('deleted ' + name);
+      tx.onerror = () => rej(tx.error);
+    });
+  };
 
   const slirp = new WispSlirp(wispUrl);
   const guestMac = crypto.getRandomValues(new Uint8Array(6));
@@ -2933,7 +2988,24 @@ async function doBoat() {
     if (out.length < 0x43A || out[0x438] !== 0x53 || out[0x439] !== 0xEF) {
       throw new Error('lean image: bad ext4 magic after reassembly');
     }
+    window.__lotBaseSha = man.sha256;   // committed overlays bind to this
     term.write(`\r\n\x1b[32m[boot] lean rootfs: ${(data.length / 1048576).toFixed(1)} MB downloaded → ${(man.size / 1048576) | 0} MiB disk\x1b[0m\r\n`);
+    // Committed overlay image (?image=@name): replay the stored dirty blocks
+    // over the base. baseSha must match — an overlay from an older base would
+    // splice inconsistent filesystem state.
+    if (lotOverlayName) {
+      const ov = await lotImgGet(lotOverlayName);
+      if (!ov) {
+        term.write(`\x1b[33m[boot] image "@${lotOverlayName}" not found locally — booting plain base\x1b[0m\r\n`);
+      } else if (ov.baseSha !== man.sha256) {
+        term.write(`\x1b[33m[boot] image "@${lotOverlayName}" was committed against a different base — booting plain base\x1b[0m\r\n`);
+      } else {
+        const od = new Uint8Array(ov.data);
+        let ooff = 0;
+        for (const [o, l] of ov.extents) { out.set(od.subarray(ooff, ooff + l), o); ooff += l; }
+        term.write(`\x1b[32m[boot] applied image "@${lotOverlayName}" (${(od.length / 1048576).toFixed(1)} MB overlay)\x1b[0m\r\n`);
+      }
+    }
     return out;
   };
 
@@ -2988,16 +3060,52 @@ async function doBoat() {
   }
   refreshStoragePanel().catch(() => {});
 
+  // Always-on dirty-block set (4 KiB granularity) — the raw material for
+  // `lotCommit`: a committed image is just these blocks as sparse extents.
+  const lotDirty = new Set();
   const blockDev = new BlockDevice({
     capacity: rootfsBytes.byteLength,
     read: (offset, length) => Promise.resolve(rootfsBytes.slice(offset, offset + length)),
     write: (offset, data) => {
       rootfsBytes.set(data, offset);
       if (rootfsOverlay) rootfsOverlay.markDirtyRange(offset, data.byteLength);
+      for (let b = offset >> 12; b <= ((offset + data.byteLength - 1) >> 12); b++) lotDirty.add(b);
       return Promise.resolve(data.byteLength);
     },
     flush: () => rootfsOverlay ? rootfsOverlay.persistNow().then(() => undefined) : Promise.resolve(),
   });
+
+  // ── lotCommit(name): snapshot this container's changes as a named image ───
+  // Docker-commit semantics: quiesce (guest `sync`; the lean ext4 has no
+  // journal, so a synced FS is consistent), then serialize the dirty 4 KiB
+  // blocks as sparse extents bound to the base image's sha. Boot it later
+  // with ?image=@name. Stored locally in IndexedDB; push-to-relay comes with
+  // the manager GUI.
+  window.lotCommit = async (name) => {
+    if (!name || !/^[A-Za-z0-9_-]{1,32}$/.test(name)) return 'usage: lotCommit("name") — [A-Za-z0-9_-]';
+    if (!window.__lotBaseSha) return 'commit requires a lean-base boot (not ?disk=full)';
+    guestWrite(new TextEncoder().encode('sync\n'));
+    await new Promise(r => setTimeout(r, 2000));   // let sync land + flush
+    const blocks = Array.from(lotDirty).sort((a, b) => a - b);
+    if (!blocks.length) return 'nothing to commit (no writes since boot)';
+    // Merge adjacent blocks into extents [[offset, len], ...]
+    const extents = [];
+    let s = blocks[0], p = blocks[0];
+    for (let i = 1; i <= blocks.length; i++) {
+      const b = blocks[i];
+      if (b === p + 1) { p = b; continue; }
+      extents.push([s << 12, (p - s + 1) << 12]);
+      s = b; p = b;
+    }
+    let total = 0;
+    for (const [, l] of extents) total += l;
+    const data = new Uint8Array(total);
+    let off = 0;
+    for (const [o, l] of extents) { data.set(rootfsBytes.subarray(o, o + l), off); off += l; }
+    await lotImgPut({ name, baseSha: window.__lotBaseSha, extents,
+                      data: data.buffer, created: Date.now() });
+    return `committed "@${name}": ${(total / 1048576).toFixed(1)} MB in ${extents.length} extents — boot with ?image=@${name}`;
+  };
 
   // ── Package drop disk (/dev/vdb) ──────────────────────────────────────────
   // Bulk bytes into the guest over TCP wedge probabilistically (guest RX bug),
@@ -3020,6 +3128,24 @@ async function doBoat() {
     guestWrite(new TextEncoder().encode(data));
   });
 
+  // ── Container heartbeats (manager GUI listens on 'lot-mgmt') ─────────────
+  try {
+    const mgmt = new BroadcastChannel('lot-mgmt');
+    const hbId = Math.random().toString(36).slice(2);
+    const bootT = Date.now();
+    document.title = lotName + ' · LinuxOnTab';
+    const hb = () => {
+      try {
+        mgmt.postMessage({ type: 'hb', id: hbId, name: lotName, ip: lotGuestIp,
+                           image: lotImage || 'lean', up: Date.now() - bootT });
+      } catch (_) {}
+    };
+    setInterval(hb, 3000); hb();
+    window.addEventListener('beforeunload', () => {
+      try { mgmt.postMessage({ type: 'bye', id: hbId, name: lotName }); } catch (_) {}
+    });
+  } catch (_) { /* no BroadcastChannel — heartbeats off */ }
+
   machine = new Machine({
     devices: [consoleDev, entropyDev, blockDev, pkgDropDev, netDev],
     memoryMib: 2048,
@@ -3032,7 +3158,7 @@ async function doBoat() {
     // lot_epoch: current host Unix time — /etc/init.d/rcS uses it to set the
     // guest wall clock (`date -s @N`). Setting it kernel-side at an initcall
     // breaks inbound TCP handshakes, so it must happen from userspace.
-    cmdline: 'console=hvc0 loglevel=4 nr_cpus=1 rdinit=/init ip=' + lotGuestIp + '::192.168.86.1:255.255.255.0::eth0:off lot_ip=' + lotGuestIp + (lotHosts ? ' lot_hosts=' + lotHosts : '') + ' lot_epoch=' + Math.floor(Date.now() / 1000),
+    cmdline: 'console=hvc0 loglevel=4 nr_cpus=1 rdinit=/init ip=' + lotGuestIp + '::192.168.86.1:255.255.255.0::eth0:off lot_ip=' + lotGuestIp + (lotHosts ? ' lot_hosts=' + lotHosts : '') + (lotSvcs ? ' lot_svc=' + lotSvcs : '') + ' lot_epoch=' + Math.floor(Date.now() / 1000),
   });
 
   // Pipe the early boot console (pre-virtio kernel messages) to xterm.

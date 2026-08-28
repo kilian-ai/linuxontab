@@ -137,6 +137,31 @@ HOSTS
 
 cat /etc/motd
 
+# Service autostart (tabs-as-containers): lot_svc=redis[,pkg...] on the
+# cmdline installs each package and, if /etc/lot-services.conf has a line
+# "name|command", starts the service in the background.
+case "$_CMDLINE" in
+*lot_svc=*)
+	_SVCS="${_CMDLINE##*lot_svc=}"
+	_SVCS="${_SVCS%% *}"
+	echo "$_SVCS" | tr ',' '\n' | while read -r _svc; do
+		[ -n "$_svc" ] || continue
+		echo "[lot] provisioning service: $_svc"
+		/usr/bin/apk add "$_svc" || continue
+		_cmdline_svc=""
+		# registry line: name|command
+		grep "^$_svc|" /etc/lot-services.conf > /tmp/.lot-svc-cmd 2>/dev/null
+		read -r _cmdline_svc < /tmp/.lot-svc-cmd 2>/dev/null
+		rm -f /tmp/.lot-svc-cmd
+		_cmdline_svc="${_cmdline_svc#*|}"
+		if [ -n "$_cmdline_svc" ]; then
+			echo "[lot] starting: $_cmdline_svc"
+			sh -c "$_cmdline_svc" > "/tmp/svc-$_svc.log" 2>&1 &
+		fi
+	done
+	;;
+esac
+
 # sshd only if installed (apk add openssh / dropbear installs then this
 # starts it on next boot; the stub path handles first-use in-session).
 if [ -x /usr/local/libexec/sshd-session ] || [ -x /sbin/sshd ]; then
@@ -155,6 +180,13 @@ fi
 exec /bin/sh -i
 EOF
 chmod +x "$STAGE/etc/rc"
+
+# ── Service registry (lot_svc autostart commands) ────────────────────────────
+# name|command — /etc/rc starts the command after `apk add name` when the tab
+# was opened with ?image=name. Packages without a line just get installed.
+cat > "$STAGE/etc/lot-services.conf" << 'EOF'
+redis|redis-server --port 6379 --bind 0.0.0.0 --protected-mode no
+EOF
 
 # ── Lean motd ────────────────────────────────────────────────────────────────
 cat > "$STAGE/etc/motd" << 'EOF'
