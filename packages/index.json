@@ -1,23 +1,639 @@
 {
   "version": 1,
-  "generated": "2026-05-19",
+  "generated": "2026-08-26",
   "packages": {
     "busybox": {
       "version": "1.37.0",
       "description": "Swiss Army Knife of embedded Linux (WASM)",
-      "url": "http://192.168.86.1/packages/busybox-1.37.0.tar.gz",
+      "url": "https://linuxontab.com/packages/busybox-1.37.0.tar.gz",
       "size": 528142,
       "sha256": "5b398b456f35419725da46fef6302ad4697f976c54b56be3589feeba319757ca",
-      "bins": ["busybox"],
-      "status": "available"
+      "bins": [
+        "busybox"
+      ],
+      "status": "available",
+      "depends": []
     },
     "sqlite3": {
-      "version": "3.51.0",
-      "description": "Serverless SQL database engine",
-      "url": "http://192.168.86.1/packages/sqlite3-3.51.0.tar.gz",
-      "size": 1728326,
-      "sha256": "5ed65c284c779ce7fb225812e9ea44e6d3a8a98a4ef15e5a6abedb9b94ca2cef",
-      "bins": ["sqlite3"],
+      "version": "0.1.0",
+      "description": "Minimal sqlite3 compatibility shim",
+      "url": "https://linuxontab.com/packages/sqlite3-0.1.0.tar.gz",
+      "size": 2322,
+      "sha256": "eb8bd4102a30af37355224d2f5f5efaf714057f9f1e9b2dce47d035dfe4566b9",
+      "bins": [
+        "sqlite3"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "curl": {
+      "version": "8.13.0",
+      "description": "Command-line tool for transferring data with URLs (HTTP)",
+      "url": "https://linuxontab.com/packages/curl-8.13.0.tar.gz",
+      "size": 1081267,
+      "sha256": "55229f2698c4547d4c79ae3d7368b42f85c11d628a7d26714d4f8c9da1cc9265",
+      "bins": [
+        "curl"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "jq": {
+      "version": "1.7.1",
+      "description": "Lightweight command-line JSON processor",
+      "url": "https://linuxontab.com/packages/jq-1.7.1.tar.gz",
+      "size": 792345,
+      "sha256": "d3a1a730b5d9fb6f13a1ad12ea0e6e04c78460d6db3a1b93a368bfe1d2e4d812",
+      "bins": [
+        "jq"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "nano": {
+      "version": "8.3",
+      "description": "Small and friendly text editor",
+      "url": "https://linuxontab.com/packages/nano-8.3.tar.gz",
+      "size": 210639,
+      "sha256": "b95b1400505104d1044b2df92f57a1490bdb78551c0581db02d133ce6fec7f5d",
+      "bins": [
+        "nano"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "lua": {
+      "version": "5.4.7",
+      "description": "Lightweight embeddable scripting language",
+      "url": "https://linuxontab.com/packages/lua-5.4.7.tar.gz",
+      "size": 428245,
+      "sha256": "85083867c2494dedb1422bc462a8b8c42e50dc480a7c19b48fecfd64ed3abfe5",
+      "bins": [
+        "lua"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "nodejs": {
+      "version": "20.0.0",
+      "description": "JavaScript runtime (QuickJS 2026-05-21, ES2023) + npm package manager",
+      "url": "https://linuxontab.com/packages/nodejs-20.0.0.tar.gz",
+      "size": 609156,
+      "sha256": "afa80d6ff5387758f59f55a367d5c56d268c0ad277d861102473ff34b4f9801a",
+      "bins": [
+        "nodejs"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "python3": {
+      "version": "3.11.14",
+      "description": "Python 3.11 interpreter (CPython, WASM)",
+      "url": "https://linuxontab.com/packages/python3-3.11.14.tar.gz",
+      "size": 45916847,
+      "sha256": "384adea775d10170b02fafaabcb5d64adb549c589bcafc01000c3e8cf6b35e18",
+      "bins": [
+        "python3"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "xorgproto": {
+      "version": "2024.1",
+      "description": "X.Org protocol and extension headers",
+      "url": "https://linuxontab.com/packages/xorgproto-2024.1.tar.gz",
+      "size": 277195,
+      "sha256": "9d73fe50e7acb80a19d1f79a0ea76b45f5f48dbb2b71289f176bda57d5364dba",
+      "bins": [
+        "xorgproto"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "xtrans": {
+      "version": "1.6.0",
+      "description": "X transport interface headers",
+      "url": "https://linuxontab.com/packages/xtrans-1.6.0.tar.gz",
+      "size": 3868,
+      "sha256": "1663777c5a34925046adec64e4fb3a94eb2bc15640ee6353c0b68f1b8d65abce",
+      "bins": [
+        "xtrans"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "libXau": {
+      "version": "1.0.12",
+      "description": "X authorization file management library",
+      "url": "https://linuxontab.com/packages/libXau-1.0.12.tar.gz",
+      "size": 10098,
+      "sha256": "1abb8fd5040341c908ff312299a2fed0b2ec682ad8cead7f1fbc1a0c787b1441",
+      "bins": [
+        "libXau"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "libXdmcp": {
+      "version": "1.1.5",
+      "description": "X Display Manager Control Protocol library",
+      "url": "https://linuxontab.com/packages/libXdmcp-1.1.5.tar.gz",
+      "size": 52783,
+      "sha256": "78faef469518aac8e752140781a349b6c31dcfa06bd2052eb9ca4fcaab722e77",
+      "bins": [
+        "libXdmcp"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "libxcb": {
+      "version": "1.17.0",
+      "description": "X C Binding library",
+      "url": "https://linuxontab.com/packages/libxcb-1.17.0.tar.gz",
+      "size": 812055,
+      "sha256": "5f314b9363e467c1f39965b88a8f2b4a0ef9e3fecdeb962e191d056f5118676a",
+      "bins": [
+        "libxcb"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "libX11": {
+      "version": "1.8.10",
+      "description": "Core X11 client-side library",
+      "url": "https://linuxontab.com/packages/libX11-1.8.10.tar.gz",
+      "size": 1877857,
+      "sha256": "bd2368c5ba84616923dad1150cd5effc7245d0b9f58fc362371da5feea10f3a6",
+      "bins": [
+        "libX11"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "libXext": {
+      "version": "1.3.6",
+      "description": "X11 miscellaneous extension library",
+      "url": "https://linuxontab.com/packages/libXext-1.3.6.tar.gz",
+      "size": 130654,
+      "sha256": "f05e61aee896603fe3290a25a5d981dbda55cd4a86ce179a681f936bcf68ba91",
+      "bins": [
+        "libXext"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "libICE": {
+      "version": "1.1.2",
+      "description": "Inter-Client Exchange library",
+      "url": "https://linuxontab.com/packages/libICE-1.1.2.tar.gz",
+      "size": 173076,
+      "sha256": "b00fcf333e640ccd3ce39e80d211bd58341c87f40e496e5b23e01ecdb8fb1ccf",
+      "bins": [
+        "libICE"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "libSM": {
+      "version": "1.2.5",
+      "description": "X Session Management library",
+      "url": "https://linuxontab.com/packages/libSM-1.2.5.tar.gz",
+      "size": 83856,
+      "sha256": "4457d2cba021eec38be8f424c176ad9b7a16c62161c4a5eaee78f4264e4310ab",
+      "bins": [
+        "libSM"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "libXt": {
+      "version": "1.3.1",
+      "description": "X Toolkit Intrinsics",
+      "url": "https://linuxontab.com/packages/libXt-1.3.1.tar.gz",
+      "size": 790692,
+      "sha256": "cbd7a2a022bba0ca9c19cf52cc15f6960083827bb3f7fb44ceaafbc265cf89ff",
+      "bins": [
+        "libXt"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "libXmu": {
+      "version": "1.2.1",
+      "description": "X miscellaneous utilities library",
+      "url": "https://linuxontab.com/packages/libXmu-1.2.1.tar.gz",
+      "size": 156329,
+      "sha256": "9090c825913023bea3826e78376a06b4013f88dd541aa093935700b30ec6549d",
+      "bins": [
+        "libXmu"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "libXrender": {
+      "version": "0.9.12",
+      "description": "X Rendering Extension client library",
+      "url": "https://linuxontab.com/packages/libXrender-0.9.12.tar.gz",
+      "size": 55555,
+      "sha256": "127e534c4735aff453477ba21ec5b34ddbc97ff95817c9be45779e424acbf6f9",
+      "bins": [
+        "libXrender"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "libXfixes": {
+      "version": "6.0.1",
+      "description": "X Fixes extension client library",
+      "url": "https://linuxontab.com/packages/libXfixes-6.0.1.tar.gz",
+      "size": 21240,
+      "sha256": "f39f8775a8d93f0ea114fcd54581241c27013b4bbfcd4cb40bfabbc40171d156",
+      "bins": [
+        "libXfixes"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "libXi": {
+      "version": "1.8.2",
+      "description": "X Input Extension client library",
+      "url": "https://linuxontab.com/packages/libXi-1.8.2.tar.gz",
+      "size": 198443,
+      "sha256": "a3995057926de593231ed11c52682fd60ba6faec28777e05a5745d7c130a43ea",
+      "bins": [
+        "libXi"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "xeyes": {
+      "version": "1.3.0",
+      "description": "X11 eye-follow demo",
+      "url": "https://linuxontab.com/packages/xeyes-1.3.0.tar.gz",
+      "size": 379928,
+      "sha256": "eb5d283c1f23d1a988bda0cb561a5fefa01ef636dff77d1bbf31a7a3dac862a7",
+      "bins": [
+        "xeyes"
+      ],
+      "depends": [
+        "xvfb",
+        "x11vnc"
+      ],
+      "status": "available"
+    },
+    "pixman": {
+      "version": "0.42.2",
+      "description": "Pixel manipulation library",
+      "url": "https://linuxontab.com/packages/pixman-0.42.2.tar.gz",
+      "size": 143834,
+      "sha256": "a29ddb6dd9c01f6dac6396a7136e603cf853f3a777146ebd74276607bfe5c056",
+      "bins": [
+        "pixman"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "zlib": {
+      "version": "1.3.2",
+      "description": "Compression library",
+      "url": "https://linuxontab.com/packages/zlib-1.3.2.tar.gz",
+      "size": 74906,
+      "sha256": "6c59e569b40c6cae9ccb8882db5d67fc5e25cd3206335e6ac641603280c2c991",
+      "bins": [
+        "zlib"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "fontenc": {
+      "version": "1.1.8",
+      "description": "Font encoding library",
+      "url": "https://linuxontab.com/packages/fontenc-1.1.8.tar.gz",
+      "size": 14439,
+      "sha256": "6f8f20f0d4d9a11159934a2f2a68a67cec4870a3278e1927222e32a5a64e2caa",
+      "bins": [
+        "fontenc"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "freetype": {
+      "version": "2.13.3",
+      "description": "Font rasterization library",
+      "url": "https://linuxontab.com/packages/freetype-2.13.3.tar.gz",
+      "size": 542753,
+      "sha256": "88635b90bfba1ecdfb5aa52ee5317585498ffe7da1b00619ec49d9cabc165b93",
+      "bins": [
+        "freetype"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "libXfont2": {
+      "version": "2.0.7",
+      "description": "X font library",
+      "url": "https://linuxontab.com/packages/libXfont2-2.0.7.tar.gz",
+      "size": 118819,
+      "sha256": "bc68a6bf0acaee4fed3128204ab45f881812c420f85f9ac23ee6937925f0ce18",
+      "bins": [
+        "libXfont2"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "xkbfile": {
+      "version": "1.1.3",
+      "description": "XKB file parsing library",
+      "url": "https://linuxontab.com/packages/xkbfile-1.1.3.tar.gz",
+      "size": 84460,
+      "sha256": "ed501c70d269b259d73cdfb09359dbc81293949c2445b0ec5ddbd97a178ae47f",
+      "bins": [
+        "xkbfile"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "xvfb": {
+      "version": "21.1.13",
+      "description": "Virtual framebuffer X server",
+      "url": "https://linuxontab.com/packages/xvfb-21.1.13.tar.gz",
+      "size": 1180377,
+      "sha256": "9c4a802be5ffb297022510010b677e5562053ab7c26d8ca3f6cb6e929d6b7c48",
+      "bins": [
+        "xvfb"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "libXdamage": {
+      "version": "1.1.6",
+      "description": "X Damage extension client library",
+      "url": "https://linuxontab.com/packages/libXdamage-1.1.6.tar.gz",
+      "size": 8280,
+      "sha256": "4b4716ef603d1e2448aa3ae35266f69889edaa99d67c37c9179ca8a5617ba5ab",
+      "bins": [
+        "libXdamage"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "libXrandr": {
+      "version": "1.5.4",
+      "description": "X RandR extension client library",
+      "url": "https://linuxontab.com/packages/libXrandr-1.5.4.tar.gz",
+      "size": 51771,
+      "sha256": "14d70bd1774038f22b0c34dbe0a50fb51da841c5dd9fb26321407639c08e859c",
+      "bins": [
+        "libXrandr"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "libXtst": {
+      "version": "1.2.4",
+      "description": "X Test extension client library",
+      "url": "https://linuxontab.com/packages/libXtst-1.2.4.tar.gz",
+      "size": 43959,
+      "sha256": "95b7c9fb1f96d298355d06eabb0e8691b74a4e637bcf5ae8d1b56c8ad5e928ab",
+      "bins": [
+        "libXtst"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "x11vnc": {
+      "version": "1.0.0",
+      "description": "Minimal X11-to-VNC bridge (RAW RFB 3.8)",
+      "url": "https://linuxontab.com/packages/x11vnc-1.0.0.tar.gz",
+      "size": 88625,
+      "sha256": "0d804cb814945b4af0a8f45905cb957ff3932fa9b3ff13287a26736d17e7a0fd",
+      "bins": [
+        "x11vnc"
+      ],
+      "status": "available",
+      "depends": [
+        "xvfb"
+      ]
+    },
+    "boost": {
+      "version": "1.85.0",
+      "description": "Boost C++ libraries (context, coroutine)",
+      "url": "https://linuxontab.com/packages/boost-1.85.0.tar.gz",
+      "size": 16223293,
+      "sha256": "40942ed53a21c0ad1be2f85f555e2d5153dff719cab47c8757b92fc5b4b8d077",
+      "bins": [
+        "boost"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "libarchive": {
+      "version": "3.7.4",
+      "description": "libarchive static library",
+      "url": "https://linuxontab.com/packages/libarchive-3.7.4.tar.gz",
+      "size": 370448,
+      "sha256": "167826c6f5be6caa9362017af46637e5058d11118966aee4d5b51104c1e7a967",
+      "bins": [
+        "libarchive"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "nlohmann_json": {
+      "version": "3.11.3",
+      "description": "Header-only JSON for Modern C++",
+      "url": "https://linuxontab.com/packages/nlohmann_json-3.11.3.tar.gz",
+      "size": 140512,
+      "sha256": "1d454cd12db3f46a0e1f461cdf3947779842db72b1197cc6e50d6d18e0e1dc15",
+      "bins": [
+        "nlohmann_json"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "libgit2": {
+      "version": "1.8.1",
+      "description": "libgit2 static library",
+      "url": "https://linuxontab.com/packages/libgit2-1.8.1.tar.gz",
+      "size": 868763,
+      "sha256": "8cc9a3a05063d79bbaa19fb5ffa825e73904b67ba33f7f4c92e9e4ab64c2def3",
+      "bins": [
+        "libgit2"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "toml11": {
+      "version": "4.2.0",
+      "description": "Header-only TOML library for C++",
+      "url": "https://linuxontab.com/packages/toml11-4.2.0.tar.gz",
+      "size": 87426,
+      "sha256": "43524105b5728c0a95f3f6179d57627843cbc291c9d515e22932bff8576e1a79",
+      "bins": [
+        "toml11"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "libeditline": {
+      "version": "1.0.0",
+      "description": "Minimal editline-compatible readline/history API",
+      "url": "https://linuxontab.com/packages/libeditline-1.0.0.tar.gz",
+      "size": 1449,
+      "sha256": "0038fc4c336a99cf359f23207dc98dac619ac3b56cfd718d37075885bca136e2",
+      "bins": [
+        "libeditline"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "openssl": {
+      "version": "0.1.0",
+      "description": "Minimal libcrypto compatibility shim (MD5/SHA APIs)",
+      "url": "https://linuxontab.com/packages/openssl-0.1.0.tar.gz",
+      "size": 3395,
+      "sha256": "15732fc8919f52ae88774c220bbacd8b3d4904f1d2f80b25fba9040149c3a270",
+      "bins": [
+        "openssl"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "libsodium": {
+      "version": "0.1.0",
+      "description": "Minimal libsodium compatibility shim",
+      "url": "https://linuxontab.com/packages/libsodium-0.1.0.tar.gz",
+      "size": 1990,
+      "sha256": "e765d2e2b5ab483aa2b631d0699c86a23b850826be903bee568a485b2611499e",
+      "bins": [
+        "libsodium"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "brotli": {
+      "version": "0.1.0",
+      "description": "Minimal brotli compatibility shim",
+      "url": "https://linuxontab.com/packages/brotli-0.1.0.tar.gz",
+      "size": 1969,
+      "sha256": "19fa8f44770739ca8b6c844cd8884095aab87d0d520d4bfd6110f146fa9e5fbe",
+      "bins": [
+        "brotli"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "libcurl": {
+      "version": "0.1.0",
+      "description": "Minimal libcurl compatibility shim",
+      "url": "https://linuxontab.com/packages/libcurl-0.1.0.tar.gz",
+      "size": 2859,
+      "sha256": "d254bc4a4d477c8b16842555ddb509ece7d269543182c59fdeecda5ac28aeddb",
+      "bins": [
+        "libcurl"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "wasm3": {
+      "version": "0.5.0",
+      "description": "WebAssembly interpreter with WASI support \u2014 run wasip1 binaries",
+      "url": "https://linuxontab.com/packages/wasm3-0.5.0.tar.gz",
+      "size": 71691,
+      "sha256": "6458b956ceb4e93a14cdcbe23bc0ffbdeb16f25f6761cc6806d44059cd0117e6",
+      "bins": [
+        "wasm3"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "syncthing": {
+      "version": "1.27.12",
+      "description": "Syncthing file synchronization daemon (wasip1, run via wasm3)",
+      "url": "https://linuxontab.com/packages/syncthing-1.27.12.tar.gz",
+      "size": 9633661,
+      "sha256": "5608f2519f4be973344972311374e67d77e7c35d402308013d0738797b8b5de3",
+      "bins": [
+        "syncthing.wasm"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "mc": {
+      "version": "4.8.33",
+      "description": "GNU Midnight Commander \u2014 visual file manager",
+      "url": "https://linuxontab.com/packages/mc-4.8.33.tar.gz",
+      "size": 1217921,
+      "sha256": "1303fff7d218d119eadbbd8fc7fb648f33b942bb64caa1036f3f4a1cd8380351",
+      "bins": [
+        "mc"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "lotfm": {
+      "version": "1.0",
+      "description": "Tiny two-pane file manager (ANSI/termios, no ncurses)",
+      "url": "https://linuxontab.com/packages/lotfm-1.0.tar.gz",
+      "size": 66327,
+      "sha256": "a86f83df51c835aaceee1057286b3ff0ebb46dc51e8cbc489fbde3b94b0db497",
+      "bins": [
+        "lotfm"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "tmux": {
+      "version": "3.5a",
+      "description": "Terminal multiplexer",
+      "url": "https://linuxontab.com/packages/tmux-3.5a.tar.gz",
+      "size": 549315,
+      "sha256": "22481b60ab4dda4bc7536944151afb0b0928828d0568ec03bdc4327ebed8326b",
+      "bins": [
+        "tmux"
+      ],
+      "status": "available",
+      "depends": []
+    },
+    "libXpm": {
+      "version": "3.5.17",
+      "description": "X pixmap library",
+      "url": "https://linuxontab.com/packages/libXpm-3.5.17.tar.gz",
+      "size": 88396,
+      "sha256": "97482dd64102e7261e49521e3cdcbeaf6f8c8b81a86fad6dabcca9508b48925b",
+      "bins": [
+        "libXpm"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "xterm": {
+      "version": "379",
+      "description": "X terminal emulator",
+      "url": "https://linuxontab.com/packages/xterm-379.tar.gz",
+      "size": 762079,
+      "sha256": "74db249a8e6b323e871220cbeee3fb4878b2608e0dec4407f4f43de7bff253e6",
+      "bins": [
+        "xterm"
+      ],
+      "depends": [
+        "libX11",
+        "libXt",
+        "libXaw"
+      ],
+      "status": "available"
+    },
+    "redis": {
+      "version": "7.2.5",
+      "description": "Redis key/value database server + CLI",
+      "url": "https://linuxontab.com/packages/redis-7.2.5.tar.gz",
+      "size": 2150271,
+      "sha256": "410ff1ee7de883bbaf1eae301bccbe112f22b31ad05e3efb5ce8bd45cf001d61",
+      "bins": [
+        "redis-server",
+        "redis-cli"
+      ],
+      "depends": [],
       "status": "available"
     }
   }
