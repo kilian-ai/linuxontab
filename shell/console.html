@@ -45,6 +45,9 @@
   .stackbar { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
   #msg { color: var(--warn); font-size: 12px; margin-top: 10px; min-height: 1em; }
   .up { color: var(--dim); font-size: 12px; }
+  #images tr[data-run] { cursor: pointer; }
+  #images tr[data-run]:hover td.name { text-decoration: underline; }
+  #images tr[data-run]:hover td { background: #171d25; }
   .badge { font-size: 11px; color: var(--dim); border: 1px solid var(--line);
            border-radius: 4px; padding: 1px 6px; }
 </style>
@@ -119,40 +122,67 @@ const fmtUp = (ms) => {
   return (s / 3600 | 0) + 'h' + ((s % 3600) / 60 | 0) + 'm';
 };
 
+// Change-driven rendering: rebuilding tables on a timer yanks rows out from
+// under the pointer mid-click and resets hover/selection. Rebuild only when
+// the row SET changes; tick the uptime cells in place every second.
+let containersSig = '';
 function renderContainers() {
   const now = Date.now();
   for (const [id, c] of containers) if (now - c.seen > 15000) containers.delete(id);
   const tb = $('containers');
-  if (!containers.size) {
-    tb.innerHTML = '<tr><td colspan="5" class="empty">none running — start one below</td></tr>';
-    return;
+  const sig = [...containers.entries()]
+    .map(([id, c]) => id + '|' + c.name + '|' + c.ip + '|' + c.image + '|' + (now - c.seen > 7000))
+    .sort().join(';');
+  if (sig !== containersSig) {
+    containersSig = sig;
+    tb.innerHTML = '';
+    if (!containers.size) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 5; td.className = 'empty';
+      td.textContent = 'none running — start one below';
+      tr.appendChild(td);
+      tb.appendChild(tr);
+    }
+    for (const [id, c] of containers) {
+      const stale = now - c.seen > 7000;
+      const tr = document.createElement('tr');
+      tr.dataset.cid = id;
+      if (stale) tr.className = 'stale';
+      for (const [cls, text] of [['name', c.name], ['', c.ip], ['', c.image], ['up', '']]) {
+        const td = document.createElement('td');
+        if (cls) td.className = cls;
+        td.textContent = text;
+        tr.appendChild(td);
+      }
+      const cell = document.createElement('td');
+      const focus = document.createElement('button');
+      focus.textContent = 'console';
+      focus.onclick = () => {
+        const w = owned.get(c.name);
+        if (w && !w.closed) w.focus();
+        else msg('"' + c.name + '" was not started from this console — switch to its tab manually');
+      };
+      const stop = document.createElement('button');
+      stop.textContent = 'stop';
+      stop.className = 'danger';
+      stop.onclick = () => {
+        mgmt.postMessage({ type: 'stop', id });
+        const w = owned.get(c.name);
+        if (w && !w.closed) setTimeout(() => { try { w.close(); } catch (_) {} }, 500);
+      };
+      cell.append(focus, ' ', stop);
+      tr.appendChild(cell);
+      tb.appendChild(tr);
+    }
   }
-  tb.innerHTML = '';
-  for (const [id, c] of containers) {
+  // in-place uptime tick
+  for (const tr of tb.querySelectorAll('tr[data-cid]')) {
+    const c = containers.get(tr.dataset.cid);
+    if (!c) continue;
+    const upCell = tr.children[3];
     const stale = now - c.seen > 7000;
-    const tr = document.createElement('tr');
-    if (stale) tr.className = 'stale';
-    tr.innerHTML =
-      `<td class="name">${c.name}</td><td>${c.ip}</td><td>${c.image}</td>` +
-      `<td class="up">${stale ? 'stale' : fmtUp(c.up)}</td><td></td>`;
-    const cell = tr.lastChild;
-    const focus = document.createElement('button');
-    focus.textContent = 'console';
-    focus.onclick = () => {
-      const w = owned.get(c.name);
-      if (w && !w.closed) w.focus();
-      else msg('"' + c.name + '" was not started from this console — switch to its tab manually');
-    };
-    const stop = document.createElement('button');
-    stop.textContent = 'stop';
-    stop.className = 'danger';
-    stop.onclick = () => {
-      mgmt.postMessage({ type: 'stop', id });
-      const w = owned.get(c.name);
-      if (w && !w.closed) setTimeout(() => { try { w.close(); } catch (_) {} }, 500);
-    };
-    cell.append(focus, ' ', stop);
-    tb.appendChild(tr);
+    upCell.textContent = stale ? 'stale' : fmtUp(c.up + (now - c.seen));
   }
 }
 setInterval(renderContainers, 1000);
@@ -199,7 +229,7 @@ async function pushImage(im) {
     if (!r.ok) throw new Error('data HTTP ' + r.status + ': ' + await r.text());
     msg('pushed @' + im.name + ' (' + (im.data.byteLength / 1048576).toFixed(1) + ' MB)');
   } catch (e) { msg('push failed: ' + e.message); }
-  renderImages();
+  renderImages(true);
 }
 let relayImages = [];
 async function refreshRelay() {
@@ -210,39 +240,82 @@ async function refreshRelay() {
 }
 refreshRelay(); setInterval(refreshRelay, 15000);
 
-async function renderImages() {
-  const tb = $('images'), sel = $('r-image');
-  const committed = await committedImages().catch(() => []);
-  tb.innerHTML = ''; sel.innerHTML = '';
-  for (const b of BUILTINS) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td class="name">${b}</td><td class="up">builtin</td><td class="up">on demand</td><td></td>`;
-    tb.appendChild(tr);
-    sel.append(new Option(b, b === 'lean' ? '' : b));
+// Auto-named quick launch: clicking an image row runs a container from it.
+function quickRun(imageValue, base) {
+  const taken = new Set([...containers.values()].map(c => c.name));
+  let name = base, n = 2;
+  while (taken.has(name) || (owned.has(name) && !owned.get(name).closed)) name = base + '-' + n++;
+  const ip = nextFreeIp();
+  if (launch(name, ip, imageValue, { [name]: ip })) {
+    msg('launched ' + name + ' @ ' + ip + ' (image: ' + (imageValue || 'lean') + ')');
   }
-  for (const im of committed) {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td class="name">@${im.name}</td><td class="up">committed</td>` +
-                   `<td class="up">${(im.data.byteLength / 1048576).toFixed(1)} MB</td><td></td>`;
-    const cell = tr.lastChild;
-    const push = document.createElement('button');
-    push.textContent = 'push'; push.title = 'push to the relay registry';
-    push.onclick = () => pushImage(im);
-    const del = document.createElement('button');
-    del.textContent = 'delete'; del.className = 'danger';
-    del.onclick = async () => { await deleteImage(im.name); renderImages(); };
-    cell.append(push, ' ', del);
-    tb.appendChild(tr);
-    sel.append(new Option('@' + im.name, '@' + im.name));
+}
+
+function imageRow(name, kind, size, buttons, runValue, runBase) {
+  const tr = document.createElement('tr');
+  for (const [cls, text] of [['name', name], ['up', kind], ['up', size]]) {
+    const td = document.createElement('td');
+    td.className = cls; td.textContent = text;
+    tr.appendChild(td);
   }
-  const localNames = new Set(committed.map(i => i.name));
-  for (const ri of relayImages) {
-    if (localNames.has(ri.name)) continue;   // local copy wins the listing
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td class="name">@${ri.name}</td><td class="up">relay</td>` +
-                   `<td class="up">${(ri.size / 1048576).toFixed(1)} MB</td><td></td>`;
-    tb.appendChild(tr);
-    sel.append(new Option('@' + ri.name + ' (relay)', '@' + ri.name));
+  const cell = document.createElement('td');
+  for (const b of (buttons || [])) cell.append(b, ' ');
+  tr.appendChild(cell);
+  if (runBase !== undefined) {
+    tr.dataset.run = '1';
+    tr.title = 'run a "' + runBase + '" container in a new tab';
+    tr.onclick = (e) => {
+      if (e.target.closest('button')) return;    // push/delete stay themselves
+      quickRun(runValue, runBase);
+    };
+  }
+  return tr;
+}
+
+// Rebuild ONLY when the image set changes — a timer rebuild was wiping the
+// run-form <select> back to its first option ("lean") every 5 s, discarding
+// whatever the user had picked. When we do rebuild, the current selection is
+// carried over if its option still exists.
+let imagesSig = '';
+let imagesBusy = false;
+async function renderImages(force) {
+  if (imagesBusy) return;
+  imagesBusy = true;
+  try {
+    const committed = await committedImages().catch(() => []);
+    const localNames = new Set(committed.map(i => i.name));
+    const relayOnly = relayImages.filter(ri => !localNames.has(ri.name));
+    const sig = BUILTINS.join(',') + '#' +
+      committed.map(i => i.name + ':' + i.data.byteLength).sort().join(',') + '#' +
+      relayOnly.map(i => i.name + ':' + i.size).sort().join(',');
+    if (!force && sig === imagesSig) return;
+    imagesSig = sig;
+
+    const tb = $('images'), sel = $('r-image');
+    const keep = sel.value;                       // survive the rebuild
+    tb.innerHTML = ''; sel.innerHTML = '';
+    for (const b of BUILTINS) {
+      tb.appendChild(imageRow(b, 'builtin', 'on demand', null, b === 'lean' ? '' : b, b));
+      sel.append(new Option(b, b === 'lean' ? '' : b));
+    }
+    for (const im of committed) {
+      const push = document.createElement('button');
+      push.textContent = 'push'; push.title = 'push to the relay registry';
+      push.onclick = () => pushImage(im);
+      const del = document.createElement('button');
+      del.textContent = 'delete'; del.className = 'danger';
+      del.onclick = async () => { await deleteImage(im.name); renderImages(true); };
+      tb.appendChild(imageRow('@' + im.name, 'committed',
+        (im.data.byteLength / 1048576).toFixed(1) + ' MB', [push, del], '@' + im.name, im.name));
+      sel.append(new Option('@' + im.name, '@' + im.name));
+    }
+    for (const ri of relayOnly) {
+      tb.appendChild(imageRow('@' + ri.name, 'relay', (ri.size / 1048576).toFixed(1) + ' MB', null, '@' + ri.name, ri.name));
+      sel.append(new Option('@' + ri.name + ' (relay)', '@' + ri.name));
+    }
+    if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
+  } finally {
+    imagesBusy = false;
   }
 }
 renderImages();
@@ -270,18 +343,26 @@ function launch(name, ip, image, extraHosts) {
   if (image) q.set('image', image);
   const h = hostsParam(extraHosts);
   if (h) q.set('hosts', h);
-  const w = window.open('wasm.html?' + q.toString(), '_blank');
-  if (!w) { msg('popup blocked — allow popups for this site'); return null; }
+  // Named target: re-running the same container name reuses its tab instead
+  // of piling up duplicates.
+  const w = window.open('wasm.html?' + q.toString(), 'lot-' + name);
+  if (!w) { msg('popup blocked — allow popups for this site, then hit Run again'); return null; }
   owned.set(name, w);
   return w;
 }
-$('r-go').onclick = () => {
+function runOne() {
   const name = ($('r-name').value || '').replace(/[^A-Za-z0-9_-]/g, '') ||
                'c' + Math.random().toString(36).slice(2, 5);
   const ip = /^192\.168\.86\.\d+$/.test($('r-ip').value) ? $('r-ip').value : nextFreeIp();
-  launch(name, ip, $('r-image').value, { [name]: ip });
-  msg('launched ' + name + ' @ ' + ip);
-};
+  if (launch(name, ip, $('r-image').value, { [name]: ip })) {
+    msg('launched ' + name + ' @ ' + ip);
+    $('r-name').value = '';
+  }
+}
+$('r-go').onclick = runOne;
+for (const id of ['r-name', 'r-ip']) {
+  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') runOne(); });
+}
 $('s-deploy').onclick = () => {
   let stack;
   try { stack = JSON.parse($('stack').value); } catch (e) { msg('stack JSON: ' + e.message); return; }
@@ -300,8 +381,12 @@ $('s-deploy').onclick = () => {
     plan[name] = { ip, image: s.image === 'lean' ? '' : (s.image || '') };
   }
   const extra = Object.fromEntries(Object.entries(plan).map(([n, p]) => [n, p.ip]));
-  for (const [name, p] of Object.entries(plan)) launch(name, p.ip, p.image, extra);
-  msg('deployed: ' + Object.keys(plan).join(', '));
+  const opened = [], blocked = [];
+  for (const [name, p] of Object.entries(plan)) {
+    (launch(name, p.ip, p.image, extra) ? opened : blocked).push(name);
+  }
+  msg('deployed: ' + (opened.join(', ') || 'none') +
+      (blocked.length ? ' — popup-blocked: ' + blocked.join(', ') + ' (allow popups, deploy again)' : ''));
 };
 $('s-stop').onclick = () => {
   for (const [id] of containers) mgmt.postMessage({ type: 'stop', id });
