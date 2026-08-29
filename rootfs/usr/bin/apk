@@ -52,20 +52,22 @@ _fetch_pkgdrop() {
     rm -f /tmp/.lot-req
     _size=""; _err=""
     # ~120 x 1 s poll budget (nested loops: no $(( )) arithmetic in wasm hush)
-    for _a in 1 2 3 4 5 6 7 8 9 10 11 12; do
-        for _b in 1 2 3 4 5 6 7 8 9 10; do
+    # Builtin-only response check (${} prefix tests, no grep): fewer forks =
+    # less worker churn, which matters on iOS. Poll every 2 s.
+    for _a in 1 2 3 4 5 6 7 8; do
+        for _b in 1 2 3 4 5 6 7 8; do
             echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
             dd if=/dev/vdb bs=512 skip=1 count=1 2>/dev/null > /tmp/.lot-rsp
             _l=""; read -r _l < /tmp/.lot-rsp 2>/dev/null
-            if grep -q "^LOTRSP $_n ok " /tmp/.lot-rsp 2>/dev/null; then
+            if [ "${_l#LOTRSP $_n ok }" != "$_l" ]; then
                 _size="${_l##* }"
                 break
             fi
-            if grep -q "^LOTRSP $_n err" /tmp/.lot-rsp 2>/dev/null; then
+            if [ "${_l#LOTRSP $_n err}" != "$_l" ]; then
                 _err=1
                 break
             fi
-            sleep 1
+            sleep 2
         done
         [ -n "$_size" ] && break
         [ -n "$_err" ] && break

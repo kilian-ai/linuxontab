@@ -2775,6 +2775,15 @@ async function doBoat() {
         appendBrowserOutput(text);
         return;
       }
+      // Beacon: keep a tail of the guest's terminal output so remote debug
+      // (?beacon=) can see the phone's screen. Cheap string append + trim.
+      if (window.__lotBeacon) {
+        try {
+          const tt = (chunk instanceof Uint8Array)
+            ? new TextDecoder().decode(chunk.slice()) : String(chunk);
+          window.__lotTermTail = ((window.__lotTermTail || '') + tt).slice(-500);
+        } catch (_) {}
+      }
       term.write(chunk);
     },
   });
@@ -2825,6 +2834,33 @@ async function doBoat() {
   // ?name= labels this container (heartbeats / manager GUI).
   let lotName = (lotParams.get('name') || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32);
   if (!lotName) lotName = 'lot-' + Math.random().toString(36).slice(2, 6);
+
+  // ── Debug beacon (?beacon=<sid>) — lifecycle telemetry to /api/beacon for
+  // devices without an attachable console (iOS). 5 s "alive" heartbeats plus
+  // stage markers; the last event before silence shows where a reload killed
+  // the page.
+  const lotBeaconSid = (lotParams.get('beacon') || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 16);
+  const lotBeacon = (stage, extra) => {
+    if (!lotBeaconSid) return;
+    try {
+      fetch('/api/beacon', { method: 'POST', keepalive: true, body: JSON.stringify({
+        sid: lotBeaconSid, name: lotName, stage, t: Date.now(),
+        up: Math.round(performance.now() / 1000), ...(extra || {}) }) }).catch(() => {});
+    } catch (_) {}
+  };
+  window.__lotBeacon = lotBeacon;
+  if (lotBeaconSid) {
+    lotBeacon('page-start', { ua: navigator.userAgent.slice(0, 90) });
+    window.addEventListener('error', (e) => lotBeacon('js-error', {
+      msg: String(e.message || e).slice(0, 120), f: String(e.filename || '').slice(-40), l: e.lineno || 0 }));
+    window.addEventListener('unhandledrejection', (e) => lotBeacon('js-reject', {
+      msg: String(e.reason && e.reason.message || e.reason).slice(0, 140) }));
+    window.addEventListener('pagehide', () => lotBeacon('pagehide'));
+    document.addEventListener('visibilitychange', () => lotBeacon('vis-' + document.visibilityState));
+    setInterval(() => lotBeacon('alive', {
+      term: String(window.__lotTermTail || '').replace(/[\r\x00-\x1f]+/g, ' ').slice(-350),
+    }), 1000);
+  }
   // ?image= is either a package list ("redis" / "redis,python3" → the guest
   // apk-installs + autostarts via /etc/lot-services.conf) or "@name" — a
   // COMMITTED overlay image: boot = lean base + stored dirty-block overlay.
@@ -3096,6 +3132,7 @@ async function doBoat() {
       throw new Error('lean image: bad ext4 magic after reassembly');
     }
     window.__lotBaseSha = man.sha256;   // committed overlays bind to this
+    if (window.__lotBeacon) window.__lotBeacon('lean-ready', { mb: +(data.length / 1048576).toFixed(1) });
     term.write(`\r\n\x1b[32m[boot] lean rootfs: ${(data.length / 1048576).toFixed(1)} MB downloaded → ${(man.size / 1048576) | 0} MiB disk\x1b[0m\r\n`);
     // Committed overlay image (?image=@name): replay the stored dirty blocks
     // over the base. baseSha must match — an overlay from an older base would
@@ -3250,6 +3287,7 @@ async function doBoat() {
         const base = window.location.hostname === 'localhost'
           ? window.location.origin : 'https://linuxontab.com';
         console.log('[PKGDROP/blk]', rel, 'requested');
+        if (window.__lotBeacon) window.__lotBeacon('pkg-req', { rel });
         const resp = await fetch(base + '/packages/' + rel, { cache: 'no-store' });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const bytes = new Uint8Array(await resp.arrayBuffer());
@@ -3257,6 +3295,7 @@ async function doBoat() {
         pkgDropBytes.set(bytes, 8192);
         lotPkgRsp('LOTRSP ' + nonce + ' ok ' + bytes.length);
         console.log('[PKGDROP/blk]', rel, bytes.length, 'bytes ready');
+        if (window.__lotBeacon) window.__lotBeacon('pkg-ready', { rel, n: bytes.length });
       } catch (e) {
         lotPkgRsp('LOTRSP ' + nonce + ' err ' + String(e && e.message || e).slice(0, 100));
         console.log('[PKGDROP/blk] failed', rel, String(e));
@@ -3308,6 +3347,7 @@ async function doBoat() {
     };
   } catch (_) { /* no BroadcastChannel — heartbeats off */ }
 
+  if (window.__lotBeacon) window.__lotBeacon('machine-creating');
   machine = new Machine({
     devices: [consoleDev, entropyDev, blockDev, pkgDropDev, netDev],
     // Guest RAM. iOS Safari kills+reloads the tab under memory pressure
@@ -3317,7 +3357,7 @@ async function doBoat() {
     memoryMib: (() => {
       const p = +(lotParams.get('mem') || 0);
       if (p >= 256 && p <= 4096) return p;
-      return /iPhone|iPad|iPod/.test(navigator.userAgent) ? 640 : 2048;
+      return /iPhone|iPad|iPod/.test(navigator.userAgent) ? 384 : 2048;
     })(),
     cpus: 1,
     initcpio,
