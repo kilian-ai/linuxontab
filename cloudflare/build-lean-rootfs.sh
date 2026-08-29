@@ -144,7 +144,14 @@ case "$_CMDLINE" in
 *lot_svc=*)
 	_SVCS="${_CMDLINE##*lot_svc=}"
 	_SVCS="${_SVCS%% *}"
-	echo "$_SVCS" | tr ',' '\n' | while read -r _svc; do
+	# NB: iterate WITHOUT a pipeline — `echo | tr | while read` runs the loop
+	# body in a subshell, pushing apk (and its awk children) one fork level
+	# deeper, where the asyncify fork-chain hang lives. It worked on desktop
+	# by timing luck and reliably stalled installs on iOS.
+	_rest="$_SVCS,"
+	while [ -n "$_rest" ]; do
+		_svc="${_rest%%,*}"
+		_rest="${_rest#*,}"
 		[ -n "$_svc" ] || continue
 		echo "[lot] provisioning service: $_svc"
 		/usr/bin/apk add "$_svc" || continue
