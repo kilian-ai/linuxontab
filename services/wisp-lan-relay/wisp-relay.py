@@ -229,6 +229,54 @@ class Session:
                 pass
 
 
+# ── /lan/<room>: Ethernet-frame broadcast rooms (cross-machine tab LAN) ──────
+# Every member's binary WS messages (raw guest Ethernet frames) are relayed to
+# every OTHER member of the same room — a hub, exactly like the in-browser
+# BroadcastChannel bridge, but across machines. Rooms are just shared secrets:
+# pick an unguessable name.
+LAN_ROOMS = {}          # room -> list of member dicts {writer, lock}
+
+
+async def lan_session(reader, writer, peer, room):
+    me = {"writer": writer, "lock": asyncio.Lock()}
+    members = LAN_ROOMS.setdefault(room, [])
+    members.append(me)
+    print("[lan] %s joined room %r (%d members)" % (peer, room, len(members)), flush=True)
+    try:
+        while True:
+            msg = await ws_read_message(reader)
+            if msg is None:
+                break
+            opcode, payload = msg
+            if opcode == 0x8:          # close
+                break
+            if opcode not in (0x1, 0x2) or not payload:
+                continue
+            if len(payload) > 65536:   # bigger than any Ethernet frame — drop
+                continue
+            frame = ws_build(payload, 0x2)
+            for m in list(members):
+                if m is me:
+                    continue
+                try:
+                    async with m["lock"]:
+                        m["writer"].write(frame)
+                        await m["writer"].drain()
+                except Exception:
+                    if m in members: members.remove(m)
+                    try: m["writer"].close()
+                    except Exception: pass
+    except Exception:
+        pass
+    finally:
+        if me in members: members.remove(me)
+        if not members:
+            LAN_ROOMS.pop(room, None)
+        try: writer.close()
+        except Exception: pass
+        print("[lan] %s left room %r (%d members)" % (peer, room, len(members)), flush=True)
+
+
 async def handle(reader, writer):
     peer = writer.get_extra_info("peername")
     # Only accept the /wisp path (also serve a trivial /health for curl checks).
@@ -239,6 +287,14 @@ async def handle(reader, writer):
     if peek.startswith(b"GET /health"):
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nok\n")
         await writer.drain(); writer.close(); return
+    lan_room = None
+    if peek.startswith(b"GET /lan/"):
+        try:
+            lan_room = peek.split(b" ", 2)[1][len(b"/lan/"):].decode()[:64]
+        except Exception:
+            lan_room = None
+        if not lan_room:
+            writer.close(); return
     # Re-drive the handshake with the bytes we already peeked.
     class Prefixed:
         def __init__(self, first, r): self.buf = first; self.r = r
@@ -257,6 +313,9 @@ async def handle(reader, writer):
     pr = Prefixed(peek, reader)
     if not await ws_handshake(pr, writer):
         writer.close(); return
+    if lan_room is not None:
+        await lan_session(pr, writer, peer, lan_room)
+        return
     print("[wisp] client %s connected" % (peer,), flush=True)
     await Session(pr, writer, peer).run()
     print("[wisp] client %s gone" % (peer,), flush=True)

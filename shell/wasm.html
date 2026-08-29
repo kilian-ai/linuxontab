@@ -459,29 +459,67 @@ class WispSlirp {
   // identity with ?name=db&ip=192.168.86.101 (default ip .100).
   #lanId = Math.random().toString(36).slice(2);
   #lan = null;
+  #lanWs = null;          // cross-machine room (services/wisp-lan-relay /lan/<room>)
+  #lanWsUrl = null;
+  #lanAccept(frame) {
+    if (frame.length < 14) return;
+    const bcast = frame[0] === 0xff && frame[1] === 0xff && frame[2] === 0xff &&
+                  frame[3] === 0xff && frame[4] === 0xff && frame[5] === 0xff;
+    const g = this.#guestMac;
+    const mine = g && frame[0] === g[0] && frame[1] === g[1] && frame[2] === g[2] &&
+                      frame[3] === g[3] && frame[4] === g[4] && frame[5] === g[5];
+    if (!bcast && !mine) return;
+    if (window.__landbg) console.log('[LAN] rx', frame.length, bcast ? 'bcast' : 'unicast');
+    if (this.backend.receive) this.backend.receive(frame);
+  }
   #lanInit() {
-    try { this.#lan = new BroadcastChannel('lot-lan'); } catch (_) { return; }
-    this.#lan.onmessage = (ev) => {
-      const m = ev.data;
-      if (!m || m.from === this.#lanId || !m.frame) return;
-      const frame = new Uint8Array(m.frame);
-      if (frame.length < 14) return;
-      const bcast = frame[0] === 0xff && frame[1] === 0xff && frame[2] === 0xff &&
-                    frame[3] === 0xff && frame[4] === 0xff && frame[5] === 0xff;
-      const g = this.#guestMac;
-      const mine = g && frame[0] === g[0] && frame[1] === g[1] && frame[2] === g[2] &&
-                        frame[3] === g[3] && frame[4] === g[4] && frame[5] === g[5];
-      if (!bcast && !mine) return;
-      if (window.__landbg) console.log('[LAN] rx', frame.length, bcast ? 'bcast' : 'unicast');
-      if (this.backend.receive) this.backend.receive(frame);
-    };
+    const p = new URLSearchParams(location.search);
+    // Local hub (same browser). ?nolocal=1 disables it — useful to prove the
+    // cross-machine path on a single machine.
+    if (!p.has('nolocal')) {
+      try {
+        this.#lan = new BroadcastChannel('lot-lan');
+        this.#lan.onmessage = (ev) => {
+          const m = ev.data;
+          if (!m || m.from === this.#lanId || !m.frame) return;
+          this.#lanAccept(new Uint8Array(m.frame));
+        };
+      } catch (_) {}
+    }
+    // Cross-machine hub: ?net=<room> joins a frame-broadcast room on the LAN
+    // relay (default: same host as ?wisp= relay is NOT assumed — pass
+    // ?lanrelay=ws://host:4000 or default to the page host on :4000 in dev,
+    // wss://linuxontab-net.fly.dev in prod).
+    const room = (p.get('net') || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+    if (room) {
+      const base = p.get('lanrelay') ||
+        (location.hostname === 'localhost' ? 'ws://localhost:4000' : 'wss://linuxontab-net.fly.dev');
+      this.#lanWsUrl = base.replace(/\/$/, '') + '/lan/' + room;
+      this.#lanWsConnect();
+    }
+  }
+  #lanWsConnect() {
+    try {
+      const ws = new WebSocket(this.#lanWsUrl);
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => console.log('[LAN] room connected:', this.#lanWsUrl);
+      ws.onmessage = (ev) => {
+        if (ev.data instanceof ArrayBuffer) this.#lanAccept(new Uint8Array(ev.data));
+      };
+      ws.onclose = () => { this.#lanWs = null; setTimeout(() => this.#lanWsConnect(), 2000); };
+      ws.onerror = () => {};
+      this.#lanWs = ws;
+    } catch (_) { this.#lanWs = null; }
   }
   #lanPost(frame) {
-    if (!this.#lan) return;
-    // slice() so the posted buffer is a compact copy (structured clone).
-    const copy = frame.slice().buffer;
     if (window.__landbg) console.log('[LAN] tx', frame.length);
-    try { this.#lan.postMessage({ from: this.#lanId, frame: copy }); } catch (_) {}
+    if (this.#lan) {
+      // slice() so the posted buffer is a compact copy (structured clone).
+      try { this.#lan.postMessage({ from: this.#lanId, frame: frame.slice().buffer }); } catch (_) {}
+    }
+    if (this.#lanWs && this.#lanWs.readyState === WebSocket.OPEN) {
+      try { this.#lanWs.send(frame); } catch (_) {}
+    }
   }
 
   // Fires every 5 s. A healthy WISP link that has traffic in flight keeps
@@ -1020,16 +1058,46 @@ class WispSlirp {
     // fetches /packages/<rel> and fills the /dev/vdb buffer; the guest reads
     // it back with `head -c <size> /dev/vdb`. The HTTP response here is a tiny
     // JSON — small transfers are reliable.
+    //
+    // TIMING is the trap: lotfetch aborts any read that stalls 2 s
+    // (READ_TO_MS), and a big tarball takes far longer than that to fetch
+    // from the origin — a silent handler meant every request for a 45 MB
+    // package timed out at 0 KB, ten times, each retry firing ANOTHER full
+    // origin fetch. So: send the status line immediately, then drip filler
+    // header lines while the fetch runs — lotfetch's header loop has only
+    // per-read deadlines, so the connection stays alive for arbitrarily slow
+    // origins. The fetch itself is cached in a job map so aborted/retried
+    // requests reuse one download instead of stampeding.
     if (__v8path.startsWith('/_pkgdrop/')) {
       const rel = __v8path.slice('/_pkgdrop/'.length);
+      const enc = new TextEncoder();
+      try { await this.#tcpToGuest(conn, enc.encode('HTTP/1.0 200 OK\r\n')); } catch (_) {}
       let reply;
       try {
         if (!/^[A-Za-z0-9._+-]+$/.test(rel)) throw new Error('bad name');
-        const base = window.location.hostname === 'localhost'
-          ? window.location.origin : 'https://linuxontab.com';
-        const resp = await fetch(base + '/packages/' + rel, { cache: 'no-store' });
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const bytes = new Uint8Array(await resp.arrayBuffer());
+        const jobs = (window.__pkgDropJobs = window.__pkgDropJobs || new Map());
+        if (!jobs.has(rel)) {
+          // one cached tarball at a time — drop older jobs so a session that
+          // installs many packages doesn't pin hundreds of MB
+          for (const k of [...jobs.keys()]) if (k !== rel) jobs.delete(k);
+          const base = window.location.hostname === 'localhost'
+            ? window.location.origin : 'https://linuxontab.com';
+          jobs.set(rel, fetch(base + '/packages/' + rel, { cache: 'no-store' }).then(async (resp) => {
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            return new Uint8Array(await resp.arrayBuffer());
+          }));
+        }
+        // Wait for the fetch, dripping a keepalive header line every 800 ms.
+        let done = false, bytes = null, err = null;
+        jobs.get(rel).then((b) => { bytes = b; done = true; }, (e) => { err = e; done = true; });
+        while (!done) {
+          await new Promise((r) => setTimeout(r, 800));
+          if (done) break;
+          try { await this.#tcpToGuest(conn, enc.encode('X-Pkgdrop-Wait: fetching\r\n')); }
+          catch (_) { break; }               // guest gave up — job keeps running for the retry
+        }
+        if (err) { jobs.delete(rel); throw err; }
+        if (!bytes) throw new Error('fetch interrupted');
         const drop = window.__pkgDropBytes;
         if (!drop) throw new Error('drop disk not initialized');
         if (bytes.length > drop.length) throw new Error('too large for drop disk (' + bytes.length + ')');
@@ -1040,15 +1108,17 @@ class WispSlirp {
         reply = JSON.stringify({ ok: 0, error: String(e && e.message || e) });
         console.log('[PKGDROP] failed', rel, String(e));
       }
-      const body = new TextEncoder().encode(reply + '\n');
-      const hdr = new TextEncoder().encode(
-        'HTTP/1.0 200 OK\r\nContent-Length: ' + body.length +
+      const body = enc.encode(reply + '\n');
+      const hdr = enc.encode(
+        'Content-Length: ' + body.length +
         '\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n');
       const respBytes2 = new Uint8Array(hdr.length + body.length);
       respBytes2.set(hdr); respBytes2.set(body, hdr.length);
-      await this.#tcpToGuest(conn, respBytes2);
-      await new Promise(r => setTimeout(r, 50));
-      this.#tcpSendFin(conn);
+      try {
+        await this.#tcpToGuest(conn, respBytes2);
+        await new Promise(r => setTimeout(r, 50));
+        this.#tcpSendFin(conn);
+      } catch (_) {}
       this.#tcpConns.delete(conn.srcPort);
       return;
     }
@@ -2807,6 +2877,43 @@ async function doBoat() {
       tx.onerror = () => rej(tx.error);
     });
   };
+  // Push a committed image to the relay registry (R2 behind /api/images/…,
+  // token-gated). Token is remembered in localStorage['lot.pushToken'].
+  window.lotPush = async (name, token) => {
+    const rec = await lotImgGet(name);
+    if (!rec) return 'no local image "' + name + '" — lotCommit first';
+    token = token || localStorage.getItem('lot.pushToken') ||
+            prompt('push token (LOT_PUSH_TOKEN on the relay):') || '';
+    if (!token) return 'push needs a token';
+    localStorage.setItem('lot.pushToken', token);
+    const hdrs = { 'x-lot-token': token };
+    const meta = { name, baseSha: rec.baseSha, extents: rec.extents,
+                   created: rec.created, dataSize: rec.data.byteLength };
+    let r = await fetch('/api/images/' + name + '.json', {
+      method: 'PUT', headers: { ...hdrs, 'content-type': 'application/json' },
+      body: JSON.stringify(meta),
+    });
+    if (!r.ok) return 'push failed (meta): HTTP ' + r.status + ' ' + await r.text();
+    r = await fetch('/api/images/' + name + '.data', {
+      method: 'PUT', headers: hdrs, body: rec.data,
+    });
+    if (!r.ok) return 'push failed (data): HTTP ' + r.status + ' ' + await r.text();
+    return 'pushed "@' + name + '" (' + (rec.data.byteLength / 1048576).toFixed(1) + ' MB) to the relay';
+  };
+  // Pull an image from the relay registry into the local store.
+  const lotPull = async (name) => {
+    const mr = await fetch('/api/images/' + name + '.json', { cache: 'no-store' });
+    if (!mr.ok) return null;
+    const meta = await mr.json();
+    if (!meta || !meta.baseSha || !Array.isArray(meta.extents)) return null;
+    const dr = await fetch('/api/images/' + name + '.data', { cache: 'no-store' });
+    if (!dr.ok) return null;
+    const data = await dr.arrayBuffer();
+    const rec = { name, baseSha: meta.baseSha, extents: meta.extents,
+                  data, created: meta.created || Date.now() };
+    await lotImgPut(rec);
+    return rec;
+  };
 
   const slirp = new WispSlirp(wispUrl);
   const guestMac = crypto.getRandomValues(new Uint8Array(6));
@@ -2994,9 +3101,13 @@ async function doBoat() {
     // over the base. baseSha must match — an overlay from an older base would
     // splice inconsistent filesystem state.
     if (lotOverlayName) {
-      const ov = await lotImgGet(lotOverlayName);
+      let ov = await lotImgGet(lotOverlayName);
       if (!ov) {
-        term.write(`\x1b[33m[boot] image "@${lotOverlayName}" not found locally — booting plain base\x1b[0m\r\n`);
+        term.write(`\x1b[36m[boot] image "@${lotOverlayName}" not local — trying the relay…\x1b[0m\r\n`);
+        ov = await lotPull(lotOverlayName).catch(() => null);
+      }
+      if (!ov) {
+        term.write(`\x1b[33m[boot] image "@${lotOverlayName}" not found locally or on the relay — booting plain base\x1b[0m\r\n`);
       } else if (ov.baseSha !== man.sha256) {
         term.write(`\x1b[33m[boot] image "@${lotOverlayName}" was committed against a different base — booting plain base\x1b[0m\r\n`);
       } else {

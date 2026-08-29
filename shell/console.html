@@ -181,6 +181,35 @@ async function deleteImage(name) {
     tx.oncomplete = () => res();
   });
 }
+async function pushImage(im) {
+  let token = localStorage.getItem('lot.pushToken') ||
+              prompt('push token (LOT_PUSH_TOKEN on the relay):') || '';
+  if (!token) { msg('push needs a token'); return; }
+  localStorage.setItem('lot.pushToken', token);
+  const hdrs = { 'x-lot-token': token };
+  const meta = { name: im.name, baseSha: im.baseSha, extents: im.extents,
+                 created: im.created, dataSize: im.data.byteLength };
+  try {
+    let r = await fetch('/api/images/' + im.name + '.json', {
+      method: 'PUT', headers: { ...hdrs, 'content-type': 'application/json' },
+      body: JSON.stringify(meta) });
+    if (!r.ok) throw new Error('meta HTTP ' + r.status + ': ' + await r.text());
+    r = await fetch('/api/images/' + im.name + '.data', {
+      method: 'PUT', headers: hdrs, body: im.data });
+    if (!r.ok) throw new Error('data HTTP ' + r.status + ': ' + await r.text());
+    msg('pushed @' + im.name + ' (' + (im.data.byteLength / 1048576).toFixed(1) + ' MB)');
+  } catch (e) { msg('push failed: ' + e.message); }
+  renderImages();
+}
+let relayImages = [];
+async function refreshRelay() {
+  try {
+    const r = await fetch('/api/images', { cache: 'no-store' });
+    relayImages = r.ok ? await r.json() : [];
+  } catch (_) { relayImages = []; }
+}
+refreshRelay(); setInterval(refreshRelay, 15000);
+
 async function renderImages() {
   const tb = $('images'), sel = $('r-image');
   const committed = await committedImages().catch(() => []);
@@ -197,13 +226,23 @@ async function renderImages() {
                    `<td class="up">${(im.data.byteLength / 1048576).toFixed(1)} MB</td><td></td>`;
     const cell = tr.lastChild;
     const push = document.createElement('button');
-    push.textContent = 'push'; push.disabled = true; push.title = 'push to relay — coming with deploy';
+    push.textContent = 'push'; push.title = 'push to the relay registry';
+    push.onclick = () => pushImage(im);
     const del = document.createElement('button');
     del.textContent = 'delete'; del.className = 'danger';
     del.onclick = async () => { await deleteImage(im.name); renderImages(); };
     cell.append(push, ' ', del);
     tb.appendChild(tr);
     sel.append(new Option('@' + im.name, '@' + im.name));
+  }
+  const localNames = new Set(committed.map(i => i.name));
+  for (const ri of relayImages) {
+    if (localNames.has(ri.name)) continue;   // local copy wins the listing
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="name">@${ri.name}</td><td class="up">relay</td>` +
+                   `<td class="up">${(ri.size / 1048576).toFixed(1)} MB</td><td></td>`;
+    tb.appendChild(tr);
+    sel.append(new Option('@' + ri.name + ' (relay)', '@' + ri.name));
   }
 }
 renderImages();
