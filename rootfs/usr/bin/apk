@@ -43,10 +43,12 @@ _fetch_pkgdrop() {
     _n=""; read -r _n < /tmp/.lot-now 2>/dev/null; rm -f /tmp/.lot-now
     _n="$$-$_n"
     printf 'LOTREQ %s %s\n' "$_n" "$rel" > /tmp/.lot-req
-    if ! dd if=/tmp/.lot-req of=/dev/vdb bs=512 count=1 conv=sync,fsync 2>/dev/null; then
-        dd if=/tmp/.lot-req of=/dev/vdb bs=512 count=1 conv=sync 2>/dev/null || { rm -f /tmp/.lot-req; return 1; }
-        sync
-    fi
+    # conv=fsync pushes the request through the page cache to virtio. The
+    # fsync syscall then often SEGFAULTS dd — but only AFTER the flush (the
+    # asyncify write-crash class), so the request has already reached the
+    # page: ignore dd's exit code. Never fall back to a global `sync` — it
+    # can hang forever on writeback (lost-wakeup), which stalled installs.
+    dd if=/tmp/.lot-req of=/dev/vdb bs=512 count=1 conv=sync,fsync 2>/dev/null || true
     rm -f /tmp/.lot-req
     _size=""; _err=""
     # ~120 x 1 s poll budget (nested loops: no $(( )) arithmetic in wasm hush)
