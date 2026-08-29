@@ -1,13 +1,13 @@
 {
   "version": 1,
-  "generated": "2026-08-11",
+  "generated": "2026-08-26",
   "packages": {
     "busybox": {
       "version": "1.37.0",
       "description": "Swiss Army Knife of embedded Linux (WASM)",
       "url": "https://linuxontab.com/packages/busybox-1.37.0.tar.gz",
-      "size": 528142,
-      "sha256": "5b398b456f35419725da46fef6302ad4697f976c54b56be3589feeba319757ca",
+      "size": 526509,
+      "sha256": "fb549d5fe7c608ff937826e8a6bc484504d053bbc13ef02391c975cd07849c65",
       "bins": [
         "busybox"
       ],
@@ -30,8 +30,8 @@
       "version": "8.13.0",
       "description": "Command-line tool for transferring data with URLs (HTTP)",
       "url": "https://linuxontab.com/packages/curl-8.13.0.tar.gz",
-      "size": 1081267,
-      "sha256": "55229f2698c4547d4c79ae3d7368b42f85c11d628a7d26714d4f8c9da1cc9265",
+      "size": 1077904,
+      "sha256": "0f2e8e78b86c7e15900c4732ba2e4f63899923d86ed544fbbd2aad47dbd38588",
       "bins": [
         "curl"
       ],
@@ -42,8 +42,8 @@
       "version": "1.7.1",
       "description": "Lightweight command-line JSON processor",
       "url": "https://linuxontab.com/packages/jq-1.7.1.tar.gz",
-      "size": 792345,
-      "sha256": "d3a1a730b5d9fb6f13a1ad12ea0e6e04c78460d6db3a1b93a368bfe1d2e4d812",
+      "size": 789447,
+      "sha256": "9e9c540f5f37615ca78f8eb812e6054d860e876df36bae7639e48fe33ecf58ef",
       "bins": [
         "jq"
       ],
@@ -54,20 +54,20 @@
       "version": "8.3",
       "description": "Small and friendly text editor",
       "url": "https://linuxontab.com/packages/nano-8.3.tar.gz",
-      "size": 599339,
-      "sha256": "74b75fe601ecf2a8f2f2ec56bbd4ff6b1fd8dd4f5bd36e15a15777d2774b3aa0",
+      "size": 208725,
+      "sha256": "3ee1d7610b550a5030ad23735ebd0441ed814ec1b13e2351628b3f9e98066362",
       "bins": [
         "nano"
       ],
-      "status": "available",
-      "depends": []
+      "depends": [],
+      "status": "available"
     },
     "lua": {
       "version": "5.4.7",
       "description": "Lightweight embeddable scripting language",
       "url": "https://linuxontab.com/packages/lua-5.4.7.tar.gz",
-      "size": 428245,
-      "sha256": "85083867c2494dedb1422bc462a8b8c42e50dc480a7c19b48fecfd64ed3abfe5",
+      "size": 426522,
+      "sha256": "660c25b7fd077b24abb10afb85c30825098aaff3f83b37344563c1aaad9bb0e3",
       "bins": [
         "lua"
       ],
@@ -78,8 +78,8 @@
       "version": "20.0.0",
       "description": "JavaScript runtime (QuickJS 2026-05-21, ES2023) + npm package manager",
       "url": "https://linuxontab.com/packages/nodejs-20.0.0.tar.gz",
-      "size": 609156,
-      "sha256": "afa80d6ff5387758f59f55a367d5c56d268c0ad277d861102473ff34b4f9801a",
+      "size": 603294,
+      "sha256": "59825b5516c0888f987ea1d17661a637090d8fe9810e541fbfa92bcf06bc8b9a",
       "bins": [
         "nodejs"
       ],
@@ -90,8 +90,8 @@
       "version": "3.11.14",
       "description": "Python 3.11 interpreter (CPython, WASM)",
       "url": "https://linuxontab.com/packages/python3-3.11.14.tar.gz",
-      "size": 45916847,
-      "sha256": "384adea775d10170b02fafaabcb5d64adb549c589bcafc01000c3e8cf6b35e18",
+      "size": 44859980,
+      "sha256": "cc576acc89af7dac02150843afb04f9816aa3a2f236c0089b79975b39ccd8568",
       "bins": [
         "python3"
       ],
@@ -102,8 +102,8 @@
       "version": "2024.1",
       "description": "X.Org protocol and extension headers",
       "url": "https://linuxontab.com/packages/xorgproto-2024.1.tar.gz",
-      "size": 277195,
-      "sha256": "9d73fe50e7acb80a19d1f79a0ea76b45f5f48dbb2b71289f176bda57d5364dba",
+      "size": 264858,
+      "sha256": "a4b1ed4bbd2638636787826756d1c4faa31f33af25abe459d890b2f154605fbf",
       "bins": [
         "xorgproto"
       ],
@@ -114,8 +114,8 @@
       "version": "1.6.0",
       "description": "X transport interface headers",
       "url": "https://linuxontab.com/packages/xtrans-1.6.0.tar.gz",
-      "size": 3868,
-      "sha256": "1663777c5a34925046adec64e4fb3a94eb2bc15640ee6353c0b68f1b8d65abce",
+      "size": 3547,
+      "sha256": "375b3e8d43366e4d4d1242690e7aa4c1d698f967f4706d39c57a98b7c312fe98",
       "bins": [
         "xtrans"
       ],
@@ -126,8 +126,8 @@
       "version": "1.0.12",
       "description": "X authorization file management library",
       "url": "https://linuxontab.com/packages/libXau-1.0.12.tar.gz",
-      "size": 10098,
-      "sha256": "1abb8fd5040341c908ff312299a2fed0b2ec682ad8cead7f1fbc1a0c787b1441",
+      "size": 9151,
+      "sha256": "57a9b966d3147a2a939fa99600bb11ce6b1c14056a8dcacd6bffde18ab45bd88",
       "bins": [
         "libXau"
       ],
@@ -138,8 +138,8 @@
       "version": "1.1.5",
       "description": "X Display Manager Control Protocol library",
       "url": "https://linuxontab.com/packages/libXdmcp-1.1.5.tar.gz",
-      "size": 52783,
-      "sha256": "78faef469518aac8e752140781a349b6c31dcfa06bd2052eb9ca4fcaab722e77",
+      "size": 51546,
+      "sha256": "46b465af4c1f05338f8ce56ad13283ec9aea1d7e1f1da202fc7a1d766c54cff6",
       "bins": [
         "libXdmcp"
       ],
@@ -150,8 +150,8 @@
       "version": "1.17.0",
       "description": "X C Binding library",
       "url": "https://linuxontab.com/packages/libxcb-1.17.0.tar.gz",
-      "size": 812055,
-      "sha256": "5f314b9363e467c1f39965b88a8f2b4a0ef9e3fecdeb962e191d056f5118676a",
+      "size": 693701,
+      "sha256": "37bc47050f9d9239daaebe444244c25d5b8747bc6e4bb0a3ae23525d2148b5fb",
       "bins": [
         "libxcb"
       ],
@@ -162,8 +162,8 @@
       "version": "1.8.10",
       "description": "Core X11 client-side library",
       "url": "https://linuxontab.com/packages/libX11-1.8.10.tar.gz",
-      "size": 1877857,
-      "sha256": "bd2368c5ba84616923dad1150cd5effc7245d0b9f58fc362371da5feea10f3a6",
+      "size": 1782047,
+      "sha256": "f5abe39da1b289cb23fa435dd1c4c0252cbd43f604a2bc7648a5940046866b28",
       "bins": [
         "libX11"
       ],
@@ -174,8 +174,8 @@
       "version": "1.3.6",
       "description": "X11 miscellaneous extension library",
       "url": "https://linuxontab.com/packages/libXext-1.3.6.tar.gz",
-      "size": 130654,
-      "sha256": "f05e61aee896603fe3290a25a5d981dbda55cd4a86ce179a681f936bcf68ba91",
+      "size": 124902,
+      "sha256": "72991e1e939a5dca4444c0a26d231729c070dd802c6115e1afbfbbad8e9d5a02",
       "bins": [
         "libXext"
       ],
@@ -186,8 +186,8 @@
       "version": "1.1.2",
       "description": "Inter-Client Exchange library",
       "url": "https://linuxontab.com/packages/libICE-1.1.2.tar.gz",
-      "size": 173076,
-      "sha256": "b00fcf333e640ccd3ce39e80d211bd58341c87f40e496e5b23e01ecdb8fb1ccf",
+      "size": 171408,
+      "sha256": "569a11e7b35260c14e991ab01f6ef1a614069bba2469c21c3eca5dd5f357e8b2",
       "bins": [
         "libICE"
       ],
@@ -198,8 +198,8 @@
       "version": "1.2.5",
       "description": "X Session Management library",
       "url": "https://linuxontab.com/packages/libSM-1.2.5.tar.gz",
-      "size": 83856,
-      "sha256": "4457d2cba021eec38be8f424c176ad9b7a16c62161c4a5eaee78f4264e4310ab",
+      "size": 82358,
+      "sha256": "f25716ad7f9940cd4ea8b1e14d9a328661554d79d6cf3b9853ec03a40b4881d8",
       "bins": [
         "libSM"
       ],
@@ -210,8 +210,8 @@
       "version": "1.3.1",
       "description": "X Toolkit Intrinsics",
       "url": "https://linuxontab.com/packages/libXt-1.3.1.tar.gz",
-      "size": 790692,
-      "sha256": "cbd7a2a022bba0ca9c19cf52cc15f6960083827bb3f7fb44ceaafbc265cf89ff",
+      "size": 770851,
+      "sha256": "79b6f73eaade4dd7769152d8f24ea3065dbfa8ca58fa106f50a4832a128a5bff",
       "bins": [
         "libXt"
       ],
@@ -222,8 +222,8 @@
       "version": "1.2.1",
       "description": "X miscellaneous utilities library",
       "url": "https://linuxontab.com/packages/libXmu-1.2.1.tar.gz",
-      "size": 156329,
-      "sha256": "9090c825913023bea3826e78376a06b4013f88dd541aa093935700b30ec6549d",
+      "size": 154041,
+      "sha256": "c22f71871c1c87acd101b23fffae435da81ed44ab90457bb3216fa72bb8bf542",
       "bins": [
         "libXmu"
       ],
@@ -234,8 +234,8 @@
       "version": "0.9.12",
       "description": "X Rendering Extension client library",
       "url": "https://linuxontab.com/packages/libXrender-0.9.12.tar.gz",
-      "size": 55555,
-      "sha256": "127e534c4735aff453477ba21ec5b34ddbc97ff95817c9be45779e424acbf6f9",
+      "size": 54688,
+      "sha256": "d9a0578999994dcc9325bed3b59e3ce07f2023f007b70f194e57f119fb3795f0",
       "bins": [
         "libXrender"
       ],
@@ -246,8 +246,8 @@
       "version": "6.0.1",
       "description": "X Fixes extension client library",
       "url": "https://linuxontab.com/packages/libXfixes-6.0.1.tar.gz",
-      "size": 21240,
-      "sha256": "f39f8775a8d93f0ea114fcd54581241c27013b4bbfcd4cb40bfabbc40171d156",
+      "size": 20377,
+      "sha256": "5ad8fc989e2d9ba8e70d0350a74ab7e11a8e0a6dd4535bc84b3c2311fc50c7d0",
       "bins": [
         "libXfixes"
       ],
@@ -258,8 +258,8 @@
       "version": "1.8.2",
       "description": "X Input Extension client library",
       "url": "https://linuxontab.com/packages/libXi-1.8.2.tar.gz",
-      "size": 198443,
-      "sha256": "a3995057926de593231ed11c52682fd60ba6faec28777e05a5745d7c130a43ea",
+      "size": 192600,
+      "sha256": "abc57ab4c06e73fe45fa3b0c3892fe80563f87755fb61c6b215d6aed8170c966",
       "bins": [
         "libXi"
       ],
@@ -270,8 +270,8 @@
       "version": "1.3.0",
       "description": "X11 eye-follow demo",
       "url": "https://linuxontab.com/packages/xeyes-1.3.0.tar.gz",
-      "size": 379928,
-      "sha256": "eb5d283c1f23d1a988bda0cb561a5fefa01ef636dff77d1bbf31a7a3dac862a7",
+      "size": 376323,
+      "sha256": "190a3a6b477ceca223d965c91cb82285bd57f9b6d0d204b8123188a1a5b6f64a",
       "bins": [
         "xeyes"
       ],
@@ -285,8 +285,8 @@
       "version": "0.42.2",
       "description": "Pixel manipulation library",
       "url": "https://linuxontab.com/packages/pixman-0.42.2.tar.gz",
-      "size": 143834,
-      "sha256": "a29ddb6dd9c01f6dac6396a7136e603cf853f3a777146ebd74276607bfe5c056",
+      "size": 142505,
+      "sha256": "8e8da30fe1c7a06b58ec56269dd9a6c9fae339ad1713250bfaaeed9e00ae7328",
       "bins": [
         "pixman"
       ],
@@ -297,8 +297,8 @@
       "version": "1.3.2",
       "description": "Compression library",
       "url": "https://linuxontab.com/packages/zlib-1.3.2.tar.gz",
-      "size": 74906,
-      "sha256": "6c59e569b40c6cae9ccb8882db5d67fc5e25cd3206335e6ac641603280c2c991",
+      "size": 74176,
+      "sha256": "a8bf24e99c29a339d1e166f784f75fd93b8d3aa276331a2f4e2d2a038eb0990c",
       "bins": [
         "zlib"
       ],
@@ -309,8 +309,8 @@
       "version": "1.1.8",
       "description": "Font encoding library",
       "url": "https://linuxontab.com/packages/fontenc-1.1.8.tar.gz",
-      "size": 14439,
-      "sha256": "6f8f20f0d4d9a11159934a2f2a68a67cec4870a3278e1927222e32a5a64e2caa",
+      "size": 13824,
+      "sha256": "e4d0ec654cb558b1465fc7832f62a98f256e4688c7db7f8b21962c6ee3eea123",
       "bins": [
         "fontenc"
       ],
@@ -321,8 +321,8 @@
       "version": "2.13.3",
       "description": "Font rasterization library",
       "url": "https://linuxontab.com/packages/freetype-2.13.3.tar.gz",
-      "size": 542753,
-      "sha256": "88635b90bfba1ecdfb5aa52ee5317585498ffe7da1b00619ec49d9cabc165b93",
+      "size": 535796,
+      "sha256": "752ca40dacc49ce6c0c09e49a69c7e65a0623c8603f775722a0461ce9a576efa",
       "bins": [
         "freetype"
       ],
@@ -333,8 +333,8 @@
       "version": "2.0.7",
       "description": "X font library",
       "url": "https://linuxontab.com/packages/libXfont2-2.0.7.tar.gz",
-      "size": 118819,
-      "sha256": "bc68a6bf0acaee4fed3128204ab45f881812c420f85f9ac23ee6937925f0ce18",
+      "size": 117851,
+      "sha256": "cf343f32d7d251c2bca6dc34fa10ee63fcd81c703e9e840b3c1f7731403575fc",
       "bins": [
         "libXfont2"
       ],
@@ -345,8 +345,8 @@
       "version": "1.1.3",
       "description": "XKB file parsing library",
       "url": "https://linuxontab.com/packages/xkbfile-1.1.3.tar.gz",
-      "size": 84460,
-      "sha256": "ed501c70d269b259d73cdfb09359dbc81293949c2445b0ec5ddbd97a178ae47f",
+      "size": 83504,
+      "sha256": "8c31601318b9d2cdfa2a3fb958c14c9384b8bfde3e2dbf470abd5e3637de228a",
       "bins": [
         "xkbfile"
       ],
@@ -357,8 +357,8 @@
       "version": "21.1.13",
       "description": "Virtual framebuffer X server",
       "url": "https://linuxontab.com/packages/xvfb-21.1.13.tar.gz",
-      "size": 1180377,
-      "sha256": "9c4a802be5ffb297022510010b677e5562053ab7c26d8ca3f6cb6e929d6b7c48",
+      "size": 1173810,
+      "sha256": "306fefe7169a3f9ae5f8cb89a6d14468b567e4d9ca400f708164e42463114f55",
       "bins": [
         "xvfb"
       ],
@@ -369,8 +369,8 @@
       "version": "1.1.6",
       "description": "X Damage extension client library",
       "url": "https://linuxontab.com/packages/libXdamage-1.1.6.tar.gz",
-      "size": 8280,
-      "sha256": "4b4716ef603d1e2448aa3ae35266f69889edaa99d67c37c9179ca8a5617ba5ab",
+      "size": 7737,
+      "sha256": "1d87189d3c75d3b855a352016bc23141209ca9b9d0556c1976190cc74a1d1336",
       "bins": [
         "libXdamage"
       ],
@@ -393,8 +393,8 @@
       "version": "1.2.4",
       "description": "X Test extension client library",
       "url": "https://linuxontab.com/packages/libXtst-1.2.4.tar.gz",
-      "size": 43959,
-      "sha256": "95b7c9fb1f96d298355d06eabb0e8691b74a4e637bcf5ae8d1b56c8ad5e928ab",
+      "size": 42308,
+      "sha256": "36d7b92a73d9afec2b7a6d973e7d35147871d74381103c354780ed6a80bcc8fa",
       "bins": [
         "libXtst"
       ],
@@ -405,8 +405,8 @@
       "version": "1.0.0",
       "description": "Minimal X11-to-VNC bridge (RAW RFB 3.8)",
       "url": "https://linuxontab.com/packages/x11vnc-1.0.0.tar.gz",
-      "size": 88625,
-      "sha256": "0d804cb814945b4af0a8f45905cb957ff3932fa9b3ff13287a26736d17e7a0fd",
+      "size": 87692,
+      "sha256": "a312c9b3de71fc0e6d74398ae5564e9ade67011e2402ffd69062b5c13778e799",
       "bins": [
         "x11vnc"
       ],
@@ -455,8 +455,8 @@
       "version": "1.8.1",
       "description": "libgit2 static library",
       "url": "https://linuxontab.com/packages/libgit2-1.8.1.tar.gz",
-      "size": 868763,
-      "sha256": "8cc9a3a05063d79bbaa19fb5ffa825e73904b67ba33f7f4c92e9e4ab64c2def3",
+      "size": 858992,
+      "sha256": "caa42d34c775b8c66a733f251c6043c2c3909b8d06cdf6435a716c243ccd0d81",
       "bins": [
         "libgit2"
       ],
@@ -491,8 +491,8 @@
       "version": "0.1.0",
       "description": "Minimal libcrypto compatibility shim (MD5/SHA APIs)",
       "url": "https://linuxontab.com/packages/openssl-0.1.0.tar.gz",
-      "size": 3395,
-      "sha256": "15732fc8919f52ae88774c220bbacd8b3d4904f1d2f80b25fba9040149c3a270",
+      "size": 2843,
+      "sha256": "40530000a0edd5895ad0623387800478efd4db8535ab3e088ed80f1441db6a75",
       "bins": [
         "openssl"
       ],
@@ -539,8 +539,8 @@
       "version": "0.5.0",
       "description": "WebAssembly interpreter with WASI support \u2014 run wasip1 binaries",
       "url": "https://linuxontab.com/packages/wasm3-0.5.0.tar.gz",
-      "size": 71691,
-      "sha256": "6458b956ceb4e93a14cdcbe23bc0ffbdeb16f25f6761cc6806d44059cd0117e6",
+      "size": 71166,
+      "sha256": "e181a9858790bee1d1a10cc5961e365f28417ca1ddbdd7448b12639f049bc00a",
       "bins": [
         "wasm3"
       ],
@@ -551,8 +551,8 @@
       "version": "1.27.12",
       "description": "Syncthing file synchronization daemon (wasip1, run via wasm3)",
       "url": "https://linuxontab.com/packages/syncthing-1.27.12.tar.gz",
-      "size": 9633661,
-      "sha256": "5608f2519f4be973344972311374e67d77e7c35d402308013d0738797b8b5de3",
+      "size": 9470902,
+      "sha256": "714ba54eebfba7d67a121d48ae3090ce90f5f054b1b54192b2062852e97365fd",
       "bins": [
         "syncthing.wasm"
       ],
@@ -563,8 +563,8 @@
       "version": "4.8.33",
       "description": "GNU Midnight Commander \u2014 visual file manager",
       "url": "https://linuxontab.com/packages/mc-4.8.33.tar.gz",
-      "size": 1217921,
-      "sha256": "1303fff7d218d119eadbbd8fc7fb648f33b942bb64caa1036f3f4a1cd8380351",
+      "size": 1192196,
+      "sha256": "f9ee053b51fe81bd1e58fe1830db26740096e673d3b984a52548e9d5d7714ca7",
       "bins": [
         "mc"
       ],
@@ -575,8 +575,8 @@
       "version": "1.0",
       "description": "Tiny two-pane file manager (ANSI/termios, no ncurses)",
       "url": "https://linuxontab.com/packages/lotfm-1.0.tar.gz",
-      "size": 66327,
-      "sha256": "a86f83df51c835aaceee1057286b3ff0ebb46dc51e8cbc489fbde3b94b0db497",
+      "size": 66014,
+      "sha256": "514eeb712c4fe5f2e6bfdd99e20b4de28b36c5be66a30046b79412eb9a4dac77",
       "bins": [
         "lotfm"
       ],
@@ -587,8 +587,8 @@
       "version": "3.5a",
       "description": "Terminal multiplexer",
       "url": "https://linuxontab.com/packages/tmux-3.5a.tar.gz",
-      "size": 549315,
-      "sha256": "22481b60ab4dda4bc7536944151afb0b0928828d0568ec03bdc4327ebed8326b",
+      "size": 544582,
+      "sha256": "edd5d271abb7326c5cbf9b5a853b262c597df069b04e1f1695eb0d1915897b61",
       "bins": [
         "tmux"
       ],
@@ -599,8 +599,8 @@
       "version": "3.5.17",
       "description": "X pixmap library",
       "url": "https://linuxontab.com/packages/libXpm-3.5.17.tar.gz",
-      "size": 88396,
-      "sha256": "97482dd64102e7261e49521e3cdcbeaf6f8c8b81a86fad6dabcca9508b48925b",
+      "size": 87742,
+      "sha256": "dd159a5a3d0710096ff4aeed112ee302f59119f8aa99c45418e9b95a527695c3",
       "bins": [
         "libXpm"
       ],
@@ -611,8 +611,8 @@
       "version": "379",
       "description": "X terminal emulator",
       "url": "https://linuxontab.com/packages/xterm-379.tar.gz",
-      "size": 762079,
-      "sha256": "74db249a8e6b323e871220cbeee3fb4878b2608e0dec4407f4f43de7bff253e6",
+      "size": 753808,
+      "sha256": "855bce0fda1de636ef2521613a6dbee626537e4cbc8e46b3f5132801415e1298",
       "bins": [
         "xterm"
       ],
@@ -627,8 +627,8 @@
       "version": "7.2.5",
       "description": "Redis key/value database server + CLI",
       "url": "https://linuxontab.com/packages/redis-7.2.5.tar.gz",
-      "size": 2150271,
-      "sha256": "410ff1ee7de883bbaf1eae301bccbe112f22b31ad05e3efb5ce8bd45cf001d61",
+      "size": 2126793,
+      "sha256": "e2dc2d59e20e7d971d1bac29842254693e4733d86bf0ac011280fb53f8ad5653",
       "bins": [
         "redis-server",
         "redis-cli"
