@@ -29,23 +29,50 @@ _dl() {
     fi
 }
 
-# Fast path: ask the page to load the tarball into the package drop disk
-# (/dev/vdb, virtio-blk — immune to the guest TCP bulk-RX wedge), then read
-# it back block-side. The HTTP exchange here is a tiny JSON only.
+# Fast path: package bytes via the drop disk (/dev/vdb) with a BLOCK-CHANNEL
+# control exchange — no TCP anywhere (even the tiny HTTP control request
+# wedged on iOS). Protocol: write "LOTREQ <nonce> <file>" into block 0
+# (page's write-callback sees it, fetches, writes data at offset 8192 and
+# "LOTRSP <nonce> ok <size>" into block 1), then poll block 1.
+# NB: dd conv=fsync pushes the request through the page cache to virtio;
+# drop_caches before each poll/data read or we re-read stale cached blocks.
 _fetch_pkgdrop() {
-    local rel="$1" out="$2" _resp _size
-    [ -x /usr/bin/lotfetch ] || return 1
+    local rel="$1" out="$2" _n _size _l _a _b _err
     [ -b /dev/vdb ] || return 1
-    _resp="/tmp/apk-drop-$$.json"
-    /usr/bin/lotfetch "http://192.168.86.1/_pkgdrop/$rel" "$_resp" 2>/dev/null || { rm -f "$_resp"; return 1; }
-    grep -q '"ok": *1' "$_resp" 2>/dev/null || { rm -f "$_resp"; return 1; }
-    awk -F'"size": *' '{ if (NF>1) { v=$2; sub(/[^0-9].*/,"",v); print v; exit } }' \
-        "$_resp" > "$_resp.size" 2>/dev/null
-    _size=""
-    read -r _size < "$_resp.size" 2>/dev/null || _size=""
-    rm -f "$_resp" "$_resp.size"
+    date +%s > /tmp/.lot-now 2>/dev/null
+    _n=""; read -r _n < /tmp/.lot-now 2>/dev/null; rm -f /tmp/.lot-now
+    _n="$$-$_n"
+    printf 'LOTREQ %s %s\n' "$_n" "$rel" > /tmp/.lot-req
+    if ! dd if=/tmp/.lot-req of=/dev/vdb bs=512 count=1 conv=sync,fsync 2>/dev/null; then
+        dd if=/tmp/.lot-req of=/dev/vdb bs=512 count=1 conv=sync 2>/dev/null || { rm -f /tmp/.lot-req; return 1; }
+        sync
+    fi
+    rm -f /tmp/.lot-req
+    _size=""; _err=""
+    # ~120 x 1 s poll budget (nested loops: no $(( )) arithmetic in wasm hush)
+    for _a in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        for _b in 1 2 3 4 5 6 7 8 9 10; do
+            echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+            dd if=/dev/vdb bs=512 skip=1 count=1 2>/dev/null > /tmp/.lot-rsp
+            _l=""; read -r _l < /tmp/.lot-rsp 2>/dev/null
+            if grep -q "^LOTRSP $_n ok " /tmp/.lot-rsp 2>/dev/null; then
+                _size="${_l##* }"
+                break
+            fi
+            if grep -q "^LOTRSP $_n err" /tmp/.lot-rsp 2>/dev/null; then
+                _err=1
+                break
+            fi
+            sleep 1
+        done
+        [ -n "$_size" ] && break
+        [ -n "$_err" ] && break
+    done
+    rm -f /tmp/.lot-rsp
+    [ -n "$_err" ] && return 1
     [ -n "$_size" ] && [ "$_size" -gt 0 ] 2>/dev/null || return 1
-    head -c "$_size" /dev/vdb > "$out" 2>/dev/null || return 1
+    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+    tail -c +8193 /dev/vdb | head -c "$_size" > "$out" 2>/dev/null || return 1
     [ -s "$out" ] || return 1
     return 0
 }

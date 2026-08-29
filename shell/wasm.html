@@ -3227,10 +3227,50 @@ async function doBoat() {
   // Single-buffer: installs are serial (apk holds the flow), so no locking.
   window.__pkgDropBytes = window.__pkgDropBytes || new Uint8Array(64 * 1024 * 1024);
   const pkgDropBytes = window.__pkgDropBytes;
+  // Block-channel package requests — NO TCP anywhere in the install path.
+  // The guest writes "LOTREQ <nonce> <file>\n" into block 0 of /dev/vdb; this
+  // write-callback sees it, fetches /packages/<file>, writes the tarball at
+  // offset 8192 and "LOTRSP <nonce> ok <size>\n" (or "... err <msg>") into
+  // block 1, which the guest polls by re-reading. Even the tiny HTTP control
+  // exchange wedged on iOS (guest-TCP lost-wakeup is worse under iOS timer
+  // throttling); virtio-blk is reliable on every platform.
+  let lotPkgLastNonce = '';
+  const lotPkgRsp = (text) => {
+    pkgDropBytes.fill(0, 512, 1024);
+    pkgDropBytes.set(new TextEncoder().encode(text + '\n'), 512);
+  };
+  const lotPkgReq = () => {
+    const hdr = new TextDecoder().decode(pkgDropBytes.subarray(0, 512));
+    const m = /^LOTREQ (\S{1,32}) ([A-Za-z0-9._+-]{1,80})\n/.exec(hdr);
+    if (!m || m[1] === lotPkgLastNonce) return;
+    const nonce = m[1], rel = m[2];
+    lotPkgLastNonce = nonce;
+    (async () => {
+      try {
+        const base = window.location.hostname === 'localhost'
+          ? window.location.origin : 'https://linuxontab.com';
+        console.log('[PKGDROP/blk]', rel, 'requested');
+        const resp = await fetch(base + '/packages/' + rel, { cache: 'no-store' });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const bytes = new Uint8Array(await resp.arrayBuffer());
+        if (8192 + bytes.length > pkgDropBytes.length) throw new Error('too large');
+        pkgDropBytes.set(bytes, 8192);
+        lotPkgRsp('LOTRSP ' + nonce + ' ok ' + bytes.length);
+        console.log('[PKGDROP/blk]', rel, bytes.length, 'bytes ready');
+      } catch (e) {
+        lotPkgRsp('LOTRSP ' + nonce + ' err ' + String(e && e.message || e).slice(0, 100));
+        console.log('[PKGDROP/blk] failed', rel, String(e));
+      }
+    })();
+  };
   const pkgDropDev = new BlockDevice({
     capacity: pkgDropBytes.byteLength,
     read: (offset, length) => Promise.resolve(pkgDropBytes.slice(offset, offset + length)),
-    write: (offset, data) => { pkgDropBytes.set(data, offset); return Promise.resolve(data.byteLength); },
+    write: (offset, data) => {
+      pkgDropBytes.set(data, offset);
+      if (offset === 0) lotPkgReq();
+      return Promise.resolve(data.byteLength);
+    },
     flush: () => Promise.resolve(),
   });
 
