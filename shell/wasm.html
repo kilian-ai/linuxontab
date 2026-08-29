@@ -3310,7 +3310,15 @@ async function doBoat() {
 
   machine = new Machine({
     devices: [consoleDev, entropyDev, blockDev, pkgDropDev, netDev],
-    memoryMib: 2048,
+    // Guest RAM. iOS Safari kills+reloads the tab under memory pressure
+    // (jetsam) — a guest that thinks it has 2 GB grows its page cache into
+    // real committed memory during installs and blows the phone's tab budget.
+    // Default small on iPhone/iPad; override with ?mem=<MiB> anywhere.
+    memoryMib: (() => {
+      const p = +(lotParams.get('mem') || 0);
+      if (p >= 256 && p <= 4096) return p;
+      return /iPhone|iPad|iPod/.test(navigator.userAgent) ? 640 : 2048;
+    })(),
     cpus: 1,
     initcpio,
     // Static IP: 192.168.86.100/24, gw 192.168.86.1, DNS 192.168.86.1
