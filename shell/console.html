@@ -343,9 +343,9 @@ function launch(name, ip, image, extraHosts) {
   if (image) q.set('image', image);
   const h = hostsParam(extraHosts);
   if (h) q.set('hosts', h);
-  // Named target: re-running the same container name reuses its tab instead
-  // of piling up duplicates.
-  const w = window.open('wasm.html?' + q.toString(), 'lot-' + name);
+  // Always a genuinely new tab — a named target would silently reuse and
+  // navigate an existing tab of the same name instead of opening one.
+  const w = window.open('wasm.html?' + q.toString(), '_blank');
   if (!w) { msg('popup blocked — allow popups for this site, then hit Run again'); return null; }
   owned.set(name, w);
   return w;
