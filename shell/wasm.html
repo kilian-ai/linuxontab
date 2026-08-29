@@ -493,7 +493,7 @@ class WispSlirp {
     const room = (p.get('net') || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
     if (room) {
       const base = p.get('lanrelay') ||
-        (location.hostname === 'localhost' ? 'ws://localhost:4000' : 'wss://linuxontab-net.fly.dev');
+        (location.hostname === 'localhost' ? 'ws://localhost:4000' : 'wss://linuxontab-lan.fly.dev');
       this.#lanWsUrl = base.replace(/\/$/, '') + '/lan/' + room;
       this.#lanWsConnect();
     }
