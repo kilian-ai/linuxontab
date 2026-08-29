@@ -1,0 +1,19 @@
+# LAN-room + WISP relay for LinuxOnTab tabs-as-containers.
+#   flyctl auth login
+#   flyctl launch --copy-config --no-deploy   # first time (creates the app)
+#   flyctl deploy
+# Then boot tabs with ?net=<room>&lanrelay=wss://linuxontab-lan.fly.dev
+app = "linuxontab-lan"
+primary_region = "fra"
+
+[build]
+
+[http_service]
+  internal_port = 4000
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
