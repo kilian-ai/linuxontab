@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LinuxOnTab Console</title>
+<style>
+  :root {
+    --bg: #0b0d10; --panel: #12161c; --line: #232b36; --fg: #d6dde6;
+    --dim: #7c8794; --acc: #4fc08d; --warn: #e0b050; --err: #e06c75;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--fg);
+         font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+         padding: 24px; max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  h1 .dot { color: var(--acc); }
+  .sub { color: var(--dim); margin-bottom: 24px; font-size: 12px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--dim); margin: 26px 0 10px; }
+  .panel { background: var(--panel); border: 1px solid var(--line);
+           border-radius: 8px; padding: 14px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--dim); font-weight: normal; font-size: 12px;
+       padding: 4px 10px; border-bottom: 1px solid var(--line); }
+  td { padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  tr:last-child td { border-bottom: none; }
+  .name { color: var(--acc); }
+  .stale .name { color: var(--warn); }
+  .empty { color: var(--dim); padding: 8px 10px; }
+  button { background: #1b222b; color: var(--fg); border: 1px solid var(--line);
+           border-radius: 5px; padding: 4px 12px; font: inherit; font-size: 12px;
+           cursor: pointer; }
+  button:hover { border-color: var(--acc); color: var(--acc); }
+  button.danger:hover { border-color: var(--err); color: var(--err); }
+  button[disabled] { opacity: .4; cursor: default; }
+  button[disabled]:hover { border-color: var(--line); color: var(--fg); }
+  input, select, textarea { background: #0e1216; color: var(--fg);
+           border: 1px solid var(--line); border-radius: 5px; padding: 5px 8px;
+           font: inherit; font-size: 13px; }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--acc); }
+  .runform { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .runform label { color: var(--dim); font-size: 12px; }
+  textarea { width: 100%; height: 150px; resize: vertical; }
+  .stackbar { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+  #msg { color: var(--warn); font-size: 12px; margin-top: 10px; min-height: 1em; }
+  .up { color: var(--dim); font-size: 12px; }
+  .badge { font-size: 11px; color: var(--dim); border: 1px solid var(--line);
+           border-radius: 4px; padding: 1px 6px; }
+</style>
+</head>
+<body>
+  <h1>LinuxOnTab <span class="dot">●</span> Console</h1>
+  <div class="sub">tabs are containers — every row below is a Linux kernel in a browser tab, networked over the in-browser LAN</div>
+
+  <h2>Containers</h2>
+  <div class="panel">
+    <table>
+      <thead><tr><th>name</th><th>ip</th><th>image</th><th>uptime</th><th></th></tr></thead>
+      <tbody id="containers"><tr><td colspan="5" class="empty">none running — start one below</td></tr></tbody>
+    </table>
+  </div>
+
+  <h2>Run a container</h2>
+  <div class="panel">
+    <div class="runform">
+      <label>name <input id="r-name" size="10" placeholder="db"></label>
+      <label>ip <input id="r-ip" size="14" placeholder="auto"></label>
+      <label>image <select id="r-image"></select></label>
+      <button id="r-go">Run ▸</button>
+    </div>
+  </div>
+
+  <h2>Images</h2>
+  <div class="panel">
+    <table>
+      <thead><tr><th>image</th><th>kind</th><th>size</th><th></th></tr></thead>
+      <tbody id="images"></tbody>
+    </table>
+  </div>
+
+  <h2>Stack <span class="badge">compose-style</span></h2>
+  <div class="panel">
+    <textarea id="stack" spellcheck="false">{
+  "services": {
+    "db":  { "image": "redis",  "ip": "192.168.86.101" },
+    "app": { "image": "lean",   "ip": "192.168.86.102" }
+  }
+}</textarea>
+    <div class="stackbar">
+      <button id="s-deploy">Deploy stack ▸</button>
+      <button id="s-stop" class="danger">Stop all</button>
+      <span class="up">every service gets /etc/hosts entries for all its peers</span>
+    </div>
+  </div>
+
+  <div id="msg"></div>
+
+<script>
+'use strict';
+const $ = (id) => document.getElementById(id);
+const msg = (t) => { $('msg').textContent = t; };
+
+// ── Live containers from heartbeats ─────────────────────────────────────────
+const mgmt = new BroadcastChannel('lot-mgmt');
+const containers = new Map();          // id → {name, ip, image, up, seen}
+const owned = new Map();               // name → window handle (tabs we opened)
+mgmt.onmessage = (ev) => {
+  const m = ev.data;
+  if (!m) return;
+  if (m.type === 'hb')  containers.set(m.id, { ...m, seen: Date.now() });
+  if (m.type === 'bye') containers.delete(m.id);
+};
+
+const fmtUp = (ms) => {
+  const s = ms / 1000 | 0;
+  if (s < 90) return s + 's';
+  if (s < 5400) return (s / 60 | 0) + 'm';
+  return (s / 3600 | 0) + 'h' + ((s % 3600) / 60 | 0) + 'm';
+};
+
+function renderContainers() {
+  const now = Date.now();
+  for (const [id, c] of containers) if (now - c.seen > 15000) containers.delete(id);
+  const tb = $('containers');
+  if (!containers.size) {
+    tb.innerHTML = '<tr><td colspan="5" class="empty">none running — start one below</td></tr>';
+    return;
+  }
+  tb.innerHTML = '';
+  for (const [id, c] of containers) {
+    const stale = now - c.seen > 7000;
+    const tr = document.createElement('tr');
+    if (stale) tr.className = 'stale';
+    tr.innerHTML =
+      `<td class="name">${c.name}</td><td>${c.ip}</td><td>${c.image}</td>` +
+      `<td class="up">${stale ? 'stale' : fmtUp(c.up)}</td><td></td>`;
+    const cell = tr.lastChild;
+    const focus = document.createElement('button');
+    focus.textContent = 'console';
+    focus.onclick = () => {
+      const w = owned.get(c.name);
+      if (w && !w.closed) w.focus();
+      else msg('"' + c.name + '" was not started from this console — switch to its tab manually');
+    };
+    const stop = document.createElement('button');
+    stop.textContent = 'stop';
+    stop.className = 'danger';
+    stop.onclick = () => {
+      mgmt.postMessage({ type: 'stop', id });
+      const w = owned.get(c.name);
+      if (w && !w.closed) setTimeout(() => { try { w.close(); } catch (_) {} }, 500);
+    };
+    cell.append(focus, ' ', stop);
+    tb.appendChild(tr);
+  }
+}
+setInterval(renderContainers, 1000);
+
+// ── Images: builtin services + committed overlays (shared IndexedDB) ────────
+const BUILTINS = ['lean', 'redis', 'python3', 'nodejs', 'jq', 'nano', 'tmux'];
+const imgDb = () => new Promise((res, rej) => {
+  const rq = indexedDB.open('lot-images', 1);
+  rq.onupgradeneeded = () => rq.result.createObjectStore('images', { keyPath: 'name' });
+  rq.onsuccess = () => res(rq.result);
+  rq.onerror = () => rej(rq.error);
+});
+async function committedImages() {
+  const db = await imgDb();
+  return new Promise((res, rej) => {
+    const rq = db.transaction('images').objectStore('images').getAll();
+    rq.onsuccess = () => res(rq.result);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+async function deleteImage(name) {
+  const db = await imgDb();
+  return new Promise((res) => {
+    const tx = db.transaction('images', 'readwrite');
+    tx.objectStore('images').delete(name);
+    tx.oncomplete = () => res();
+  });
+}
+async function renderImages() {
+  const tb = $('images'), sel = $('r-image');
+  const committed = await committedImages().catch(() => []);
+  tb.innerHTML = ''; sel.innerHTML = '';
+  for (const b of BUILTINS) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="name">${b}</td><td class="up">builtin</td><td class="up">on demand</td><td></td>`;
+    tb.appendChild(tr);
+    sel.append(new Option(b, b === 'lean' ? '' : b));
+  }
+  for (const im of committed) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td class="name">@${im.name}</td><td class="up">committed</td>` +
+                   `<td class="up">${(im.data.byteLength / 1048576).toFixed(1)} MB</td><td></td>`;
+    const cell = tr.lastChild;
+    const push = document.createElement('button');
+    push.textContent = 'push'; push.disabled = true; push.title = 'push to relay — coming with deploy';
+    const del = document.createElement('button');
+    del.textContent = 'delete'; del.className = 'danger';
+    del.onclick = async () => { await deleteImage(im.name); renderImages(); };
+    cell.append(push, ' ', del);
+    tb.appendChild(tr);
+    sel.append(new Option('@' + im.name, '@' + im.name));
+  }
+}
+renderImages();
+setInterval(renderImages, 5000);
+
+// ── Run / stacks ────────────────────────────────────────────────────────────
+function nextFreeIp() {
+  const used = new Set([...containers.values()].map(c => +c.ip.split('.')[3]));
+  for (let n = 100; n < 200; n++) if (!used.has(n)) return '192.168.86.' + n;
+  return '192.168.86.200';
+}
+function hostsParam(extra) {
+  // name:ip for every live container (+ the ones being launched) so services
+  // resolve each other by name.
+  const pairs = new Map();
+  for (const c of containers.values()) pairs.set(c.name, c.ip);
+  for (const [n, ip] of Object.entries(extra || {})) pairs.set(n, ip);
+  return [...pairs].map(([n, ip]) => n + ':' + ip).join(',');
+}
+function launch(name, ip, image, extraHosts) {
+  const q = new URLSearchParams();
+  q.set('autoboot', '');
+  q.set('name', name);
+  q.set('ip', ip);
+  if (image) q.set('image', image);
+  const h = hostsParam(extraHosts);
+  if (h) q.set('hosts', h);
+  const w = window.open('wasm.html?' + q.toString(), '_blank');
+  if (!w) { msg('popup blocked — allow popups for this site'); return null; }
+  owned.set(name, w);
+  return w;
+}
+$('r-go').onclick = () => {
+  const name = ($('r-name').value || '').replace(/[^A-Za-z0-9_-]/g, '') ||
+               'c' + Math.random().toString(36).slice(2, 5);
+  const ip = /^192\.168\.86\.\d+$/.test($('r-ip').value) ? $('r-ip').value : nextFreeIp();
+  launch(name, ip, $('r-image').value, { [name]: ip });
+  msg('launched ' + name + ' @ ' + ip);
+};
+$('s-deploy').onclick = () => {
+  let stack;
+  try { stack = JSON.parse($('stack').value); } catch (e) { msg('stack JSON: ' + e.message); return; }
+  const svcs = stack && stack.services;
+  if (!svcs || !Object.keys(svcs).length) { msg('stack needs a non-empty "services" object'); return; }
+  // Assign IPs first so every service's hosts= lists all its peers.
+  const plan = {};
+  let auto = 101;
+  const used = new Set([...containers.values()].map(c => +c.ip.split('.')[3]));
+  for (const [name, s] of Object.entries(svcs)) {
+    let ip = s.ip;
+    if (!/^192\.168\.86\.\d+$/.test(ip || '')) {
+      while (used.has(auto)) auto++;
+      ip = '192.168.86.' + auto; used.add(auto);
+    } else used.add(+ip.split('.')[3]);
+    plan[name] = { ip, image: s.image === 'lean' ? '' : (s.image || '') };
+  }
+  const extra = Object.fromEntries(Object.entries(plan).map(([n, p]) => [n, p.ip]));
+  for (const [name, p] of Object.entries(plan)) launch(name, p.ip, p.image, extra);
+  msg('deployed: ' + Object.keys(plan).join(', '));
+};
+$('s-stop').onclick = () => {
+  for (const [id] of containers) mgmt.postMessage({ type: 'stop', id });
+  for (const [, w] of owned) { try { if (!w.closed) w.close(); } catch (_) {} }
+  msg('stop sent to all containers');
+};
+</script>
+</body>
+</html>

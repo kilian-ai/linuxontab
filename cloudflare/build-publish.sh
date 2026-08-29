@@ -18,6 +18,8 @@ mkdir -p "$PUB/linux-dist"
 
 # Document + terminal front-end. wasm.html becomes the site index.
 cp "$SRC/wasm.html"            "$PUB/index.html"
+cp "$SRC/wasm.html"            "$PUB/wasm.html"      # console.html launches containers at this path
+cp "$SRC/console.html"         "$PUB/console.html"   # container manager GUI
 cp "$SRC/coi-serviceworker.js" "$PUB/coi-serviceworker.js"
 cp "$SRC/sw-guest-proxy.js"    "$PUB/sw-guest-proxy.js"
 cp "$SRC/xterm.js"             "$PUB/xterm.js"

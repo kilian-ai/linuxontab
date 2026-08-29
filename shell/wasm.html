@@ -3144,6 +3144,17 @@ async function doBoat() {
     window.addEventListener('beforeunload', () => {
       try { mgmt.postMessage({ type: 'bye', id: hbId, name: lotName }); } catch (_) {}
     });
+    // Manager control: stop this container. window.close() only works for
+    // script-opened tabs (the manager's Run button) — otherwise show a note.
+    mgmt.onmessage = (ev) => {
+      const m = ev.data;
+      if (!m || m.id !== hbId) return;
+      if (m.type === 'stop') {
+        try { mgmt.postMessage({ type: 'bye', id: hbId, name: lotName }); } catch (_) {}
+        window.close();
+        setTimeout(() => term.write('\r\n\x1b[33m[manager] stop requested — close this tab to finish\x1b[0m\r\n'), 300);
+      }
+    };
   } catch (_) { /* no BroadcastChannel — heartbeats off */ }
 
   machine = new Machine({
