@@ -14,12 +14,14 @@
 
  ── Now working (all compiled to wasm32, running natively) ──────────────
    Terminal   tmux (splits/panes) · mc (F10 to quit) · nano · lotfm
+   Monitor    htop — live meters + process table of THIS wasm kernel
    Shells     zsh 5.9  NEW! · ash · hush (default /bin/sh)
               real fork()+setjmp/longjmp via wasm-EH — command
               substitution, subshells & job control all work
    Languages  python3 + pip · node · clang (self-hosting toolchain)
    Tools      curl · jq · sqlite3 · wasm-ld · wasm-opt
    DB GUI     sqlite-web -p 8080 /root/demo.db   → top bar: web view
+   Games      tetris — color Tetris (vitetris) · vnc-snake on the X display
    X11        xtiny &     a real X server + desktop on :5900. Then open
                           the X display panel (top bar) and hit connect.
               Launch apps from its taskbar, or by hand:

@@ -306,7 +306,9 @@ built_with=lot-build-package
 target=wasm32-linux-musl
 EOF
 
-tar czf "$TAROUT" -C "$TMPDIR" "pkg-$NAME"
+# COPYFILE_DISABLE: macOS tar otherwise embeds AppleDouble ._* entries; a
+# ._*.dist-info in python3's tarball broke every pip run on the lean image.
+COPYFILE_DISABLE=1 tar czf "$TAROUT" -C "$TMPDIR" "pkg-$NAME"
 SIZE="$(wc -c < "$TAROUT" | tr -d ' ')"
 SHA="$(shasum -a 256 "$TAROUT" | cut -d' ' -f1)"
 echo "    => $TAROUT ($SIZE bytes)"

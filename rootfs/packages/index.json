@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated": "2026-08-26",
+  "generated": "2026-08-29",
   "packages": {
     "busybox": {
       "version": "1.37.0",
@@ -619,6 +619,30 @@
       "sha256": "e2dc2d59e20e7d971d1bac29842254693e4733d86bf0ac011280fb53f8ad5653",
       "bins": [
         "redis"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "htop": {
+      "version": "3.3.0",
+      "description": "Interactive colorful process viewer (reads the wasm kernel's /proc)",
+      "url": "https://linuxontab.com/packages/htop-3.3.0.tar.gz",
+      "size": 237771,
+      "sha256": "26fa6cdaa91dff8d0b140b4c804a64dc97d10aa669ab3fc9d575c34eaeec4984",
+      "bins": [
+        "htop"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "vitetris": {
+      "version": "0.59.1",
+      "description": "Terminal Tetris \u2014 colors, 30 block styles, high scores",
+      "url": "https://linuxontab.com/packages/vitetris-0.59.1.tar.gz",
+      "size": 79795,
+      "sha256": "d0095f140e0225397b5c58e9ba7a20ff5a792a8c18cf4e0ae9397ea3fa378cf6",
+      "bins": [
+        "tetris"
       ],
       "depends": [],
       "status": "available"
