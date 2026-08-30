@@ -188,7 +188,7 @@ function renderContainers() {
 setInterval(renderContainers, 1000);
 
 // ── Images: builtin services + committed overlays (shared IndexedDB) ────────
-const BUILTINS = ['lean', 'redis', 'python3', 'nodejs', 'jq', 'nano', 'tmux'];
+const BUILTINS = ['lean', 'redis', 'python3', 'nodejs', 'jq', 'nano', 'tmux', 'htop', 'vitetris'];
 const imgDb = () => new Promise((res, rej) => {
   const rq = indexedDB.open('lot-images', 1);
   rq.onupgradeneeded = () => rq.result.createObjectStore('images', { keyPath: 'name' });
