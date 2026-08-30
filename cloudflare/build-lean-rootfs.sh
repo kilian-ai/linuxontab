@@ -169,6 +169,32 @@ case "$_CMDLINE" in
 	;;
 esac
 
+# Service start WITHOUT install (lot_run=name[,name...]): for committed-image
+# boots (?image=@overlay) where the binaries are already in the filesystem —
+# no apk involved, just the registry command. Keeps the fragile install
+# machinery entirely off devices that only run prebuilt images (phones).
+case "$_CMDLINE" in
+*lot_run=*)
+	_RUNS="${_CMDLINE##*lot_run=}"
+	_RUNS="${_RUNS%% *}"
+	_rrest="$_RUNS,"
+	while [ -n "$_rrest" ]; do
+		_rsvc="${_rrest%%,*}"
+		_rrest="${_rrest#*,}"
+		[ -n "$_rsvc" ] || continue
+		_rcmd=""
+		grep "^$_rsvc|" /etc/lot-services.conf > /tmp/.lot-run-cmd 2>/dev/null
+		read -r _rcmd < /tmp/.lot-run-cmd 2>/dev/null
+		rm -f /tmp/.lot-run-cmd
+		_rcmd="${_rcmd#*|}"
+		if [ -n "$_rcmd" ]; then
+			echo "[lot] starting: $_rcmd"
+			sh -c "$_rcmd" > "/tmp/svc-$_rsvc.log" 2>&1 &
+		fi
+	done
+	;;
+esac
+
 # sshd only if installed (apk add openssh / dropbear installs then this
 # starts it on next boot; the stub path handles first-use in-session).
 if [ -x /usr/local/libexec/sshd-session ] || [ -x /sbin/sshd ]; then
@@ -183,8 +209,14 @@ if [ -x /usr/local/libexec/sshd-session ] || [ -x /sbin/sshd ]; then
 	done) &
 fi
 
-# getty -l /bin/sh is broken in this busybox build (clone fn=446) — exec sh.
-exec /bin/sh -i
+# The shell must run in its own session with hvc0 as controlling tty, or ^C
+# never reaches the foreground job (PID 1's /dev/console can't be a ctty, so
+# the line discipline has no pgrp to signal). getty -l /bin/sh is broken in
+# this busybox build (clone fn=446), so setsid+cttyhack instead; the loop
+# also respawns the shell after ^D/exit instead of killing init.
+while true; do
+	setsid cttyhack /bin/sh -i
+done
 EOF
 chmod +x "$STAGE/etc/rc"
 

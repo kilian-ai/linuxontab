@@ -110,5 +110,10 @@ fi
 
 # getty with -l /bin/sh uses sys_clone(fn=446, fn_arg=0) in the current BusyBox
 # build, which produces a broken child that loops without making syscalls.
-# Exec the shell directly so switch_entry gets fn=616 arg=<valid> instead.
-exec /bin/sh -i
+# setsid+cttyhack instead of exec: the shell needs its own session with hvc0
+# as controlling tty, or ^C never reaches the foreground job (PID 1's
+# /dev/console can't be a ctty, so the line discipline has no pgrp to signal).
+# The loop also respawns the shell after ^D/exit instead of killing init.
+while true; do
+	setsid cttyhack /bin/sh -i
+done

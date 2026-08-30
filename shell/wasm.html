@@ -2868,6 +2868,10 @@ async function doBoat() {
   if (!/^[A-Za-z0-9_.,@-]*$/.test(lotImage)) lotImage = '';
   const lotOverlayName = lotImage.startsWith('@') ? lotImage.slice(1) : '';
   const lotSvcs = (lotImage && !lotOverlayName) ? lotImage : '';
+  // ?run=name[,name] — start registry services WITHOUT installing (for
+  // committed-image boots where the binaries are already in the overlay).
+  let lotRun = lotParams.get('run') || '';
+  if (!/^[A-Za-z0-9_,.-]*$/.test(lotRun)) lotRun = '';
 
   // ── Committed images: IndexedDB store of {name, baseSha, extents, data} ──
   const lotImgDb = () => new Promise((res, rej) => {
@@ -3368,7 +3372,7 @@ async function doBoat() {
     // lot_epoch: current host Unix time — /etc/init.d/rcS uses it to set the
     // guest wall clock (`date -s @N`). Setting it kernel-side at an initcall
     // breaks inbound TCP handshakes, so it must happen from userspace.
-    cmdline: 'console=hvc0 loglevel=4 nr_cpus=1 rdinit=/init ip=' + lotGuestIp + '::192.168.86.1:255.255.255.0::eth0:off lot_ip=' + lotGuestIp + (lotHosts ? ' lot_hosts=' + lotHosts : '') + (lotSvcs ? ' lot_svc=' + lotSvcs : '') + ' lot_epoch=' + Math.floor(Date.now() / 1000),
+    cmdline: 'console=hvc0 loglevel=4 nr_cpus=1 rdinit=/init ip=' + lotGuestIp + '::192.168.86.1:255.255.255.0::eth0:off lot_ip=' + lotGuestIp + (lotHosts ? ' lot_hosts=' + lotHosts : '') + (lotSvcs ? ' lot_svc=' + lotSvcs : '') + (lotRun ? ' lot_run=' + lotRun : '') + ' lot_epoch=' + Math.floor(Date.now() / 1000),
   });
 
   // Pipe the early boot console (pre-virtio kernel messages) to xterm.
