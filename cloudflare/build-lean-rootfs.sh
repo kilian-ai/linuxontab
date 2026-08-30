@@ -63,6 +63,11 @@ chmod +x "$STAGE/usr/bin/lotfetch"
 [ -f "$ROOTFS/usr/local/sbin/install-https-tools" ] && \
     cp -p "$ROOTFS/usr/local/sbin/install-https-tools" "$STAGE/usr/local/sbin/"
 
+# terminfo (36 KB): without it every ncurses app installed via apk dies with
+# "Error opening terminal: xterm-256color" — htop/mc/nano/tmux all need it.
+mkdir -p "$STAGE/usr/share"
+cp -Rp "$ROOTFS/usr/share/terminfo" "$STAGE/usr/share/terminfo"
+
 # Baked package index (apk falls back to it before any network).
 cp -p "$PKGDIR/index.json" "$STAGE/packages/index.json"
 
