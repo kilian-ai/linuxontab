@@ -1,0 +1,22 @@
+#!/bin/sh
+# nginx-demo — serve the demo site in /var/www/lot with nginx on port 8080.
+# nginx runs single-process in the background (daemon off + master_process
+# off in /etc/nginx/nginx.conf); it binds 0.0.0.0 so the page's "web view"
+# panel can reach it.   Stop with: nginx -s stop
+mkdir -p /var/log/nginx /var/run /usr/local/nginx
+if [ -f /var/run/nginx.pid ] && kill -0 `cat /var/run/nginx.pid` 2>/dev/null; then
+    echo " nginx is already running (pid `cat /var/run/nginx.pid`) on port 8080"
+    exit 0
+fi
+nginx -t -q || exit 1
+nginx >/var/log/nginx/console.log 2>&1 &
+sleep 1
+if ! kill -0 $! 2>/dev/null; then
+    echo " nginx did not start — see /var/log/nginx/error.log"
+    exit 1
+fi
+# no command substitution here: hush (the default /bin/sh) mis-parses nested
+# quotes inside backticks inside double quotes and prints them literally
+nginx -v 2>&1 | sed 's|^nginx version: nginx/| nginx |; s|$| is serving /var/www/lot on port 8080|'
+echo "   open it:  top bar -> web view -> port 8080     (or: curl http://localhost:8080/)"
+echo "   live counters: /status        stop: nginx -s stop"

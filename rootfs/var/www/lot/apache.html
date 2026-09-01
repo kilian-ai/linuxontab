@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apache httpd on the wasm kernel</title>
+<link rel="stylesheet" href="lot.css">
+</head>
+<body class="apache">
+<main>
+  <div class="eyebrow">LinuxOnTab 2.0 · web server demo</div>
+  <h1>It works<span class="dot">!</span></h1>
+  <p class="lede">The classic Apache greeting, for once entirely true: this page was served by
+  <b>Apache httpd 2.4.62</b> (APR 1.7, prefork MPM) compiled to WebAssembly, running on a
+  Linux 6.1 kernel inside this browser tab.</p>
+  <span class="badge">httpd · prefork · single process (-X)</span>
+
+  <section class="grid" id="live" hidden>
+    <div class="card"><h2>Total accesses</h2><div class="big" id="req">–</div><div class="sub">since <code>httpd-demo</code> started</div></div>
+    <div class="card"><h2>Uptime</h2><div class="big" id="up">–</div><div class="sub">seconds, from <code>mod_status</code></div></div>
+    <div class="card"><h2>Bytes served</h2><div class="big" id="kb">–</div><div class="sub">refreshes every 2 s</div></div>
+  </section>
+
+  <div class="card route">
+    <h2>What this server answers</h2>
+    <table>
+      <tr><th>Path</th><th>Response</th></tr>
+      <tr><td><code>/</code></td><td>this page (<code>DirectoryIndex apache.html</code>)</td></tr>
+      <tr><td><a href="lot.css">/lot.css</a></td><td>the stylesheet you are looking at, typed by <code>mod_mime</code></td></tr>
+      <tr><td><a href="server-status">/server-status</a></td><td>the full <code>mod_status</code> page — scoreboard, requests, uptime</td></tr>
+      <tr><td><a href="server-info">/server-info</a></td><td><code>mod_info</code>: every module and directive compiled into this binary</td></tr>
+      <tr><td><a href="files/">/files/</a></td><td>an <code>mod_autoindex</code> directory listing (fancy indexing on)</td></tr>
+      <tr><td><a href="nothing-here">/nothing-here</a></td><td>a genuine Apache 404 page</td></tr>
+    </table>
+  </div>
+
+  <p class="pipe"><b>How it got to you:</b> web view panel <span class="arrow">→</span> page-side HTTP client
+  <span class="arrow">→</span> injected TCP connection into the guest NIC <span class="arrow">→</span>
+  <b>192.168.86.100:8081</b> <span class="arrow">→</span> httpd <code>accept()</code>, <code>poll()</code>, <code>writev()</code>
+  <span class="arrow">→</span> back out the same way. Every syscall in that chain ran on the wasm kernel.</p>
+
+  <footer>Config: <code>/etc/httpd/httpd.conf</code> · logs: <code>/var/log/httpd/</code> · stop: <code>httpd -k stop</code>
+  · the nginx demo is <code>nginx-demo</code> on port 8080.</footer>
+</main>
+<script>
+(function () {
+  var live = document.getElementById('live');
+  function tick() {
+    fetch('server-status?auto', { cache: 'no-store' }).then(function (r) { return r.ok ? r.text() : Promise.reject(); })
+      .then(function (t) {
+        var acc = /Total Accesses:\s*(\d+)/.exec(t);
+        var kb  = /Total kBytes:\s*(\d+)/.exec(t);
+        var up  = /Uptime:\s*(\d+)/.exec(t);
+        if (!acc) return;
+        document.getElementById('req').textContent = acc[1];
+        document.getElementById('kb').textContent = kb ? (kb[1] * 1024).toLocaleString() : '–';
+        document.getElementById('up').textContent = up ? up[1] : '–';
+        live.hidden = false;
+        setTimeout(tick, 2000);
+      }).catch(function () { /* stay hidden */ });
+  }
+  try { tick(); } catch (e) {}
+})();
+</script>
+</body>
+</html>

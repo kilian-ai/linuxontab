@@ -1,0 +1,23 @@
+#!/bin/sh
+# httpd-demo — serve the demo site in /var/www/lot with Apache httpd on port 8081.
+# Runs `httpd -X` (prefork, single process, stays attached) in the background;
+# it binds 0.0.0.0 so the page's "web view" panel can reach it.
+# Stop with: httpd -k stop
+mkdir -p /var/log/httpd /var/run /usr/local/apache2
+if [ -f /var/run/httpd.pid ] && kill -0 `cat /var/run/httpd.pid` 2>/dev/null; then
+    echo " httpd is already running (pid `cat /var/run/httpd.pid`) on port 8081"
+    exit 0
+fi
+httpd -t -f /etc/httpd/httpd.conf || exit 1
+httpd -X -f /etc/httpd/httpd.conf >/var/log/httpd/console.log 2>&1 &
+sleep 2
+if ! kill -0 $! 2>/dev/null; then
+    echo " httpd did not start — see /var/log/httpd/error.log"
+    cat /var/log/httpd/console.log 2>/dev/null
+    exit 1
+fi
+# no command substitution here: hush (the default /bin/sh) mis-parses nested
+# quotes inside backticks inside double quotes and prints them literally
+httpd -v 2>&1 | sed -n 's|^Server version: Apache/| Apache |p' | sed 's|$| is serving /var/www/lot on port 8081|'
+echo "   open it:  top bar -> web view -> port 8081     (or: curl http://localhost:8081/)"
+echo "   scoreboard: /server-status   modules: /server-info   stop: httpd -k stop"

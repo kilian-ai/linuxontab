@@ -290,7 +290,7 @@ TAROUT="$PKG_DIR/$TARNAME"
 TMPDIR="/tmp/lot-pack-$NAME"
 rm -rf "$TMPDIR"
 mkdir -p "$TMPDIR/pkg-$NAME"
-cp -r "$STAGE/." "$TMPDIR/pkg-$NAME/"
+cp -RP "$STAGE/." "$TMPDIR/pkg-$NAME/"   # -P: keep symlinks (httpd demo links into /etc)
 
 # Write package metadata. DEPENDS (optional, set in the recipe as a
 # space-separated list of package names) is the runtime dependency list that

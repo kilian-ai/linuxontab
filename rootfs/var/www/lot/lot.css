@@ -1,0 +1,69 @@
+/* lot.css — shared stylesheet for the LinuxOnTab web-server demo pages.
+   Served as a real static asset: if you can read this page with styling,
+   the server delivered a second request correctly too. */
+:root {
+  --ink: #e8ecf4;
+  --dim: #8d97ad;
+  --ground: #0b1020;
+  --panel: #121a30;
+  --line: #22304f;
+  --accent: #5ef2c0;         /* nginx green */
+  --accent-ink: #062416;
+}
+body.apache {
+  --accent: #ff7a45;         /* Apache feather */
+  --accent-ink: #2b0d00;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font: 15px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  min-height: 100vh;
+  background-image:
+    radial-gradient(60vw 40vh at 80% -10%, rgba(94, 242, 192, 0.08), transparent 70%),
+    linear-gradient(transparent 0, transparent 31px, rgba(255,255,255,0.025) 32px);
+  background-size: auto, 100% 32px;
+}
+body.apache {
+  background-image:
+    radial-gradient(60vw 40vh at 80% -10%, rgba(255, 122, 69, 0.10), transparent 70%),
+    linear-gradient(transparent 0, transparent 31px, rgba(255,255,255,0.025) 32px);
+}
+main { max-width: 760px; margin: 0 auto; padding: 48px 24px 64px; }
+.eyebrow { color: var(--dim); letter-spacing: 0.12em; text-transform: uppercase; font-size: 12px; }
+h1 { font-size: clamp(40px, 8vw, 72px); line-height: 1; margin: 12px 0 8px; letter-spacing: -0.02em; }
+h1 .dot { color: var(--accent); }
+.lede { font-size: 17px; color: var(--ink); max-width: 60ch; margin: 0 0 28px; }
+.lede b { color: var(--accent); font-weight: 600; }
+.badge {
+  display: inline-block; padding: 4px 10px; border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 13px;
+}
+.grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin: 28px 0; }
+.card {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px;
+}
+.card h2 { margin: 0 0 8px; font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); font-weight: 600; }
+.card .big { font-size: 32px; font-variant-numeric: tabular-nums; line-height: 1.1; color: var(--accent); }
+.card .sub { color: var(--dim); font-size: 13px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--dim); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; font-size: 11px; }
+td code, .path { color: var(--accent); }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.route { overflow-x: auto; }
+.pipe {
+  margin: 28px 0 0; padding: 14px 18px; border-left: 3px solid var(--accent);
+  background: var(--panel); border-radius: 0 10px 10px 0; color: var(--dim); font-size: 13px;
+}
+.pipe b { color: var(--ink); font-weight: 600; }
+.pipe .arrow { color: var(--accent); }
+footer { margin-top: 40px; color: var(--dim); font-size: 13px; }
+footer code { color: var(--ink); }
+#live[hidden] { display: none; }
+@media (prefers-reduced-motion: no-preference) {
+  h1 { animation: rise 500ms ease-out both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+}

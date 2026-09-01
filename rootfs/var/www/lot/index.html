@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nginx on the wasm kernel</title>
+<link rel="stylesheet" href="lot.css">
+</head>
+<body class="nginx">
+<main>
+  <div class="eyebrow">LinuxOnTab 2.0 · web server demo</div>
+  <h1>It works<span class="dot">.</span></h1>
+  <p class="lede">This page was served by <b>nginx 1.26.2</b> — the real one, compiled to
+  WebAssembly and running on a Linux 6.1 kernel inside this browser tab. No emulator, no cloud:
+  the TCP connection that fetched this HTML terminated in the guest.</p>
+  <span class="badge">nginx · single process · epoll</span>
+
+  <section class="grid" id="live" hidden>
+    <div class="card"><h2>Requests handled</h2><div class="big" id="req">–</div><div class="sub">since <code>nginx-demo</code> started</div></div>
+    <div class="card"><h2>Connections accepted</h2><div class="big" id="acc">–</div><div class="sub">from <code>/status</code> (stub_status)</div></div>
+    <div class="card"><h2>Active now</h2><div class="big" id="act">–</div><div class="sub">refreshes every 2 s</div></div>
+  </section>
+
+  <div class="card route">
+    <h2>What this server answers</h2>
+    <table>
+      <tr><th>Path</th><th>Response</th></tr>
+      <tr><td><code>/</code></td><td>this page, from <code>/var/www/lot/index.html</code></td></tr>
+      <tr><td><a href="lot.css">/lot.css</a></td><td>the stylesheet you are looking at — a second static file, correct <code>Content-Type</code></td></tr>
+      <tr><td><a href="status">/status</a></td><td>live connection and request counters (<code>stub_status</code>)</td></tr>
+      <tr><td><a href="api/hello">/api/hello</a></td><td>JSON built from nginx variables (<code>$nginx_version</code>, <code>$hostname</code>, <code>$request</code>)</td></tr>
+      <tr><td><a href="nothing-here">/nothing-here</a></td><td>a genuine nginx 404 page</td></tr>
+    </table>
+  </div>
+
+  <p class="pipe"><b>How it got to you:</b> web view panel <span class="arrow">→</span> page-side HTTP client
+  <span class="arrow">→</span> injected TCP connection into the guest NIC <span class="arrow">→</span>
+  <b>192.168.86.100:8080</b> <span class="arrow">→</span> nginx <code>accept4()</code>, <code>epoll_wait()</code>, <code>writev()</code>
+  <span class="arrow">→</span> back out the same way. Every syscall in that chain ran on the wasm kernel.</p>
+
+  <footer>Config: <code>/etc/nginx/nginx.conf</code> · logs: <code>/var/log/nginx/</code> · stop: <code>nginx -s stop</code>
+  · the Apache demo is <code>httpd-demo</code> on port 8081.</footer>
+</main>
+<script>
+// Optional live counters. Relative fetches only, so the page also works through
+// the no-service-worker fallback viewer (where fetch() may not resolve — the
+// section simply stays hidden).
+(function () {
+  var live = document.getElementById('live');
+  function tick() {
+    fetch('status', { cache: 'no-store' }).then(function (r) { return r.ok ? r.text() : Promise.reject(); })
+      .then(function (t) {
+        var act = /Active connections:\s*(\d+)/.exec(t);
+        var ahr = /\n\s*(\d+)\s+(\d+)\s+(\d+)/.exec(t);
+        if (!act || !ahr) return;
+        document.getElementById('act').textContent = act[1];
+        document.getElementById('acc').textContent = ahr[1];
+        document.getElementById('req').textContent = ahr[3];
+        live.hidden = false;
+        setTimeout(tick, 2000);
+      }).catch(function () { /* stay hidden */ });
+  }
+  try { tick(); } catch (e) {}
+})();
+</script>
+</body>
+</html>

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated": "2026-08-29",
+  "generated": "2026-09-01",
   "packages": {
     "busybox": {
       "version": "1.37.0",
@@ -656,6 +656,32 @@
       "sha256": "d0095f140e0225397b5c58e9ba7a20ff5a792a8c18cf4e0ae9397ea3fa378cf6",
       "bins": [
         "tetris"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "nginx": {
+      "version": "1.26.2",
+      "description": "nginx web server \u2014 serves /var/www/lot with nginx-demo (web view, port 8080)",
+      "url": "https://linuxontab.com/packages/nginx-1.26.2.tar.gz",
+      "size": 422927,
+      "sha256": "49ac372f85595e2a3d3f89bc839be31178ac6769ceac2141fc23e009e8b00a0f",
+      "bins": [
+        "nginx",
+        "nginx-demo"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "httpd": {
+      "version": "2.4.62",
+      "description": "Apache httpd 2.4 web server \u2014 serves /var/www/lot with httpd-demo (web view, port 8081)",
+      "url": "https://linuxontab.com/packages/httpd-2.4.62.tar.gz",
+      "size": 585149,
+      "sha256": "7d96b017ae89818cfec0f59157a02125dfab206a61117253d0d9f86836e4e056",
+      "bins": [
+        "httpd",
+        "httpd-demo"
       ],
       "depends": [],
       "status": "available"

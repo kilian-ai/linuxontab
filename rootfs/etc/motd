@@ -20,6 +20,8 @@
               substitution, subshells & job control all work
    Languages  python3 + pip · node · clang (self-hosting toolchain)
    Tools      curl · jq · sqlite3 · wasm-ld · wasm-opt
+   Web        nginx-demo — real nginx 1.26 serving a demo site on :8080
+              httpd-demo — Apache httpd 2.4 (prefork) on :8081 → top bar: web view
    DB GUI     sqlite-web -p 8080 /root/demo.db   → top bar: web view
    Games      tetris — color Tetris (vitetris) · vnc-snake on the X display
    X11        xtiny &     a real X server + desktop on :5900. Then open
