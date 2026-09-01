@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated": "2026-08-29",
+  "generated": "2026-09-01",
   "packages": {
     "busybox": {
       "version": "1.37.0",
@@ -297,8 +297,8 @@
       "version": "1.3.2",
       "description": "Compression library",
       "url": "https://linuxontab.com/packages/zlib-1.3.2.tar.gz",
-      "size": 74176,
-      "sha256": "a8bf24e99c29a339d1e166f784f75fd93b8d3aa276331a2f4e2d2a038eb0990c",
+      "size": 74465,
+      "sha256": "651e3fefa044efbba04e325ab6f4a92243b4e1c73a0d6681e414334dd7d0b2af",
       "bins": [
         "zlib"
       ],
@@ -656,6 +656,32 @@
       "sha256": "d0095f140e0225397b5c58e9ba7a20ff5a792a8c18cf4e0ae9397ea3fa378cf6",
       "bins": [
         "tetris"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "nginx": {
+      "version": "1.26.2",
+      "description": "nginx web server \u2014 serves /var/www/lot with nginx-demo (web view, port 8080)",
+      "url": "https://linuxontab.com/packages/nginx-1.26.2.tar.gz",
+      "size": 422826,
+      "sha256": "3e3955769cab0c6ea99ce4cc498dc5a2aa94c8f2b4ac8c2d90c6883c1fc7ce9c",
+      "bins": [
+        "nginx",
+        "nginx-demo"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "httpd": {
+      "version": "2.4.62",
+      "description": "Apache httpd 2.4 web server \u2014 serves /var/www/lot with httpd-demo (web view, port 8081)",
+      "url": "https://linuxontab.com/packages/httpd-2.4.62.tar.gz",
+      "size": 585042,
+      "sha256": "79a6c085014f73ec371827a156b19bbb68b7cecb1c227be2bc67c92bf6ec6e5d",
+      "bins": [
+        "httpd",
+        "httpd-demo"
       ],
       "depends": [],
       "status": "available"
