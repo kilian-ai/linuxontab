@@ -664,8 +664,8 @@
       "version": "1.26.2",
       "description": "nginx web server \u2014 serves /var/www/lot with nginx-demo (web view, port 8080)",
       "url": "https://linuxontab.com/packages/nginx-1.26.2.tar.gz",
-      "size": 422826,
-      "sha256": "3e3955769cab0c6ea99ce4cc498dc5a2aa94c8f2b4ac8c2d90c6883c1fc7ce9c",
+      "size": 422927,
+      "sha256": "49ac372f85595e2a3d3f89bc839be31178ac6769ceac2141fc23e009e8b00a0f",
       "bins": [
         "nginx",
         "nginx-demo"
@@ -677,8 +677,8 @@
       "version": "2.4.62",
       "description": "Apache httpd 2.4 web server \u2014 serves /var/www/lot with httpd-demo (web view, port 8081)",
       "url": "https://linuxontab.com/packages/httpd-2.4.62.tar.gz",
-      "size": 585042,
-      "sha256": "79a6c085014f73ec371827a156b19bbb68b7cecb1c227be2bc67c92bf6ec6e5d",
+      "size": 585149,
+      "sha256": "7d96b017ae89818cfec0f59157a02125dfab206a61117253d0d9f86836e4e056",
       "bins": [
         "httpd",
         "httpd-demo"
