@@ -230,6 +230,8 @@ chmod +x "$STAGE/etc/rc"
 # was opened with ?image=name. Packages without a line just get installed.
 cat > "$STAGE/etc/lot-services.conf" << 'EOF'
 redis|redis-server --port 6379 --bind 0.0.0.0 --protected-mode no
+nginx|nginx-demo
+httpd|httpd-demo
 EOF
 
 # ── Lean motd ────────────────────────────────────────────────────────────────
@@ -243,6 +245,7 @@ cat > "$STAGE/etc/motd" << 'EOF'
   Or manage packages explicitly:
       apk list           # what's available
       apk add <pkg>      # install now
+  Web servers:  nginx-demo (:8080) · httpd-demo (:8081)  → top bar: web view
   Everything runs in this tab. Nothing is sent to a server.
 
 EOF

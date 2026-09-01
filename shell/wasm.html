@@ -66,6 +66,10 @@
   /* ── web view (guest HTTP apps via sw-guest-proxy) ── */
   #web-view { flex:1; min-height:0; display:flex; flex-direction:column; background:#111; }
   #web-view[hidden] { display:none; }
+  /* ?kiosk — menu-less web view (the console's "web demo" launches) */
+  body.kiosk #bar, body.kiosk #wv-toolbar { display:none; }
+  #kiosk-menu { position:fixed; top:6px; right:8px; z-index:50; background:rgba(34,40,48,.8); color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:1px 9px; font:inherit; font-size:15px; line-height:1.4; cursor:pointer; opacity:.5; }
+  #kiosk-menu:hover { opacity:1; }
   #wv-toolbar { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:4px 8px; font-size:12px; background:#0b0d10; border-bottom:1px solid #2a2f36; flex-shrink:0; }
   #wv-toolbar button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
   #wv-toolbar button:hover:not(:disabled) { background:#2d343d; }
@@ -3426,6 +3430,7 @@ async function doBoat() {
     $('x-display-btn').disabled = false;
     $('web-view-btn').disabled = false;
     term.focus();
+    if (window.__lotWebAuto) window.__lotWebAuto();   // ?web=<port>
   } catch (err) {
     hideDlProgress();
     setStatus('boot failed', 'err');
@@ -5019,6 +5024,42 @@ $('wv-reload').onclick = () => {
   if (wvMode === 'fallback') { wvFallback.reload(); return; }
   try { $('wv-frame').contentWindow.location.reload(); } catch (_) { wvOpen(); }
 };
+// ── ?web=<port> and ?kiosk ──────────────────────────────────────────────────
+// ?web=8080: after boot, probe the guest port through the proxy engine until
+// a server answers, then switch the page to the web view on it. ?kiosk: hide
+// the top bar and the web view's toolbar — a small ≡ button brings them back.
+// The console's "web demo" rows launch ?image=nginx&web=8080&kiosk: the guest
+// installs + starts the service (lot-services.conf), the page shows the boot
+// log until the server is up, then just the page it serves.
+{
+  const qs = new URLSearchParams(location.search);
+  const webPort = parseInt(qs.get('web'), 10);
+  if (qs.has('kiosk')) {
+    document.body.classList.add('kiosk');
+    const btn = document.createElement('button');
+    btn.id = 'kiosk-menu'; btn.textContent = '≡'; btn.title = 'show / hide the menu';
+    btn.onclick = () => document.body.classList.toggle('kiosk');
+    document.body.appendChild(btn);
+  }
+  if (webPort > 0 && webPort < 65536) {
+    window.__lotWebAuto = async () => {
+      term.write('\r\n\x1b[36m[wasm-shell] waiting for a web server on guest :' + webPort + ' …\x1b[0m\r\n');
+      const probe = { type: 'guest-proxy', port: webPort, method: 'GET', path: '/', mode: 'navigate', headers: {}, prefix: '' };
+      for (let i = 0; i < 120; i++) {
+        try {
+          const r = await window.guestWeb.enqueue(probe);
+          if (r && r.status) break;
+        } catch (_) {}
+        await new Promise((res) => setTimeout(res, 1500));
+      }
+      $('wv-port').value = String(webPort);
+      $('web-view').hidden = false;
+      $('term').hidden = true; $('x-view').hidden = true; $('cgi-view').hidden = true;
+      wvOpen();
+    };
+  }
+}
+
 $('web-view-btn').onclick = () => {
   const showing = !$('web-view').hidden;
   $('web-view').hidden = showing;

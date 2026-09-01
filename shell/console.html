@@ -189,6 +189,12 @@ setInterval(renderContainers, 1000);
 
 // ── Images: builtin services + committed overlays (shared IndexedDB) ────────
 const BUILTINS = ['lean', 'redis', 'python3', 'nodejs', 'jq', 'nano', 'tmux', 'htop', 'vitetris'];
+// Web demos: the container installs + starts the server (lot-services.conf),
+// and the tab opens straight on the page it serves, menu hidden (?web + ?kiosk).
+const WEBDEMOS = [
+  { name: 'nginx-demo', image: 'nginx', web: 8080, what: 'nginx 1.26 serving the demo site' },
+  { name: 'httpd-demo', image: 'httpd', web: 8081, what: 'Apache httpd 2.4 serving the demo site' },
+];
 const imgDb = () => new Promise((res, rej) => {
   const rq = indexedDB.open('lot-images', 1);
   rq.onupgradeneeded = () => rq.result.createObjectStore('images', { keyPath: 'name' });
@@ -241,17 +247,18 @@ async function refreshRelay() {
 refreshRelay(); setInterval(refreshRelay, 15000);
 
 // Auto-named quick launch: clicking an image row runs a container from it.
-function quickRun(imageValue, base) {
+function quickRun(imageValue, base, extra) {
   const taken = new Set([...containers.values()].map(c => c.name));
   let name = base, n = 2;
   while (taken.has(name) || (owned.has(name) && !owned.get(name).closed)) name = base + '-' + n++;
   const ip = nextFreeIp();
-  if (launch(name, ip, imageValue, { [name]: ip })) {
-    msg('launched ' + name + ' @ ' + ip + ' (image: ' + (imageValue || 'lean') + ')');
+  if (launch(name, ip, imageValue, { [name]: ip }, extra)) {
+    msg('launched ' + name + ' @ ' + ip + ' (image: ' + (imageValue || 'lean') +
+        (extra && extra.web ? ', opens the web page on :' + extra.web : '') + ')');
   }
 }
 
-function imageRow(name, kind, size, buttons, runValue, runBase) {
+function imageRow(name, kind, size, buttons, runValue, runBase, runExtra, title) {
   const tr = document.createElement('tr');
   for (const [cls, text] of [['name', name], ['up', kind], ['up', size]]) {
     const td = document.createElement('td');
@@ -263,10 +270,10 @@ function imageRow(name, kind, size, buttons, runValue, runBase) {
   tr.appendChild(cell);
   if (runBase !== undefined) {
     tr.dataset.run = '1';
-    tr.title = 'run a "' + runBase + '" container in a new tab';
+    tr.title = title || ('run a "' + runBase + '" container in a new tab');
     tr.onclick = (e) => {
       if (e.target.closest('button')) return;    // push/delete stay themselves
-      quickRun(runValue, runBase);
+      quickRun(runValue, runBase, runExtra);
     };
   }
   return tr;
@@ -297,6 +304,10 @@ async function renderImages(force) {
     for (const b of BUILTINS) {
       tb.appendChild(imageRow(b, 'builtin', 'on demand', null, b === 'lean' ? '' : b, b));
       sel.append(new Option(b, b === 'lean' ? '' : b));
+    }
+    for (const d of WEBDEMOS) {
+      tb.appendChild(imageRow(d.name, 'web demo', 'on demand', null, d.image, d.name,
+        { web: d.web, kiosk: '' }, d.what + ' — opens the served page in a new tab, menu hidden'));
     }
     for (const im of committed) {
       const push = document.createElement('button');
@@ -335,7 +346,7 @@ function hostsParam(extra) {
   for (const [n, ip] of Object.entries(extra || {})) pairs.set(n, ip);
   return [...pairs].map(([n, ip]) => n + ':' + ip).join(',');
 }
-function launch(name, ip, image, extraHosts) {
+function launch(name, ip, image, extraHosts, extra) {
   const q = new URLSearchParams();
   q.set('autoboot', '');
   q.set('name', name);
@@ -343,6 +354,7 @@ function launch(name, ip, image, extraHosts) {
   if (image) q.set('image', image);
   const h = hostsParam(extraHosts);
   if (h) q.set('hosts', h);
+  for (const [k, v] of Object.entries(extra || {})) q.set(k, String(v));   // e.g. web=8080, kiosk
   // Always a genuinely new tab — a named target would silently reuse and
   // navigate an existing tab of the same name instead of opening one.
   const w = window.open('wasm.html?' + q.toString(), '_blank');
