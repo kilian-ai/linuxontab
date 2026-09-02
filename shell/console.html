@@ -194,6 +194,7 @@ const BUILTINS = ['lean', 'redis', 'python3', 'nodejs', 'jq', 'nano', 'tmux', 'h
 const WEBDEMOS = [
   { name: 'nginx-demo', image: 'nginx', web: 8080, what: 'nginx 1.26 serving the demo site' },
   { name: 'httpd-demo', image: 'httpd', web: 8081, what: 'Apache httpd 2.4 serving the demo site' },
+  { name: 'spiel-demo', image: 'spiel', web: 8080, what: 'the Spiel media server — FastAPI backend + React UI (installs python3 first, ~1 min)' },
 ];
 const imgDb = () => new Promise((res, rej) => {
   const rq = indexedDB.open('lot-images', 1);

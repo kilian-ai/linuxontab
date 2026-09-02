@@ -33,3 +33,14 @@ try:
     anyio.to_thread.run_sync = _lot_run_sync_inline
 except Exception:
     pass
+
+# --- Real thread stacks need a real size. ---
+# Since sysroot/wasm_clone.c each pthread runs on its own malloc'd stack (before
+# that fix they all shared the main thread's 32 MB one), and musl's default is
+# 128 KB — far too small for asyncified wasm frames running Python. Ask for 4 MB (thread stacks come from the mmap shim; 16 MB per thread exhausted the 256 MB process cap)
+# before any thread is created (uvicorn/anyio spawn workers at startup).
+try:
+    import threading
+    threading.stack_size(4 * 1024 * 1024)
+except Exception:
+    pass

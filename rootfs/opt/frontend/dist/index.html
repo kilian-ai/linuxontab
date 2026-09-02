@@ -2,10 +2,52 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>WebFuse</title>
-    <script type="module" crossorigin src="/assets/index-h4J1WfnH.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-DwjovvYX.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Spiel</title>
+    <meta name="description" content="Spiel plays your own movie and TV library on every device — beautiful artwork, resume across devices, at home and away." />
+    <meta name="theme-color" content="#0b0d10" />
+    <link rel="icon" href="https://spielplayer.com/icon.png" />
+    <link rel="apple-touch-icon" href="https://spielplayer.com/icon.png" />
+    <!-- Social card (shown when someone shares a link to their Spiel server) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Spiel" />
+    <meta property="og:title" content="Spiel — your movies, everywhere" />
+    <meta property="og:description" content="A beautiful player for your own library. Every source, every screen." />
+    <meta property="og:image" content="https://spielplayer.com/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Spiel — your movies, everywhere" />
+    <meta name="twitter:description" content="A beautiful player for your own library. Every source, every screen." />
+    <meta name="twitter:image" content="https://spielplayer.com/og.png" />
+    <!-- Televisions have no console we can reach. With ?diag=<host:port> the
+         page beacons its first error back as an image request, which works on
+         any engine old enough to need it. Inert without the parameter. -->
+    <script>
+      (function () {
+        var m = /[?&]diag=([^&]+)/.exec(location.search);
+        if (!m) return;
+        var to = decodeURIComponent(m[1]);
+        function send(kind, msg) {
+          try {
+            new Image().src = "http://" + to + "/diag?k=" + encodeURIComponent(kind) +
+              "&m=" + encodeURIComponent(String(msg).slice(0, 400)) + "&t=" + (+new Date());
+          } catch (e) {}
+        }
+        window.onerror = function (msg, src, line, col) {
+          send("error", msg + "  @ " + (src || "?").split("/").pop() + ":" + line + ":" + col);
+        };
+        window.addEventListener("unhandledrejection", function (e) {
+          var r = e.reason || {};
+          send("reject", r.stack || r.message || r);
+        });
+        send("boot", navigator.userAgent);
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-BKgJwUu_.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/vendor-B9osdezk.js">
+    <link rel="modulepreload" crossorigin href="/assets/react-DJm86lDw.js">
+    <link rel="modulepreload" crossorigin href="/assets/router-CVfiQnj5.js">
+    <link rel="modulepreload" crossorigin href="/assets/hls-xeo-W7rp.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-CtM4kWfe.css">
   </head>
   <body>
     <div id="root"></div>

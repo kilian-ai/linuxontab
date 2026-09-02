@@ -1,0 +1,29 @@
+#!/bin/sh
+# spiel-demo — the Spiel media server on port 8080: uvicorn (FastAPI backend)
+# on loopback :8081 behind nginx on 0.0.0.0:8080, which serves the React UI
+# from /opt/frontend/dist and proxies /api/ (see /etc/nginx/spiel.conf).
+# Then: top bar -> web view -> port 8080.        Stop: spiel-demo stop
+if [ "$1" = "stop" ]; then
+    [ -f /var/run/nginx-spiel.pid ] && kill `cat /var/run/nginx-spiel.pid` 2>/dev/null
+    kill `ps | grep "[u]vicorn" | awk '{print $1}'` 2>/dev/null
+    echo " spiel stopped"; exit 0
+fi
+if ps | grep -q "[u]vicorn"; then echo " spiel is already running on port 8080"; exit 0; fi
+mkdir -p /tmp /var/log/nginx /var/run /usr/local/nginx /opt/webfuse/data
+sh /opt/webfuse/run.sh > /tmp/spiel.log 2>&1 &
+echo " starting the Spiel backend ..."
+i=0
+while [ $i -lt 45 ]; do
+    sleep 2
+    if grep -q "Uvicorn running" /tmp/spiel.log 2>/dev/null; then break; fi
+    if ! ps | grep -q "[u]vicorn"; then echo " backend did not start — see /tmp/spiel.log"; tail -5 /tmp/spiel.log; exit 1; fi
+    i=$((i+1))
+done
+grep -q "Uvicorn running" /tmp/spiel.log 2>/dev/null || { echo " backend still starting — check /tmp/spiel.log"; exit 1; }
+nginx -t -q -c /etc/nginx/spiel.conf || exit 1
+nginx -c /etc/nginx/spiel.conf > /tmp/spiel-nginx.log 2>&1 &
+sleep 1
+if ! kill -0 $! 2>/dev/null; then echo " nginx front did not start — see /var/log/nginx/spiel-error.log"; exit 1; fi
+echo " Spiel is up: React UI + API on port 8080 (nginx -> uvicorn 127.0.0.1:8081)"
+echo "   open it:  top bar -> web view -> port 8080      logs: /tmp/spiel.log /var/log/nginx/spiel-error.log"
+echo "   library: /opt/webfuse/testmedia is pre-seeded     stop: spiel-demo stop"

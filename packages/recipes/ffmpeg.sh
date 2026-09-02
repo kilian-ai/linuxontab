@@ -5,16 +5,14 @@
 #   ffmpeg -i movie.mkv -c copy -movflags frag_keyframe+empty_moov out.mp4   (remux)
 #   ffmpeg -i in.m2v -f rawvideo -pix_fmt yuv420p -                          (decode → page)
 #
-# Scope of this first build: every built-in demuxer/decoder/encoder/filter,
-# no external libraries (no x264/dav1d/TLS), no asm, NO THREADS. Why 5.1 (LTS)
-# and not 6.x/7.x: from 6.0 on the ffmpeg CLI hard-requires pthreads (configure:
-# ffmpeg_deps="... threads" — demux/mux, later decode/filter/encode, run as
-# separate threads) and on this kernel a 7.0.2 build ran `-version` fine but
-# hung, uninterruptibly and before its first syscall, on any real job: a
-# mutex+condvar handoff between two threads loses its wakeup (repro:
-# pthread_pingpong, see memory). 5.1 is the last CLI that runs fully
-# single-threaded, which is also the honest baseline for measuring decode
-# speed here. SIMD and (once futex is fixed) threads + 7.x are follow-ups.
+# Scope: every built-in demuxer/decoder/encoder/filter, no external libraries
+# (no x264/dav1d/TLS), no asm, NO THREADS — 5.1 LTS, the last ffmpeg whose CLI
+# runs single-threaded. Status of threads (2026-09-02): the thread-stack bug is
+# fixed (sysroot/wasm_clone.c) and ffmpeg 7.0.2 with pthreads builds and runs
+# (recipes/ffmpeg7.sh, opt-in `ffmpeg7`), but its multi-threaded CLI still
+# deadlocks intermittently under CPU contention (h264.mkv decode: run 1 ok,
+# run 2 hung with python starting alongside) — a residual kernel thread-sync
+# issue. Until that is fixed, this single-threaded build stays the default.
 #
 # Cross notes: ffmpeg's configure supports cross builds natively and skips
 # every exec test under --enable-cross-compile, so it needs no answer table —

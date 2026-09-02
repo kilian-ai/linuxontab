@@ -232,6 +232,7 @@ cat > "$STAGE/etc/lot-services.conf" << 'EOF'
 redis|redis-server --port 6379 --bind 0.0.0.0 --protected-mode no
 nginx|nginx-demo
 httpd|httpd-demo
+spiel|spiel-demo
 EOF
 
 # ── Lean motd ────────────────────────────────────────────────────────────────
@@ -246,7 +247,8 @@ cat > "$STAGE/etc/motd" << 'EOF'
       apk list           # what's available
       apk add <pkg>      # install now
   Web servers:  nginx-demo (:8080) · httpd-demo (:8081)  → top bar: web view
-  Media:        ffmpeg / ffprobe 5.1 (installs on first use, ~15 MB)
+  Media:        ffmpeg / ffprobe 7.0 (installs on first use, ~15 MB)
+  Spiel:        spiel-demo — the Spiel media server + web UI on :8080 (web view)
   Everything runs in this tab. Nothing is sent to a server.
 
 EOF

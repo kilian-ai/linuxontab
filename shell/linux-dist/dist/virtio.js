@@ -427,6 +427,16 @@ export class NetworkDevice extends VirtioDevice {
     // that froze the guest outright. A few spaced kicks per frame batch is
     // enough to drain a partially-processed ring without starving the guest.
     static #REKICK_DELAYS = [30, 60, 120, 250, 500, 1000];
+    // LOT 2026-09-02: after the decaying schedule, keep kicking at a gentle
+    // steady cadence instead of giving up. Giving up after ~2 s left every
+    // guest->page transfer above ~650 KB stalled for good: the guest misses an
+    // RX interrupt mid-stream (ACKs sit in the ring unprocessed), stops
+    // sending, and nothing new arrives to re-arm the kick. Measured: manual
+    // 250 ms kicks revive a stalled 650 KB transfer. The loop still ends the
+    // moment the guest refills RX (notify(0) zeroes #unconsumed), and is
+    // capped so a truly dead guest cannot be kicked forever.
+    static #REKICK_STEADY_MS = 250;
+    static #REKICK_MAX_STEPS = 240;   // 6 decaying + ~60 s of steady kicks
     #armRekick() {
         if (this.#rekickTimer)
             return;
@@ -434,10 +444,12 @@ export class NetworkDevice extends VirtioDevice {
             this.#rekickTimer = null;
             if (this.#unconsumed <= 0 && this.#rxPending.length === 0)
                 return;
-            if (this.#rekickStep >= NetworkDevice.#REKICK_DELAYS.length)
+            if (this.#rekickStep >= NetworkDevice.#REKICK_MAX_STEPS)
                 return; // give up; next injected frame re-arms
             try { this.trigger_interrupt("vring"); } catch (e) { /* not set up yet */ }
-            this.#rekickTimer = setTimeout(step, NetworkDevice.#REKICK_DELAYS[this.#rekickStep++]);
+            const i = this.#rekickStep++;
+            const delay = i < NetworkDevice.#REKICK_DELAYS.length ? NetworkDevice.#REKICK_DELAYS[i] : NetworkDevice.#REKICK_STEADY_MS;
+            this.#rekickTimer = setTimeout(step, delay);
         };
         this.#rekickTimer = setTimeout(step, NetworkDevice.#REKICK_DELAYS[0]);
     }

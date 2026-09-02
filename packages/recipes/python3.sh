@@ -1199,6 +1199,13 @@ PYEOF
     # Pure-Python mmap shim: musl-wasm has no mmap() (nommu kernel), but
     # libraries like pip's vendored cachecontrol import mmap unconditionally.
     # The canonical copy lives in the repo's rootfs staging tree.
+    # Guest defaults: threading.stack_size(16 MB) — real per-thread stacks
+    # (sysroot/wasm_clone.c) default to musl's 128 KB, far too small for
+    # asyncified frames running Python (uvicorn's startup thread overflowed).
+    if [ -f "$REPO_ROOT/rootfs/usr/local/lib/python3.11/site-packages/sitecustomize.py" ]; then
+        mkdir -p "$_PYLIB/site-packages"
+        cp "$REPO_ROOT/rootfs/usr/local/lib/python3.11/site-packages/sitecustomize.py" "$_PYLIB/site-packages/sitecustomize.py"
+    fi
     if [ -f "$REPO_ROOT/rootfs/usr/local/lib/python3.11/mmap.py" ]; then
         cp "$REPO_ROOT/rootfs/usr/local/lib/python3.11/mmap.py" "$_PYLIB/mmap.py"
         echo "==> staged pure-Python mmap shim"

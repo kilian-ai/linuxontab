@@ -2963,6 +2963,7 @@ async function doBoat() {
   const guestMac = crypto.getRandomValues(new Uint8Array(6));
   guestMac[0] &= 0xfe;  // clear multicast bit
   const netDev = new NetworkDevice(guestMac, slirp.backend);
+  window.__netDev = netDev;   // diagnostics: virtqueue indices (vqs[0]=rx, vqs[1]=tx)
   window.__slirp = slirp;  // exposed for JS tunnel below
   if (window.__lotDevs) window.__lotDevs.netDev = netDev;
 

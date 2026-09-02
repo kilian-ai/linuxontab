@@ -714,7 +714,17 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                                 // the get_monotonic_ns/get_real_ns vmlinux exports.
                                 //   nr 101 = nanosleep_time32(req, rem)         — relative
                                 //   nr 115 = clock_nanosleep_time32(clk, flags, req, rem)
-                                if ((nr === 101 || nr === 115) && isThreadCloneChild?.() && memory) {
+                                // LOT 2026-09-02: this JS sleep shim dates from the old model where
+                                // thread children ran OUTSIDE the kernel's task context. pthread
+                                // clones are real kernel tasks now (task_entry fn=62), so a thread
+                                // that sleeps here in Atomics.wait never re-enters the scheduler
+                                // properly: a daemon thread doing time.sleep(N) never resumed (pure-
+                                // Python repro: main busy 25 s, thread sleep(12) — R-WOKE never
+                                // printed), which froze every WebFuse start (its transcode reaper
+                                // thread sleeps 30 s at import). Let the kernel handle nanosleep
+                                // for threads like any task; the shim is kept for reference only.
+                                const LOT_THREAD_SLEEP_SHIM = false;
+                                if (LOT_THREAD_SLEEP_SHIM && (nr === 101 || nr === 115) && isThreadCloneChild?.() && memory) {
                                     const reqPtr = (nr === 101) ? arg0 : arg2;
                                     const i32t = new Int32Array(memory.buffer);
                                     const sec = i32t[reqPtr >> 2];
