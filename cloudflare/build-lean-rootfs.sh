@@ -246,6 +246,7 @@ cat > "$STAGE/etc/motd" << 'EOF'
       apk list           # what's available
       apk add <pkg>      # install now
   Web servers:  nginx-demo (:8080) · httpd-demo (:8081)  → top bar: web view
+  Media:        ffmpeg / ffprobe 5.1 (installs on first use, ~15 MB)
   Everything runs in this tab. Nothing is sent to a server.
 
 EOF

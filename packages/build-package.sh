@@ -177,7 +177,8 @@ rm -rf "$BUILD_ROOT"
 mkdir -p "$SRC" "$STAGE/bin"
 
 # ── Fetch + extract source ───────────────────────────────────────────────────
-ARCHIVE="/tmp/lot-src-$NAME.tar.gz"
+# keyed by version too: a VERSION bump must not silently reuse the old tarball
+ARCHIVE="/tmp/lot-src-$NAME-$VERSION.tar.gz"
 if [ ! -f "$ARCHIVE" ]; then
     echo "==> Downloading $SOURCE_URL"
     curl -L --fail -o "$ARCHIVE" "$SOURCE_URL" || \

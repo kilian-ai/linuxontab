@@ -20,6 +20,7 @@
               substitution, subshells & job control all work
    Languages  python3 + pip · node · clang (self-hosting toolchain)
    Tools      curl · jq · sqlite3 · wasm-ld · wasm-opt
+   Media      ffmpeg · ffprobe 5.1 — demux/remux/decode any format (try: ffmpeg -i /root/clips/dvd.mpg -f null -)
    Web        nginx-demo — real nginx 1.26 serving a demo site on :8080
               httpd-demo — Apache httpd 2.4 (prefork) on :8081 → top bar: web view
    DB GUI     sqlite-web -p 8080 /root/demo.db   → top bar: web view
