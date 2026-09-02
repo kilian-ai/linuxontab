@@ -685,6 +685,19 @@
       ],
       "depends": [],
       "status": "available"
+    },
+    "ffmpeg": {
+      "version": "5.1.6",
+      "description": "ffmpeg + ffprobe \u2014 demux/remux/decode any format (no asm, single-threaded)",
+      "url": "https://linuxontab.com/packages/ffmpeg-5.1.6.tar.gz",
+      "size": 15272591,
+      "sha256": "711097115fbe6118c644870bd3c8bfa74c6ad969e6c6cd4096b70a660f5d12d5",
+      "bins": [
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "depends": [],
+      "status": "available"
     }
   }
 }
