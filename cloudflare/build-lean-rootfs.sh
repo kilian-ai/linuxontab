@@ -160,6 +160,9 @@ case "$_CMDLINE" in
 		[ -n "$_svc" ] || continue
 		echo "[lot] provisioning service: $_svc"
 		/usr/bin/apk add "$_svc" || continue
+		# flush the freshly extracted package before the service starts: pending
+		# writeback starves network wakeups (responses stall after 10 segments)
+		sync
 		_cmdline_svc=""
 		# registry line: name|command
 		grep "^$_svc|" /etc/lot-services.conf > /tmp/.lot-svc-cmd 2>/dev/null

@@ -10,6 +10,11 @@ if [ "$1" = "stop" ]; then
 fi
 if ps | grep -q "[u]vicorn"; then echo " spiel is already running on port 8080"; exit 0; fi
 mkdir -p /tmp /var/log/nginx /var/run /usr/local/nginx /opt/webfuse/data
+# Flush pending writeback first: right after a lean install (~70 MB of
+# python3/nginx/spiel just extracted) the dirty-page flush starves the guest's
+# network wakeups and every response stalls after its first 10 segments; a
+# sync beforehand makes the same transfers instant.
+sync
 sh /opt/webfuse/run.sh > /tmp/spiel.log 2>&1 &
 echo " starting the Spiel backend ..."
 i=0
