@@ -1,0 +1,24 @@
+wasm32: __clone must run the child through clone_entry so it gets its own stack
+
+The port's __clone() builds a clone_entry trampoline whose only job is to
+`global.set __stack_pointer` to the new thread's stack, but then passes the
+ORIGINAL func/arg to SYS_clone: the trampoline is dead code, the malloc'd
+args leak, and every pthread runs on the parent's shadow stack (each thread
+worker's wasm instance starts with the module's default __stack_pointer).
+Two threads that both park in pthread_cond_wait then have their on-stack
+`struct waiter` nodes 32 bytes apart on the same stack and corrupt musl's
+condvar waiter list — the "cond ping-pong wedges at round 2" bug that took
+down CPython threading and the ffmpeg 7 CLI on the wasm kernel.
+
+--- a/src/thread/wasm32/clone.c
++++ b/src/thread/wasm32/clone.c
+@@ -42,6 +42,8 @@ int __clone(int (*func)(void *), void *stack, int flags, void *arg, ...) {
+ 
+   struct clone_entry_arg *args = malloc(sizeof(*args));
+   args->stack = stack;
++  args->func = func;
++  args->arg = arg;
+ 
+-  return __syscall(SYS_clone, func, arg, flags, parent_tid, child_tid, tls);
++  return __syscall(SYS_clone, clone_entry, args, flags, parent_tid, child_tid, tls);
+ }

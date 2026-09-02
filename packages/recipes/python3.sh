@@ -918,8 +918,17 @@ SITE
     # LDFLAGS: -nostdlib so clang doesn't search its own tree for builtins;
     # CRT1 and builtins are provided explicitly via LIBS (same as all other recipes).
     _LDFLAGS="-nostdlib -static -Wl,--global-base=49152 -Wl,--import-memory -Wl,--export-memory -Wl,--export-table -Wl,--export=__heap_base -Wl,--export=__data_end -Wl,--shared-memory -Wl,--max-memory=268435456 -Wl,-z,stack-size=33554432 -L$ZPFX/lib"
+    # Thread stack fix: the wasm32-musl __clone runs every pthread on the
+    # PARENT's shadow stack (its clone_entry stack-pointer trampoline is dead
+    # code — see sysroot/wasm_clone.c), so two threads in pthread_cond_wait
+    # corrupt musl's condvar waiter list and CPython threading wedged after a
+    # couple of handoffs. wasm_clone.o (linked before -lc, overriding libc's
+    # clone.o) makes each thread run on its own stack. Verified: threading,
+    # Lock/Event/Condition ping-pong, concurrent-thread SQLite.
+    _CLONE_OBJ="$BLD/wasm_clone.o"
+    $CC $CFLAGS -c "$REPO_ROOT/sysroot/wasm_clone.c" -o "$_CLONE_OBJ"
     # LIBS: CRT1 first (provides _start), builtins last (provides __muldi3 etc.)
-    _LIBS="$CRT1 -lz -lm -lc $BUILTINS"
+    _LIBS="$CRT1 $_CLONE_OBJ -lz -lm -lc $BUILTINS"
 
     cd "$BLD"
     PATH="$WASM_LD_DIR:$PATH" "$SRC/configure" \
