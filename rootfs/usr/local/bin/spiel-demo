@@ -3,6 +3,20 @@
 # on loopback :8081 behind nginx on 0.0.0.0:8080, which serves the React UI
 # from /opt/frontend/dist and proxies /api/ (see /etc/nginx/spiel.conf).
 # Then: top bar -> web view -> port 8080.        Stop: spiel-demo stop
+case "$1" in
+  key)
+    # spiel-demo key <TMDB v3 api key>: posters/backdrops come from TMDB, so the
+    # backend needs a key at scan time. Written to /opt/webfuse/.env (this guest
+    # only — never into the package), then restart + rescan every source.
+    [ -n "$2" ] || { echo " usage: spiel-demo key <TMDB api key>   (https://www.themoviedb.org/settings/api)"; exit 1; }
+    grep -v "^TMDB_API_KEY=" /opt/webfuse/.env > /tmp/.env.new 2>/dev/null; echo "TMDB_API_KEY=$2" >> /tmp/.env.new; mv /tmp/.env.new /opt/webfuse/.env
+    echo " TMDB key saved to /opt/webfuse/.env — restarting the backend and rescanning ..."
+    "$0" stop > /dev/null 2>&1; sleep 1; "$0" || exit 1
+    "$0" rescan; exit $? ;;
+  rescan)
+    echo " rescanning all sources (TMDB enrichment if a key is set) ..."
+    cd /opt/webfuse && PYTHONPATH=/opt/webfuse-libs:/opt/webfuse python3 /opt/webfuse/rescan.py; exit $? ;;
+esac
 if [ "$1" = "stop" ]; then
     [ -f /var/run/nginx-spiel.pid ] && kill `cat /var/run/nginx-spiel.pid` 2>/dev/null
     kill `ps | grep "[u]vicorn" | awk '{print $1}'` 2>/dev/null
@@ -32,3 +46,4 @@ if ! kill -0 $! 2>/dev/null; then echo " nginx front did not start — see /var/
 echo " Spiel is up: React UI + API on port 8080 (nginx -> uvicorn 127.0.0.1:8081)"
 echo "   open it:  top bar -> web view -> port 8080      logs: /tmp/spiel.log /var/log/nginx/spiel-error.log"
 echo "   library: /opt/webfuse/testmedia is pre-seeded     stop: spiel-demo stop"
+grep -q "^TMDB_API_KEY=." /opt/webfuse/.env 2>/dev/null || echo "   posters: no TMDB key yet — set yours with:  spiel-demo key <TMDB api key>"

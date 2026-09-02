@@ -6,7 +6,7 @@ R="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/spiel/opt" "$T/spiel/usr/local/bin"
 cp -Rp "$R/rootfs/opt/webfuse" "$R/rootfs/opt/webfuse-libs" "$R/rootfs/opt/frontend" "$T/spiel/opt/"
-rm -rf "$T/spiel/opt/webfuse/data/"* "$T/spiel/opt/webfuse/__pycache__"
+rm -rf "$T/spiel/opt/webfuse/__pycache__"   # keep data/webfuse.db: the demo library pre-enriched with TMDB poster paths
 cp -p "$R/rootfs/usr/local/bin/spiel-demo" "$T/spiel/usr/local/bin/"
 mkdir -p "$T/spiel/etc/nginx" && cp -p "$R/rootfs/etc/nginx/spiel.conf" "$T/spiel/etc/nginx/"
 COPYFILE_DISABLE=1 tar czf "$R/packages/spiel-src-2.0.tar.gz" -C "$T" spiel
