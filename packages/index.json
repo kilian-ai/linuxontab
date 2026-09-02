@@ -706,8 +706,8 @@
       "version": "2.0",
       "description": "Spiel media server \u2014 FastAPI backend + React UI (spiel-demo, web view :8080)",
       "url": "https://linuxontab.com/packages/spiel-2.0.tar.gz",
-      "size": 20413961,
-      "sha256": "0153617b4b7274410834b466346945ba4488f4167aa6ff11357fb7ac4f1b37c8",
+      "size": 20413416,
+      "sha256": "774aec74486ff4333087a4e06cc6ea4ccaa0f3540d36f67dccdf7abf6c7d47c9",
       "bins": [
         "spiel-demo"
       ],

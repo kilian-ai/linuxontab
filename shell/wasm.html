@@ -4731,6 +4731,7 @@ function xDisconnect() {
 const guestWeb = (() => {
   const jars = new Map();                    // port → Map(cookieName → value)
   let queue = Promise.resolve();
+  const SLICE = 128 * 1024;                  // Range slice for big GET bodies
 
   const findHdrEnd = (raw) => {
     for (let i = 0; i + 3 < raw.length; i++)
@@ -4744,11 +4745,21 @@ const guestWeb = (() => {
     return new Promise((resolve) => {
       const slirp = window.__slirp;
       if (!slirp) { resolve(null); return; }
-      const chunks = []; let total = 0, done = false, hdrEnd = -1, contentLen = -1;
+      const chunks = []; let total = 0, done = false, hdrEnd = -1, contentLen = -1, chunked = false;
       const cat = () => { const o = new Uint8Array(total); let p = 0; for (const c of chunks) { o.set(c, p); p += c.length; } return o; };
       const fin = (rst) => {
         if (done) return; done = true;
-        resolve(total ? cat() : null);
+        // A timed-out exchange whose body is provably short (Content-Length
+        // not reached, or a chunked body without its terminating 0-chunk) is
+        // a FAILURE, not a response: serving the truncated bytes as a 200 hands
+        // the browser half a JS module (SyntaxError, blank app) with no retry.
+        // Resolving null makes once() retry on a fresh connection instead.
+        let incomplete = false;
+        if (rst && total && hdrEnd >= 0) {
+          if (contentLen >= 0) incomplete = total < hdrEnd + contentLen;
+          else if (chunked) { const raw = cat(); const tail = new TextDecoder().decode(raw.subarray(Math.max(hdrEnd, raw.length - 7))); incomplete = !/(^|\r\n)0\r\n\r\n$/.test(tail); }
+        }
+        resolve(total && !incomplete ? cat() : null);
         // Teardown policy: a timed-out conn is RST immediately (it must not
         // wedge the server). A completed response is torn down DELAYED — the
         // guest is mid-close (Connection: close) and an instant RST races its
@@ -4769,6 +4780,7 @@ const guestWeb = (() => {
               const head = new TextDecoder().decode(raw.subarray(0, hdrEnd));
               const m = head.match(/content-length:\s*(\d+)/i);
               if (m) contentLen = parseInt(m[1], 10);
+              chunked = /transfer-encoding:\s*chunked/i.test(head);
             }
           }
           if (hdrEnd >= 0 && contentLen >= 0 && total >= hdrEnd + contentLen) fin(false);
@@ -4846,15 +4858,39 @@ const guestWeb = (() => {
     const { port, method, path, mode, headers, body, prefix } = msg;
     const jar = jars.get(port) || jars.set(port, new Map()).get(port);
     const fwd = [];
-    for (const k of ['content-type', 'accept', 'accept-language', 'if-none-match', 'if-modified-since', 'x-requested-with']) {
+    for (const k of ['content-type', 'accept', 'accept-language', 'if-none-match', 'if-modified-since', 'x-requested-with', 'range']) {
       if (headers && headers[k]) fwd.push(k + ': ' + headers[k]);
     }
+    const callerRange = !!(headers && headers['range']);
     if (jar.size) fwd.push('Cookie: ' + [...jar.entries()].map(([k, v]) => k + '=' + v).join('; '));
 
     let curMethod = method, curPath = path, curBody = body ? new Uint8Array(body) : null, r = null;
     for (let hop = 0; hop < 4; hop++) {
-      r = await once(port, curMethod, curPath, fwd, curBody);
+      // Slice big GETs with Range: a single guest->page response stalls
+      // probabilistically past a few hundred KB (bulk TX lost-wakeup, see
+      // virtio.js), and one stalled connection is retried from byte 0. With
+      // 128 KB slices every piece stays in the reliable range, each rides its
+      // own connection, and a stall costs one slice retry, not the file.
+      // Servers that ignore Range (200) fall through untouched; a caller's own
+      // Range header (media seeking) is forwarded as-is, never sliced.
+      const slice = (curMethod === 'GET' && !callerRange) ? SLICE : 0;
+      r = await once(port, curMethod, curPath, slice ? fwd.concat(['Range: bytes=0-' + (slice - 1)]) : fwd, curBody);
       if (!r) return { error: 'no response from guest :' + port + ' — is the server running (and bound to 0.0.0.0)?' };
+      if (slice && r.status === 206) {
+        const cr = /bytes\s+(\d+)-(\d+)\/(\d+)/i.exec(r.headers['content-range'] || '');
+        if (cr) {
+          const total = parseInt(cr[3], 10); let got = parseInt(cr[2], 10) + 1;
+          const parts = [r.body];
+          while (got < total) {
+            const end = Math.min(got + slice, total) - 1;
+            const nx = await once(port, 'GET', curPath, fwd.concat(['Range: bytes=' + got + '-' + end]), null);
+            if (!nx || nx.status !== 206 || nx.body.length !== end - got + 1) return { error: 'guest :' + port + ' — sliced transfer failed at byte ' + got + ' of ' + total };
+            parts.push(nx.body); got = end + 1;
+          }
+          const all = new Uint8Array(total); let off = 0; for (const b of parts) { all.set(b, off); off += b.length; }
+          r.status = 200; r.body = all; delete r.headers['content-range'];
+        }
+      }
       for (const sc of r.setCookies) {
         const eq = sc.indexOf('='), sem = sc.indexOf(';');
         if (eq > 0) jar.set(sc.slice(0, eq).trim(), sc.slice(eq + 1, sem > 0 ? sem : undefined).trim());
@@ -4868,7 +4904,7 @@ const guestWeb = (() => {
     }
 
     const out = [];
-    for (const k of ['content-type', 'etag', 'last-modified', 'content-disposition']) {
+    for (const k of ['content-type', 'etag', 'last-modified', 'content-disposition', 'content-range', 'accept-ranges']) {
       if (r.headers[k]) out.push([k, r.headers[k]]);
     }
     if (r.headers['location'] && mode === 'navigate') {

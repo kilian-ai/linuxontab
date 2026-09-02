@@ -55,7 +55,10 @@ async function proxy(request, port, pathq, prefix) {
 
   const reply = await new Promise((resolve) => {
     const ch = new MessageChannel();
-    const timer = setTimeout(() => resolve(null), 30000);
+    // The shell serializes guest requests and retries stalled ones (6 x 20 s);
+    // a page load queues ~6 assets behind each other, so a 30 s deadline used
+    // to 504 the tail of every slow load (blank app). Wait for the engine.
+    const timer = setTimeout(() => resolve(null), 150000);
     ch.port1.onmessage = (ev) => { clearTimeout(timer); resolve(ev.data); };
     const msg = { type: 'guest-proxy', port, method: request.method, path: pathq, mode: request.mode, headers, body, prefix };
     shell.postMessage(msg, body ? [ch.port2, body] : [ch.port2]);
