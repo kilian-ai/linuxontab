@@ -90,13 +90,16 @@
       "version": "3.11.14",
       "description": "Python 3.11 interpreter (CPython, WASM)",
       "url": "https://linuxontab.com/packages/python3-3.11.14.tar.gz",
-      "size": 44859980,
-      "sha256": "cc576acc89af7dac02150843afb04f9816aa3a2f236c0089b79975b39ccd8568",
+      "size": 37738763,
+      "sha256": "9b0c1103872e481d891ddcfb904bcbf1e511c2f9c437d15111727cc4fe84ba0f",
       "bins": [
-        "python3"
+        "python3",
+        "python3.11",
+        "pip",
+        "pip3"
       ],
-      "status": "available",
-      "depends": []
+      "depends": [],
+      "status": "available"
     },
     "xorgproto": {
       "version": "2024.1",
