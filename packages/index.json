@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated": "2026-09-01",
+  "generated": "2026-09-02",
   "packages": {
     "busybox": {
       "version": "1.37.0",
@@ -90,8 +90,8 @@
       "version": "3.11.14",
       "description": "Python 3.11 interpreter (CPython, WASM)",
       "url": "https://linuxontab.com/packages/python3-3.11.14.tar.gz",
-      "size": 37738763,
-      "sha256": "9b0c1103872e481d891ddcfb904bcbf1e511c2f9c437d15111727cc4fe84ba0f",
+      "size": 37739120,
+      "sha256": "6d67c2f30a12c3923f007851da21405519603f60e581b5ba920b53d721e49269",
       "bins": [
         "python3",
         "python3.11",
@@ -698,6 +698,34 @@
       "bins": [
         "ffmpeg",
         "ffprobe"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "spiel": {
+      "version": "2.0",
+      "description": "Spiel media server \u2014 FastAPI backend + React UI (spiel-demo, web view :8080)",
+      "url": "https://linuxontab.com/packages/spiel-2.0.tar.gz",
+      "size": 20409919,
+      "sha256": "a093060cebda97bc60496be3e579fc182eca88868229494eb2b0de168ccf161a",
+      "bins": [
+        "spiel-demo"
+      ],
+      "depends": [
+        "python3",
+        "nginx"
+      ],
+      "status": "available"
+    },
+    "ffmpeg7": {
+      "version": "7.0.2",
+      "description": "ffmpeg 7.0 + ffprobe 7.0 with pthreads (EXPERIMENTAL: threaded CLI can deadlock under load) \u2014 installs as ffmpeg7 / ffprobe7",
+      "url": "https://linuxontab.com/packages/ffmpeg7-7.0.2.tar.gz",
+      "size": 16395358,
+      "sha256": "cac389989bbe4942b6f2883235c7a23380853264434340066db7d4a2aac9d542",
+      "bins": [
+        "ffmpeg7",
+        "ffprobe7"
       ],
       "depends": [],
       "status": "available"
