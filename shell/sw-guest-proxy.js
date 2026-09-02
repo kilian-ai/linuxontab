@@ -44,6 +44,28 @@ async function findShell() {
   return shells[0] || null;
 }
 
+// Content-hashed build assets (Vite's name-XXXXXXXX.js/.css) never change
+// for a given name, so cache them in CacheStorage: a repeat launch of the
+// same demo skips the slow serialized guest link entirely (~850 KB for the
+// Spiel UI), and a retry after a failed load only re-fetches what's missing.
+// index.html and /api/* are never cached.
+const ASSET_RE = /\/assets\/[^/?]+-[A-Za-z0-9_-]{8}\.(?:js|css|woff2?|ttf|png|svg|webp)(?:\?.*)?$/;
+const ASSET_CACHE = 'guest-assets-v1';
+async function proxyCached(request, port, pathq, prefix) {
+  const cacheable = request.method === 'GET' && !request.headers.has('range') && ASSET_RE.test(pathq);
+  if (!cacheable) return proxy(request, port, pathq, prefix);
+  const key = new Request(self.location.origin + '/__guest_asset' + pathq.split('?')[0]);
+  let cache = null;
+  try {
+    cache = await caches.open(ASSET_CACHE);
+    const hit = await cache.match(key);
+    if (hit) return hit;
+  } catch (_) { /* no CacheStorage (private mode) — fall through */ }
+  const resp = await proxy(request, port, pathq, prefix);
+  if (cache && resp.status === 200) { try { await cache.put(key, resp.clone()); } catch (_) {} }
+  return resp;
+}
+
 async function proxy(request, port, pathq, prefix) {
   const shell = await findShell();
   if (!shell) return textResponse(502, 'guest proxy: shell page not found — keep the LinuxOnTab tab open.');
@@ -85,7 +107,7 @@ self.addEventListener('fetch', (e) => {
   // Direct hit under the /guest/<port>/ prefix.
   const m = url.pathname.match(GUEST_RE);
   if (m) {
-    e.respondWith(proxy(e.request, +m[2], (m[3] || '/') + url.search, m[1]));
+    e.respondWith(proxyCached(e.request, +m[2], (m[3] || '/') + url.search, m[1]));
     return;
   }
 
@@ -103,7 +125,7 @@ self.addEventListener('fetch', (e) => {
           headers: { location: base + url.pathname + url.search },
         }));
       } else {
-        e.respondWith(proxy(e.request, +rm[2], url.pathname + url.search, base));
+        e.respondWith(proxyCached(e.request, +rm[2], url.pathname + url.search, base));
       }
     }
   }
