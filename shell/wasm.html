@@ -66,6 +66,15 @@
   /* ── web view (guest HTTP apps via sw-guest-proxy) ── */
   #web-view { flex:1; min-height:0; display:flex; flex-direction:column; background:#111; }
   #web-view[hidden] { display:none; }
+  #wv-body { position:relative; flex:1; min-height:0; display:flex; }
+  #wv-body > iframe { flex:1; }
+  #wv-loading { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; background:#111; color:#c9d1d9; font-size:14px; text-align:center; padding:20px; }
+  #wv-loading[hidden] { display:none; }
+  #wv-loading .spin { width:28px; height:28px; border:3px solid #2a2f36; border-top-color:#7aa2f7; border-radius:50%; animation:wvspin 1s linear infinite; }
+  @keyframes wvspin { to { transform:rotate(360deg); } }
+  #wv-loading-detail { color:#7a8392; font-size:12px; font-family:ui-monospace, Menlo, monospace; min-height:1.2em; }
+  #wv-loading-note { color:#5a6372; font-size:12px; max-width:420px; }
+  #wv-loading-retry { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:4px 14px; font:inherit; cursor:pointer; }
   /* ?kiosk — menu-less web view (the console's "web demo" launches) */
   body.kiosk #bar, body.kiosk #wv-toolbar { display:none; }
   #kiosk-menu { position:fixed; top:6px; right:8px; z-index:50; background:rgba(34,40,48,.8); color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:1px 9px; font:inherit; font-size:15px; line-height:1.4; cursor:pointer; opacity:.5; }
@@ -262,7 +271,16 @@
       <button id="wv-reload" disabled>reload</button>
       <span id="wv-status">idle — start a server in the guest first, e.g.: sqlite-web -p 8080 /root/demo.db</span>
     </div>
-    <iframe id="wv-frame" title="guest web app" sandbox="allow-scripts allow-forms allow-same-origin"></iframe>
+    <div id="wv-body">
+      <iframe id="wv-frame" title="guest web app" sandbox="allow-scripts allow-forms allow-same-origin"></iframe>
+      <div id="wv-loading" hidden>
+        <div class="spin"></div>
+        <div id="wv-loading-title">loading the guest's web app …</div>
+        <div id="wv-loading-detail"></div>
+        <div id="wv-loading-note">the guest serves it through this tab, one request at a time — big apps take a moment</div>
+        <button id="wv-loading-retry" hidden>retry</button>
+      </div>
+    </div>
   </div>
   <div id="cgi-view" hidden>
     <div id="cgi-toolbar">
@@ -4732,6 +4750,10 @@ const guestWeb = (() => {
   const jars = new Map();                    // port → Map(cookieName → value)
   let queue = Promise.resolve();
   const SLICE = 128 * 1024;                  // Range slice for big GET bodies
+  // Load progress for the web view's loading overlay (wvLoading below).
+  const stats = { done: 0, failed: 0, retries: 0, bytes: 0, active: '' };
+  let onprogress = null;
+  const progress = () => { try { onprogress && onprogress(stats); } catch (_) {} };
 
   const findHdrEnd = (raw) => {
     for (let i = 0; i + 3 < raw.length; i++)
@@ -4741,14 +4763,25 @@ const guestWeb = (() => {
 
   // One HTTP exchange over one injected connection. Resolves with the raw
   // response bytes (headers+body) on Content-Length reached / FIN / timeout.
-  function oneShot(port, reqBytes, timeoutMs) {
+  // Give up on NO PROGRESS for stallMs rather than on a fixed total, so a
+  // slow transfer that keeps delivering bytes gets the full timeoutMs.
+  // stallMs must stay generous: a guest connection routinely pauses 5-15 s
+  // mid-transfer and then resumes (measured — a 5 s cutoff turned a load
+  // that succeeded into 47 retries), so only a 20 s silence counts as dead.
+  function oneShot(port, reqBytes, timeoutMs, stallMs = 20000) {
     return new Promise((resolve) => {
       const slirp = window.__slirp;
       if (!slirp) { resolve(null); return; }
       const chunks = []; let total = 0, done = false, hdrEnd = -1, contentLen = -1, chunked = false;
+      const started = performance.now(); let lastData = started;
+      const watchdog = setInterval(() => {
+        const now = performance.now();
+        if (now - lastData > stallMs || now - started > timeoutMs) fin(true);
+      }, 250);
       const cat = () => { const o = new Uint8Array(total); let p = 0; for (const c of chunks) { o.set(c, p); p += c.length; } return o; };
       const fin = (rst) => {
         if (done) return; done = true;
+        clearInterval(watchdog);
         // A timed-out exchange whose body is provably short (Content-Length
         // not reached, or a chunked body without its terminating 0-chunk) is
         // a FAILURE, not a response: serving the truncated bytes as a 200 hands
@@ -4773,7 +4806,7 @@ const guestWeb = (() => {
         readyState: WebSocket.OPEN,          // slirp only forwards when OPEN
         send(g) {
           const u = g instanceof Uint8Array ? g : new Uint8Array(g);
-          chunks.push(u); total += u.length;
+          chunks.push(u); total += u.length; lastData = performance.now();
           if (hdrEnd < 0) {
             const raw = cat(); hdrEnd = findHdrEnd(raw);
             if (hdrEnd >= 0) {
@@ -4791,7 +4824,6 @@ const guestWeb = (() => {
       // injectConnect sets adapter.onmessage synchronously and buffers until
       // the TCP handshake completes.
       if (adapter.onmessage) adapter.onmessage({ data: reqBytes.buffer.slice(reqBytes.byteOffset, reqBytes.byteOffset + reqBytes.byteLength) });
-      setTimeout(() => fin(true), timeoutMs);   // timeout — RST so it can't wedge
     });
   }
 
@@ -4836,9 +4868,10 @@ const guestWeb = (() => {
     let req = hb;
     if (bodyU8 && bodyU8.length) { req = new Uint8Array(hb.length + bodyU8.length); req.set(hb); req.set(bodyU8, hb.length); }
     // Cold injected connections need a retry or two (gateway ARP ~1.5 s).
-    for (let attempt = 0; attempt < 6; attempt++) {
-      const raw = await oneShot(port, req, 20000);
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const raw = await oneShot(port, req, 60000);
       if (raw) { const r = parseResponse(raw); if (r && r.status >= 100) return r; }
+      stats.retries++; progress();
       await new Promise((x) => setTimeout(x, 150));
     }
     return null;
@@ -4914,7 +4947,14 @@ const guestWeb = (() => {
   }
 
   function enqueue(msg) {
-    const run = () => handle(msg).catch((e) => ({ error: String((e && e.message) || e) }));
+    const run = () => {
+      stats.active = msg.path || ''; progress();
+      return handle(msg).catch((e) => ({ error: String((e && e.message) || e) })).then((r) => {
+        if (r && r.error) stats.failed++; else { stats.done++; stats.bytes += (r && r.body) ? r.body.byteLength : 0; }
+        stats.active = ''; progress();
+        return r;
+      });
+    };
     const p = queue.then(run, run);
     queue = p.catch(() => {});
     return p;
@@ -4930,7 +4970,7 @@ const guestWeb = (() => {
       });
     });
   }
-  return { enqueue };
+  return { enqueue, stats, set onprogress(fn) { onprogress = fn; } };
 })();
 window.guestWeb = guestWeb;   // console/debug access to the proxy engine
 
@@ -5039,6 +5079,45 @@ const wvFallback = (() => {
 })();
 
 let wvMode = null;   // 'sw' | 'fallback'
+// Loading overlay: the frame stays blank until every asset has crossed the
+// serialized guest proxy (a React app = 6 requests, ~850 KB), which on a
+// stalling guest link can take a minute — a white iframe reads as "broken".
+// Show progress from the proxy engine instead, and if the document that
+// finally loads has an empty app root (a chunk failed), offer a retry.
+const wvLoading = (() => {
+  const el = $('wv-loading'), detail = $('wv-loading-detail'), title = $('wv-loading-title'), retry = $('wv-loading-retry');
+  let t0 = 0, timer = null, base = { done: 0, failed: 0, retries: 0, bytes: 0 };
+  const fmt = (s) => {
+    const d = s.done - base.done, r = s.retries - base.retries, kb = Math.round((s.bytes - base.bytes) / 1024);
+    const cur = s.active ? ' · ' + s.active.split('?')[0].split('/').pop().slice(0, 40) : '';
+    return d + ' file' + (d === 1 ? '' : 's') + ' · ' + kb + ' KB' + (r ? ' · ' + r + ' retr' + (r === 1 ? 'y' : 'ies') : '') + ' · ' + Math.round((performance.now() - t0) / 1000) + ' s' + cur;
+  };
+  const show = () => {
+    const s = guestWeb.stats; base = { done: s.done, failed: s.failed, retries: s.retries, bytes: s.bytes };
+    t0 = performance.now(); title.textContent = "loading the guest's web app …"; retry.hidden = true; detail.textContent = '';
+    el.hidden = false;
+    clearInterval(timer); timer = setInterval(() => { detail.textContent = fmt(guestWeb.stats); if (performance.now() - t0 > 20000) retry.hidden = false; }, 500);
+  };
+  const hide = () => { clearInterval(timer); timer = null; el.hidden = true; };
+  const failed = (why) => { title.textContent = why; retry.hidden = false; detail.textContent = fmt(guestWeb.stats); };
+  guestWeb.onprogress = (s) => { if (!el.hidden) detail.textContent = fmt(s); };
+  $('wv-frame').addEventListener('load', () => {
+    if (el.hidden) return;
+    // Give a JS app a beat to mount, then judge: content → done; an empty
+    // app root or an error page → offer a retry (the queue is idle again).
+    setTimeout(() => {
+      let doc = null; try { doc = $('wv-frame').contentDocument; } catch (_) {}
+      if (!doc || !doc.body) { hide(); return; }
+      const root = doc.getElementById('root') || doc.getElementById('app');
+      const text = (doc.body.innerText || '').trim();
+      if (root && root.childElementCount === 0 && !text) failed("the app's files didn't all arrive — retry");
+      else if (/^guest proxy:/.test(text)) failed(text.slice(0, 120));
+      else hide();
+    }, 800);
+  });
+  retry.onclick = () => { show(); const f = $('wv-frame'); const u = new URL(f.src || location.href); u.searchParams.set('r', Date.now()); f.src = u.pathname + u.search; };
+  return { show, hide };
+})();
 function wvOpen() {
   const port = parseInt($('wv-port').value, 10);
   if (!(port > 0 && port < 65536)) { $('wv-status').textContent = 'invalid port'; return; }
@@ -5046,6 +5125,7 @@ function wvOpen() {
   $('wv-status').textContent = 'starting proxy…';
   wvEnsureSw().then(() => {
     wvMode = 'sw';
+    wvLoading.show();
     $('wv-frame').src = new URL('guest/' + port + '/', location.href).pathname;
     $('wv-reload').disabled = false;
     $('wv-status').textContent = 'proxying guest :' + port + ' — serialized; first request can take ~2 s';
