@@ -153,6 +153,10 @@ case "$_CMDLINE" in
 	# body in a subshell, pushing apk (and its awk children) one fork level
 	# deeper, where the asyncify fork-chain hang lives. It worked on desktop
 	# by timing luck and reliably stalled installs on iOS.
+	# Refresh the package index from the CDN first: the baked-in copy is a
+	# snapshot from this image's build, so a package republished since then
+	# would fail its checksum against the stale entry.
+	/usr/bin/apk update > /dev/null 2>&1 || true
 	_rest="$_SVCS,"
 	while [ -n "$_rest" ]; do
 		_svc="${_rest%%,*}"
