@@ -69,6 +69,9 @@ fi
 # 3. build + asyncify (the guest runs asyncified modules: fork/blocking syscalls)
 (cd "$CRATE" && cargo +nightly build --release "$@")
 BIN="$(ls "$CRATE"/target/wasm32-wali-linux-musl/release/*.wasm | head -1)"
+# WALI_NO_ASYNCIFY=1: hand back the raw module (packages/build-package.sh
+# asyncifies everything in its stage itself; asyncifying twice breaks it).
+if [ -n "${WALI_NO_ASYNCIFY:-}" ]; then cp "$BIN" "$OUT"; echo "==> $OUT (not asyncified)"; exit 0; fi
 "$WASM_OPT" --enable-exception-handling --enable-threads --enable-bulk-memory --enable-mutable-globals \
   --enable-sign-ext --enable-nontrapping-float-to-int --asyncify -O1 "$BIN" -o "$OUT"
 echo "==> $OUT ($(du -h "$OUT" | cut -f1)); drop it in a guest image, e.g.:"

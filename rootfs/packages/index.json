@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated": "2026-09-02",
+  "generated": "2026-09-08",
   "packages": {
     "busybox": {
       "version": "1.37.0",
@@ -713,6 +713,18 @@
       "bins": [
         "ffmpeg7",
         "ffprobe7"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "trust": {
+      "version": "0.1.0",
+      "description": "TRUST \u2014 retro TUI IDE for Rust (ratatui), the guest's first Rust program",
+      "url": "https://linuxontab.com/packages/trust-0.1.0.tar.gz",
+      "size": 594113,
+      "sha256": "f50a2ccb213610930824743bb7e7bbd3cf49f896bfc8250b20afed65b1247610",
+      "bins": [
+        "trust"
       ],
       "depends": [],
       "status": "available"
