@@ -70,6 +70,13 @@ cp -Rp "$ROOTFS/usr/share/terminfo" "$STAGE/usr/share/terminfo"
 
 # Baked package index (apk falls back to it before any network).
 cp -p "$PKGDIR/index.json" "$STAGE/packages/index.json"
+# Dev hook: LEAN_EXTRA_BIN="/path/a.wasm /path/b.wasm" drops test binaries into
+# /usr/local/bin of a LOCAL lean image (never set this for a publish build).
+for _xb in ${LEAN_EXTRA_BIN:-}; do
+    cp -p "$_xb" "$STAGE/usr/local/bin/$(basename "$_xb" .wasm)"
+    chmod +x "$STAGE/usr/local/bin/$(basename "$_xb" .wasm)"
+    echo "==> lean extra bin: $(basename "$_xb" .wasm)"
+done
 
 # ── Lean /etc/rc (PID 1 after switch_root) ───────────────────────────────────
 # Modeled on rootfs/etc/rc, with everything that needs absent software guarded.
@@ -141,6 +148,16 @@ cat >> /etc/hosts <<'HOSTS'
 HOSTS
 
 cat /etc/motd
+
+# Terminal size: the page puts lot_tty=ROWSxCOLS on the cmdline (xterm.js at
+# boot). Without this the console tty reports 0x0: ncurses apps silently fall
+# back to 80x24 and crossterm/ratatui apps draw an empty screen.
+case "$_CMDLINE" in
+*lot_tty=*)
+	_TTY="${_CMDLINE##*lot_tty=}"; _TTY="${_TTY%% *}"
+	stty -F /dev/console rows "${_TTY%%x*}" cols "${_TTY##*x}" 2>/dev/null
+	;;
+esac
 
 # Service autostart (tabs-as-containers): lot_svc=redis[,pkg...] on the
 # cmdline installs each package and, if /etc/lot-services.conf has a line

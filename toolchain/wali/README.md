@@ -4,55 +4,45 @@ Goal: make the guest speak **WALI** (WebAssembly Linux Interface) so Rust's
 `wasm32-wali-linux-musl` target — and any wali-musl binary — runs on this
 tombl guest. Vehicle for building `trust` and future Rust tooling.
 
-## Status: Rust RUNS on the guest, blocked on a syscall-ABI compat layer
+## Status: Rust programs RUN on the guest — `trust` (ratatui TUI IDE) works
 
-A Rust binary built for `wasm32-wali-linux-musl` now **instantiates and
-executes** on the guest (via the bridge in `shell/linux-dist/dist/worker.js`),
-reaches its startup, and makes syscalls through the bridge. It does not yet
-complete because WALI targets the **x86-64 Linux ABI** while this guest kernel
-is **32-bit asm-generic** — so a compatibility layer is needed (below).
+`shell/linux-dist/dist/wali-bridge.js` is the bridge (imported by worker.js;
+only modules that import `wali.*` use it, C binaries are untouched). It does:
+- x86-64 → asm-generic syscall numbers, legacy → *at() rewrites;
+- LP64 ↔ LP32 layout translation where a struct carries a `long`: stat family
+  served from statx, rt_sigaction (no restorer, 32-bit flags), lseek → llseek,
+  gettimeofday/select/pselect6 (timeval/sigset args), poll → ppoll_time64.
+  timespec-carrying calls use the *_time64 syscalls, whose 64-bit layout IS
+  WALI's (clock_gettime → 403, nanosleep → 407, futex → 422, ppoll → 414 …);
+- host-side memory: mmap/munmap/mremap/brk over memory.grow with a 64 KB-granule
+  free list (mallocng churns 4 KB mmaps per frame; growing per call exhausted
+  --max-memory in minutes), mprotect/madvise/msync no-ops, file mmap via pread;
+- argv/env from the kernel's get_args; env is handed to wali-musl as the
+  KEY=VALUE\n file its init_env() expects (written to /tmp/.wali-env-<pid>);
+- unbridged SYS_* resolve to an ENOSYS stub (logged once) instead of a LinkError.
+- NOT yet: threads (`__wasm_thread_spawn` → EAGAIN, so std::thread::Builder
+  fails cleanly), fork/exec (ENOSYS), sysinfo/setitimer/getrusage layouts.
+Debug: `WALI_DEBUG=1 prog` traces every syscall to the browser console.
 
-### What works (this session)
-- **Rust std compiles** for the target (nightly + `-Zbuild-std`).
-- **wali-musl built**: `build-wali-musl.sh` fetches LLVM 22.1.3 (the only clang
-  with the `wasm32-linux-muslwali` LP64 triple; our clang-19/21 lack it),
-  builds wali-musl → sysroot (`libc.a` + `crt1-command.o`). Rust links clean
-  against it (no ABI warnings — LP64 matches).
-- **Bridge wired into worker.js** (`makeWaliImports_INLINE`): provides the
-  `wali` import module (149 `SYS_*` + `__cl_*` argv + `__init/__deinit/
-  __proc_exit/__get_init_envfile` lifecycle hooks) and `env._Unwind_*` stubs.
-  All imports resolve; the module runs.
-- Syscall-number translation **x86-64 → asm-generic** (write 1→64, openat
-  257→56, set_tid_address 218→96, …) plus **legacy→modern rewrites**
-  (`open`→`openat`, `stat`→`fstatat`, `dup2`→`dup3`, `mkdir`→`mkdirat`, …).
+Terminal size: the kernel tty reported 0x0 (no resize path), so the page now
+puts `lot_tty=ROWSxCOLS` on the cmdline and /etc/rc applies it with stty —
+that also gives ncurses apps their real size instead of the 80x24 fallback.
 
-### What remains (the compat layer — next session)
-The guest kernel is x86-64-ABI-incompatible in three more ways:
-1. **Memory syscalls are host-side.** Our kernel has NO `mmap`/`munmap`/`brk`
-   syscall — our C musl implements mmap via wasm `memory.grow` (worker.js:126).
-   wali-musl calls `SYS_mmap` as a syscall, so the bridge must implement
-   mmap/munmap/mremap/brk in JS via `memory.grow` (WALI-style host mmap).
-   Currently these return `-ENOSYS` (the immediate blocker after signal setup).
-2. **LP64↔LP32 struct layout.** WALI structs (`stat`, `timespec`, `pollfd`…)
-   are 64-bit-long layout; our kernel fills 32-bit-long layout. The bridge must
-   translate the buffers for stat/fstat/nanosleep/poll/etc.
-3. **Real argv.** `__cl_*` is stubbed to `argv[0]="rgtest"`; bridge it to the
-   guest's `linux.get_args`.
+### Build a Rust crate for the guest
+```
+./toolchain/wali/build-wali-musl.sh                 # once: LLVM 22 + wali-musl -> /tmp/wali-sysroot
+./toolchain/wali/build-rust-crate.sh <crate> out.wasm   # build-std + link + asyncify
+LEAN_EXTRA_BIN=out.wasm ./cloudflare/build-lean-rootfs.sh   # local test image
+```
+Crates that hard-code "wasm32 has no OS" need `patches/` (applied to vendored
+copies by the script): mio (compile_error gate), linux-raw-sys (wasm32 → x32
+layouts: the x86-64 kernel ABI with 32-bit pointers — exactly WALI), rustix
+(ioctl encoding). `trust` (crossterm + ratatui + serde) then builds unmodified.
 
 ### Files
 - `build-wali-musl.sh` — reproduce the wali-musl sysroot (fetches LLVM 22).
-- `wali-imports-inline.js` — the exact bridge injected into worker.js.
-- `gen-wali-imports.py`, `wali-imports.js` — module-form generator/output.
-- `our-syscall-numbers.json` — the guest kernel's asm-generic number map.
-- `cargo-config.reference.toml` — Rust link config against the wali sysroot.
-- `syscall-table.json` — WALI (x86-64) syscall table from the libc crate.
-
-### Build a Rust binary for the guest (once sysroot exists)
-```
-./toolchain/wali/build-wali-musl.sh                # -> /tmp/wali-sysroot
-cd yourcrate && cargo +nightly build --release --target wasm32-wali-linux-musl \
-  # with cargo-config.reference.toml pointing -L at /tmp/wali-sysroot/lib
-wasm-opt --asyncify -O2 target/.../bin.wasm -o bin.wasm   # then install in guest
-```
-Milestone: a Rust hello-world printing on the guest. Then `trust`
-(crossterm+ratatui+serde, all pure Rust) is a normal cargo build.
+- `build-rust-crate.sh` — cargo config + patches + build + asyncify.
+- `patches/` — crate patches (mio, linux-raw-sys, rustix).
+- `our-syscall-numbers.json`, `syscall-table.json` — number tables.
+- `wali-imports*.js`, `gen-wali-imports.py` — the original generated scaffold
+  (superseded by wali-bridge.js; kept for the tables).

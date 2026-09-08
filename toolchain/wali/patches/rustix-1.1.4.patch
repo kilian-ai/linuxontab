@@ -1,0 +1,13 @@
+diff -ruN --exclude=target --exclude=Cargo.lock a/rustix-1.1.4/src/ioctl/linux.rs b/rustix-1.1.4/src/ioctl/linux.rs
+--- a/rustix-1.1.4/src/ioctl/linux.rs	2006-07-23 18:21:28
++++ b/rustix-1.1.4/src/ioctl/linux.rs	2026-09-08 13:56:05
+@@ -51,7 +51,8 @@
+     target_arch = "riscv32",
+     target_arch = "riscv64",
+     target_arch = "loongarch64",
+-    target_arch = "csky"
++    target_arch = "csky",
++    target_arch = "wasm32"
+ ))]
+ mod consts {
+     use super::Opcode;

@@ -1,0 +1,13 @@
+diff -ruN --exclude=target --exclude=Cargo.lock a/mio-1.2.0/src/lib.rs b/mio-1.2.0/src/lib.rs
+--- a/mio-1.2.0/src/lib.rs	2006-07-23 18:21:28
++++ b/mio-1.2.0/src/lib.rs	2026-09-08 13:50:15
+@@ -40,7 +40,8 @@
+ //!
+ //! The available features are described in the [`features`] module.
+ 
+-#[cfg(all(target_family = "wasm", not(target_os = "wasi")))]
++// LinuxOnTab: wasm32-wali-linux-musl is a real Linux target (epoll etc. via WALI); the blanket wasm gate does not apply.
++#[cfg(all(target_family = "wasm", not(target_os = "wasi"), not(target_os = "linux")))]
+ compile_error!("This wasm target is unsupported by mio. If using Tokio, disable the net feature.");
+ 
+ // macros used internally

@@ -31,6 +31,16 @@ chmod 1777 /tmp /var/tmp
 # handshakes (injected connections stall in SYN-RECV). The JS syscall shim
 # watches clock_settime and keeps its clock origins in sync.
 read _CMDLINE < /proc/cmdline
+
+# Terminal size: the page puts lot_tty=ROWSxCOLS on the cmdline (xterm.js at
+# boot). Without this the console tty reports 0x0: ncurses apps silently fall
+# back to 80x24 and crossterm/ratatui apps draw an empty screen.
+case "$_CMDLINE" in
+*lot_tty=*)
+	_TTY="${_CMDLINE##*lot_tty=}"; _TTY="${_TTY%% *}"
+	stty -F /dev/console rows "${_TTY%%x*}" cols "${_TTY##*x}" 2>/dev/null
+	;;
+esac
 case "$_CMDLINE" in
 *lot_epoch=*)
 	_EPOCH="${_CMDLINE##*lot_epoch=}"

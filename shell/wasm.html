@@ -3395,7 +3395,7 @@ async function doBoat() {
     // lot_epoch: current host Unix time — /etc/init.d/rcS uses it to set the
     // guest wall clock (`date -s @N`). Setting it kernel-side at an initcall
     // breaks inbound TCP handshakes, so it must happen from userspace.
-    cmdline: 'console=hvc0 loglevel=4 nr_cpus=1 rdinit=/init ip=' + lotGuestIp + '::192.168.86.1:255.255.255.0::eth0:off lot_ip=' + lotGuestIp + (lotHosts ? ' lot_hosts=' + lotHosts : '') + (lotSvcs ? ' lot_svc=' + lotSvcs : '') + (lotRun ? ' lot_run=' + lotRun : '') + ' lot_epoch=' + Math.floor(Date.now() / 1000),
+    cmdline: 'console=hvc0 loglevel=4 nr_cpus=1 rdinit=/init ip=' + lotGuestIp + '::192.168.86.1:255.255.255.0::eth0:off lot_ip=' + lotGuestIp + (lotHosts ? ' lot_hosts=' + lotHosts : '') + (lotSvcs ? ' lot_svc=' + lotSvcs : '') + (lotRun ? ' lot_run=' + lotRun : '') + ' lot_epoch=' + Math.floor(Date.now() / 1000) + ' lot_tty=' + term.rows + 'x' + term.cols,
   });
 
   // Pipe the early boot console (pre-virtio kernel messages) to xterm.
