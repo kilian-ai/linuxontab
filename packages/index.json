@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated": "2026-09-08",
+  "generated": "2026-09-09",
   "packages": {
     "busybox": {
       "version": "1.37.0",
@@ -734,8 +734,8 @@
       "version": "0.1.0",
       "description": "TRUST \u2014 retro TUI IDE for Rust (ratatui), the guest's first Rust program",
       "url": "https://linuxontab.com/packages/trust-0.1.0.tar.gz",
-      "size": 594113,
-      "sha256": "f50a2ccb213610930824743bb7e7bbd3cf49f896bfc8250b20afed65b1247610",
+      "size": 594161,
+      "sha256": "d1924df80ba7f38d593bfabf79d75c11c977443a966be9185cf0c128ad5b7e56",
       "bins": [
         "trust"
       ],
