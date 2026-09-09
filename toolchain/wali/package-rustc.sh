@@ -26,6 +26,11 @@ cp "$BIN" "$T/rustc-raw.wasm"; wasm-strip "$T/rustc-raw.wasm"; BIN="$T/rustc-raw
   --enable-reference-types --enable-multivalue --enable-tail-call --asyncify -O1 "$BIN" -o "$R/bin/rustc.wasm"
 fi
 chmod 755 "$R/bin/rustc.wasm"
+# rustc finds its sysroot from argv[0] only when argv[0] is a symlink (otherwise it
+# dladdr()s the driver dylib, which a static build cannot do): ship a symlink.
+mv "$R/bin/rustc.wasm" "$R/bin/rustc.real.wasm"; ln -s rustc.real.wasm "$R/bin/rustc.wasm"
+# rustc on a 32-bit host looks for <sysroot>/lib32/rustlib
+ln -s lib "$R/lib32"
 cp "$LIBS"/*.rlib "$R/lib/rustlib/wasm32-wali-linux-musl/lib/"
 mkdir -p "$R/lib/rustlib/wasm32-wali-linux-musl/lib/self-contained"
 cp /tmp/wali-sysroot/lib/crt1-command.o /tmp/wali-sysroot/lib/libc.a /tmp/wali-sysroot/lib/libclang_rt.builtins-wasm32-wali.a "$R/lib/rustlib/wasm32-wali-linux-musl/lib/self-contained/"

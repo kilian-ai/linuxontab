@@ -1,3 +1,20 @@
+diff -ruN --exclude=target a/rustix-1.1.2/src/backend/libc/fs/syscalls.rs b/rustix-1.1.2/src/backend/libc/fs/syscalls.rs
+--- a/rustix-1.1.2/src/backend/libc/fs/syscalls.rs	2006-07-23 18:21:28
++++ b/rustix-1.1.2/src/backend/libc/fs/syscalls.rs	2026-09-09 12:22:25
+@@ -1875,10 +1875,9 @@
+         ))
+     }
+ }
+-#[cfg(all(linux_kernel, target_pointer_width = "32"))]
+-const SYS_OPENAT2: i32 = 437;
+-#[cfg(all(linux_kernel, target_pointer_width = "64"))]
+-const SYS_OPENAT2: i64 = 437;
++// LinuxOnTab: syscall numbers are `long` (64-bit on wasm32-wali even though pointers are 32-bit)
++#[cfg(linux_kernel)]
++const SYS_OPENAT2: c::c_long = 437;
+ 
+ #[cfg(target_os = "linux")]
+ pub(crate) fn sendfile(
 diff -ruN --exclude=target a/rustix-1.1.2/src/ioctl/linux.rs b/rustix-1.1.2/src/ioctl/linux.rs
 --- a/rustix-1.1.2/src/ioctl/linux.rs	2006-07-23 18:21:28
 +++ b/rustix-1.1.2/src/ioctl/linux.rs	2026-09-09 09:10:08
@@ -11,3 +28,75 @@ diff -ruN --exclude=target a/rustix-1.1.2/src/ioctl/linux.rs b/rustix-1.1.2/src/
  ))]
  mod consts {
      use super::Opcode;
+diff -ruN --exclude=target a/rustix-1.1.2/src/weak.rs b/rustix-1.1.2/src/weak.rs
+--- a/rustix-1.1.2/src/weak.rs	2006-07-23 18:21:28
++++ b/rustix-1.1.2/src/weak.rs	2026-09-09 12:22:25
+@@ -176,12 +176,12 @@
+ 
+             // Pass pointer types as pointers, to preserve provenance.
+             impl<T> AsSyscallArg for *mut T {
+-                type SyscallArgType = *mut T;
+-                fn into_syscall_arg(self) -> Self::SyscallArgType { self }
++                type SyscallArgType = ::libc::c_ulong;
++                fn into_syscall_arg(self) -> Self::SyscallArgType { self as usize as _ }
+             }
+             impl<T> AsSyscallArg for *const T {
+-                type SyscallArgType = *const T;
+-                fn into_syscall_arg(self) -> Self::SyscallArgType { self }
++                type SyscallArgType = ::libc::c_ulong;
++                fn into_syscall_arg(self) -> Self::SyscallArgType { self as usize as _ }
+             }
+ 
+             // Pass `BorrowedFd` values as the integer value.
+@@ -194,28 +194,28 @@
+ 
+             // Coerce integer values into `c_long`.
+             impl AsSyscallArg for i8 {
+-                type SyscallArgType = ::libc::c_int;
++                type SyscallArgType = ::libc::c_long;
+                 fn into_syscall_arg(self) -> Self::SyscallArgType { self.into() }
+             }
+             impl AsSyscallArg for u8 {
+-                type SyscallArgType = ::libc::c_int;
++                type SyscallArgType = ::libc::c_long;
+                 fn into_syscall_arg(self) -> Self::SyscallArgType { self.into() }
+             }
+             impl AsSyscallArg for i16 {
+-                type SyscallArgType = ::libc::c_int;
++                type SyscallArgType = ::libc::c_long;
+                 fn into_syscall_arg(self) -> Self::SyscallArgType { self.into() }
+             }
+             impl AsSyscallArg for u16 {
+-                type SyscallArgType = ::libc::c_int;
++                type SyscallArgType = ::libc::c_long;
+                 fn into_syscall_arg(self) -> Self::SyscallArgType { self.into() }
+             }
+             impl AsSyscallArg for i32 {
+-                type SyscallArgType = ::libc::c_int;
+-                fn into_syscall_arg(self) -> Self::SyscallArgType { self }
++                type SyscallArgType = ::libc::c_long;
++                fn into_syscall_arg(self) -> Self::SyscallArgType { self as _ }
+             }
+             impl AsSyscallArg for u32 {
+-                type SyscallArgType = ::libc::c_uint;
+-                fn into_syscall_arg(self) -> Self::SyscallArgType { self }
++                type SyscallArgType = ::libc::c_ulong;
++                fn into_syscall_arg(self) -> Self::SyscallArgType { self as _ }
+             }
+             impl AsSyscallArg for usize {
+                 type SyscallArgType = ::libc::c_ulong;
+@@ -224,12 +224,12 @@
+ 
+             // On 64-bit platforms, also coerce `i64` and `u64` since `c_long`
+             // is 64-bit and can hold those values.
+-            #[cfg(target_pointer_width = "64")]
++            #[cfg(any(target_pointer_width = "64", all(target_arch = "wasm32", target_os = "linux")))]
+             impl AsSyscallArg for i64 {
+                 type SyscallArgType = ::libc::c_long;
+                 fn into_syscall_arg(self) -> Self::SyscallArgType { self }
+             }
+-            #[cfg(target_pointer_width = "64")]
++            #[cfg(any(target_pointer_width = "64", all(target_arch = "wasm32", target_os = "linux")))]
+             impl AsSyscallArg for u64 {
+                 type SyscallArgType = ::libc::c_ulong;
+                 fn into_syscall_arg(self) -> Self::SyscallArgType { self }

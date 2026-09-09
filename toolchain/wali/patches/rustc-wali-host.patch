@@ -27,6 +27,23 @@ index 51909719827..c7b92dc1c59 100644
  
  [dependencies]
  # tidy-alphabetical-start
+diff --git a/compiler/rustc_session/src/filesearch.rs b/compiler/rustc_session/src/filesearch.rs
+index d88fed2f84a..e85386f1503 100644
+--- a/compiler/rustc_session/src/filesearch.rs
++++ b/compiler/rustc_session/src/filesearch.rs
+@@ -340,6 +340,10 @@ fn from_env_args_next() -> Option<PathBuf> {
+         rustlib_path.exists().then_some(p)
+     }
+ 
+-    from_env_args_next()
+-        .unwrap_or_else(|| default_from_rustc_driver_dll().expect("Failed finding sysroot"))
++    // LinuxOnTab (static rustc_driver, no dladdr): fall back to the executable's own path.
++    from_env_args_next().or_else(|| default_from_rustc_driver_dll().ok()).unwrap_or_else(|| {
++        let mut p = env::current_exe().expect("Failed finding sysroot: no current_exe");
++        p.pop(); p.pop();
++        p
++    })
+ }
 diff --git a/compiler/rustc_target/src/spec/targets/wasm32_wali_linux_musl.rs b/compiler/rustc_target/src/spec/targets/wasm32_wali_linux_musl.rs
 index 3c64948ad4a..c3ae5836485 100644
 --- a/compiler/rustc_target/src/spec/targets/wasm32_wali_linux_musl.rs

@@ -5,4 +5,4 @@
 # module that must be asyncified before the kernel can run it (see lot-rustc).
 R=/usr/local/lib/rust-wali
 exec "$R/bin/rustc.wasm" --sysroot "$R" --target wasm32-wali-linux-musl \
-  -C linker=/usr/local/bin/lot-rust-ld -C linker-flavor=wasm-lld -C link-self-contained=yes -C panic=abort "$@"
+  -C linker=/usr/local/bin/lot-rust-ld -C link-self-contained=yes -C panic=abort "$@"
