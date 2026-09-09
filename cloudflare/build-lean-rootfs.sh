@@ -22,7 +22,7 @@ PKGDIR="$REPO/packages"
 OUTDIR="$REPO/shell/linux-dist"
 MKE2FS="${MKE2FS:-/opt/homebrew/opt/e2fsprogs/sbin/mke2fs}"
 
-SIZE_BLOCKS=131072      # 4 KiB blocks -> 512 MiB, same as rootfs.ext4
+SIZE_BLOCKS=$(( ${LEAN_SIZE_MIB:-512} * 256 ))   # 4 KiB blocks; default 512 MiB like rootfs.ext4 (LEAN_SIZE_MIB= for big local test trees)
 BLOCK=4096
 
 [ -x "$MKE2FS" ] || { echo "ERROR: mke2fs not found at $MKE2FS (brew install e2fsprogs)"; exit 1; }

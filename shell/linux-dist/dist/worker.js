@@ -1,6 +1,6 @@
 import { assert } from "./util.js";
 import { HALT_KERNEL, kernel_imports, } from "./wasm.js";
-import { makeWaliImports } from './wali-bridge.js?v=20';
+import { makeWaliImports } from './wali-bridge.js?v=30';
 
 /**
  * Scan a Uint8Array for a valid WASM module of exactly expectedSize bytes.
@@ -90,7 +90,7 @@ const syscallLog = (nr, msg) => {
     if (LOG_SYSCALL_FILTER !== null && !LOG_SYSCALL_FILTER.has(nr)) return;
     workerLog(msg);
 };
-function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: parent_module, parent_user_memory: parent_memory, fork_bufPtr = null, fork_retPtr = null, setForkOverride, clearForkOverride, setThreadCloneOverride, clearThreadCloneOverride, setSuppressNextFutexWait, consumeSuppressNextFutexWait, isThreadCloneChild = null, }) {
+function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: parent_module, parent_user_memory: parent_memory, fork_bufPtr = null, fork_retPtr = null, setForkOverride, clearForkOverride, setThreadCloneOverride, clearThreadCloneOverride, setSuppressNextFutexWait, consumeSuppressNextFutexWait, isThreadCloneChild = null, markAsThreadCloneChild = null, parent_mem_max = 0, fork_entry_fn = null, fork_entry_arg = 0, }) {
     const HALT_USER = Symbol("halt user");
     const kernel_memory_buffer = new Uint8Array(kernel_memory.buffer);
     let module = null;
@@ -100,7 +100,7 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
     // switch_entry) don't trigger the "module changed" → fresh memory path on their
     // first instantiate(0) call. Only a genuine execve changes module away from this.
     let _lastInstantiatedModule = parent_module ?? null;
-    let moduleMemMax = 0;   // maximum (pages) the module declares for its imported memory, 0 = unknown
+    let moduleMemMax = parent_mem_max | 0;   // maximum (pages) the module declares for its imported memory, 0 = unknown; inherited by thread/fork children
     function call_start() {
         assert(instance);
         const { _start } = instance.exports;
@@ -113,6 +113,22 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
     //   pendingFork — set by syscall handler during asyncify unwind (parent side)
     //   forkRewindState — set from message params for asyncify rewind (child side)
     let pendingFork = null;
+    // WALI thread entry {fn, arg} this worker runs (null on the main thread). A fork()
+    // from a Rust thread must rewind — parent AND child — through this entry, not _start.
+    let waliThreadEntry = fork_entry_fn != null ? { fn: fork_entry_fn, arg: fork_entry_arg } : null;
+    function waliThreadRun() {
+        // Run (or asyncify-rewind into) the WALI thread entry; keep call_entry pointed
+        // here so a fork's rewind re-enters the same function chain.
+        assert(instance && waliThreadEntry);
+        const f = instance.exports.__indirect_function_table.get(waliThreadEntry.fn);
+        assert(typeof f === "function" && f.length === 2, "Invalid WALI thread entry signature");
+        const tid = get_kernel_instance().exports.syscall(178, 0, 0, 0, 0, 0, 0);   // gettid
+        f(tid, waliThreadEntry.arg);
+        // An asyncify fork unwind returns here normally: hand control to call()'s catch
+        // block (state 1 = unwinding) instead of letting the loop fall through to _start.
+        if (instance.exports.asyncify_get_state?.() === 1) throw new Error("wali thread: asyncify unwind");
+        call_entry = call_start;
+    }
     // Per-worker asyncify fork scratch region, memory.grow'n on first use.
     // Replaces the old fixed `byteLength - 4MB` buffer for binaries that don't
     // provide their own (busybox $() clone, wasm-stubs fork, legacy wasm_fork).
@@ -168,6 +184,7 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
         get memory() {
             return memory;
         },
+        get memMax() { return moduleMemMax; },
         imports: {
             // program management:
             compile(buf, size) {
@@ -733,7 +750,8 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                             // which froze the whole guest (parent shell included). Small children
                             // (vnc-server, sleep) fit under the parent's size so never hit it.
                             const pages = memory.buffer.byteLength >>> 16;
-                            const childMem = new WebAssembly.Memory({ initial: pages, maximum: 4096, shared: true });
+                            // WALI modules declare their own (4 GB) maximum and may already exceed 4096 pages.
+                            const childMem = new WebAssembly.Memory({ initial: pages, maximum: moduleMemMax || 4096, shared: true });
                             new Uint8Array(childMem.buffer).set(new Uint8Array(memory.buffer));
                             // Override get_user_memory so the kernel's spawn_worker passes childMem
                             const SYS_CLONE = 220, SIGCHLD = 17;
@@ -750,7 +768,7 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                                     // Regular fork OR NOMMU subshell-type child (fn_arg=0):
                                     // Use asyncify rewind so clone() returns 0 in the child and hush
                                     // continues executing the subshell command (e.g. $(...) substitution).
-                                    setForkOverride(childMem, { bufPtr: fork.bufPtr, retPtr: fork.retPtr });
+                                    setForkOverride(childMem, { bufPtr: fork.bufPtr, retPtr: fork.retPtr, entryFn: waliThreadEntry?.fn ?? null, entryArg: waliThreadEntry?.arg ?? 0 });
                                     childPid = get_kernel_instance().exports.syscall(SYS_CLONE, 0, 0, SIGCHLD, 0, 0, 0);
                                 }
                             }
@@ -827,6 +845,7 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                         // The syscall handler (state=Rewinding) will call asyncify_stop_rewind()
                         // and return m32[retPtr>>2] = 0.
                         instance.exports.asyncify_start_rewind(rs.bufPtr);
+                        if (waliThreadEntry) { call_entry = waliThreadRun; waliThreadRun(); return; }
                         call_start();
                     };
                     return;
@@ -837,8 +856,8 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                 // TLS wali-musl allocated itself — none of the C thread setup below
                 // applies. See wali-bridge.js.
                 if (WebAssembly.Module.imports(module).some((i) => i.module === 'wali')) {
+                    // instantiate() runs after switch_entry, so decide at call time.
                     call_entry = () => {
-                        call_entry = call_start;
                         assert(instance);
                         const f = instance.exports.__indirect_function_table.get(fn);
                         assert(typeof f === "function", "Invalid WALI clone entry");
@@ -846,14 +865,15 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                             // vfork child from wali-musl's posix_spawn (__clone(child, ...)):
                             // int child(void *arg) — runs natively and execs, like busybox's
                             // NOMMU subshell path.
+                            call_entry = call_start;
                             workerLog('wali vfork child fn=' + fn + ' arg=' + arg);
                             f(arg);
                             return;
                         }
-                        assert(f.length === 2, "Invalid WALI thread entry signature");
-                        const tid = get_kernel_instance().exports.syscall(178, 0, 0, 0, 0, 0, 0);   // gettid
-                        workerLog('wali thread start fn=' + fn + ' arg=' + arg + ' tid=' + tid);
-                        f(tid, arg);
+                        waliThreadEntry = { fn, arg };
+                        workerLog('wali thread start fn=' + fn + ' arg=' + arg);
+                        call_entry = waliThreadRun;
+                        waliThreadRun();
                     };
                     return;
                 }
@@ -935,7 +955,7 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
     };
 }
 self.onmessage = (event) => {
-    const { fn, arg, vmlinux, memory, parent_user_module, parent_user_memory, fork_bufPtr = null, fork_retPtr = null, thread_entry_fn = null, thread_entry_arg = null, debuglog = false } = event.data;
+    const { fn, arg, vmlinux, memory, parent_user_module, parent_user_memory, fork_bufPtr = null, fork_retPtr = null, thread_entry_fn = null, thread_entry_arg = null, debuglog = false, parent_mem_max = 0, fork_entry_fn = null, fork_entry_arg = 0 } = event.data;
     // debuglog is either false, true (trace everything), or a list of syscall
     // numbers to restrict the trace to.
     LOG_ENABLED = !!debuglog;
@@ -960,6 +980,9 @@ self.onmessage = (event) => {
         parent_user_memory,
         fork_bufPtr,
         fork_retPtr,
+        parent_mem_max,
+        fork_entry_fn,
+        fork_entry_arg,
         setForkOverride(childMem, params) {
             forkChildMemory = childMem;
             forkSpawnParams = params;
@@ -1022,6 +1045,11 @@ self.onmessage = (event) => {
                     fork_retPtr: forkSpawnParams?.retPtr ?? null,
                     thread_entry_fn: null,
                     thread_entry_arg: null,
+                    // WALI (Rust) modules run with a 4 GB memory maximum; children must inherit it
+                    // or a >256 MB parent cannot fork/spawn threads (Memory() lower-bound RangeError).
+                    parent_mem_max: user.memMax || 0,
+                    fork_entry_fn: forkSpawnParams?.entryFn ?? null,
+                    fork_entry_arg: forkSpawnParams?.entryArg ?? 0,
                 });
             },
             boot_console_write(message) {

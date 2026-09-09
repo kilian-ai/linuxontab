@@ -29,6 +29,7 @@ codegen-units = 1
 incremental = false
 optimize = true
 debug = false
+debuginfo-level-std = 0
 
 [target.wasm32-wali-linux-musl]
 cc = "/tmp/wali-tools/wali-cc"

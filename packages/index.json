@@ -741,6 +741,45 @@
       ],
       "depends": [],
       "status": "available"
+    },
+    "rustc": {
+      "version": "1.99.0",
+      "description": "rustc for the guest \u2014 the Rust compiler as a wasm32-wali-linux-musl binary (lot-rustc hello.rs)",
+      "url": "https://linuxontab.com/packages/rustc-1.99.0.tar.gz",
+      "size": 92656969,
+      "sha256": "0c786784789ea0ef6adfacae91906273a5d8fed99e696dd89ae9ce54ab01bd34",
+      "bins": [
+        "rustc",
+        "lot-rustc"
+      ],
+      "depends": [
+        "wasm-opt"
+      ],
+      "status": "available"
+    },
+    "wasm-ld": {
+      "version": "19.1.7",
+      "description": "wasm-ld (lld 19.1.7) for wasm32 \u2014 the linker rustc and clang use in the guest",
+      "url": "https://linuxontab.com/packages/wasm-ld-19.1.7.tar.gz",
+      "size": 13141017,
+      "sha256": "9bf78fb4f3440f458e0428a166ab8e01e2a0aad91a15af6588d0eec322e3d188",
+      "bins": [
+        "wasm-ld"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "wasm-opt": {
+      "version": "129-wali",
+      "description": "wasm-opt (binaryen 129, wasm32-wali build) \u2014 asyncify/optimize wasm modules in the guest (used by lot-rustc)",
+      "url": "https://linuxontab.com/packages/wasm-opt-129-wali.tar.gz",
+      "size": 4030399,
+      "sha256": "75ed7de60a4dc8835b7388eeaf355c4673f1dfe583122fec1b45468bd9e83dda",
+      "bins": [
+        "wasm-opt"
+      ],
+      "depends": [],
+      "status": "available"
     }
   }
 }

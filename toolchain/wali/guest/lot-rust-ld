@@ -1,6 +1,13 @@
 #!/bin/sh
-# Linker rustc invokes on the guest (flavor wasm-lld, raw lld args): the guest's
-# own wasm-ld plus the WALI runtime pieces and the guest memory model.
-R=/usr/local/lib/rust-wali/lib/rustlib/wasm32-wali-linux-musl/lib
-exec /usr/local/bin/wasm-ld "$@" -L"$R/self-contained" -lc "$R/self-contained/libclang_rt.builtins-wasm32-wali.a" \
+# Linker rustc invokes on the guest: the rustc package's own rust-lld (lld 23 from
+# the same LLVM as rustc, built for wasm32-wali so it runs through the WALI bridge —
+# the guest's C-toolchain wasm-ld 19 traps on rustc's objects) plus the WALI runtime
+# pieces and the guest memory model. rustc prefixes "-flavor wasm" itself.
+R=/usr/local/lib/rust-wali
+L=$R/lib/rustlib/wasm32-wali-linux-musl/lib
+if [ "$1" = "-flavor" ]; then shift 2; fi
+# --threads=1: lld's parallel readers/writers on WALI threads hit a kernel BUG
+# (fs/buffer.c check_irqs_on) on the single-CPU wasm kernel; same rule as the
+# C toolchain's wasm-ld wrapper.
+exec "$R/bin/rust-lld.wasm" -flavor wasm --threads=1 "$@" -L"$L/self-contained" -lc "$L/self-contained/libclang_rt.builtins-wasm32-wali.a" \
   --import-memory --export-table --export=__heap_base --export=__data_end -z stack-size=8388608

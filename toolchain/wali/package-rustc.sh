@@ -2,12 +2,14 @@
 # Package the WALI-host rustc (built by x.py, see README) for the guest:
 #   packages/rustc-<ver>.tar.gz  with  usr/local/lib/rust-wali/{bin/rustc.wasm, lib/rustlib/...}
 #   and usr/local/bin/{rustc, lot-rust-ld, lot-rustc}   (toolchain/wali/guest/)
-# plus index.json entries (bins rustc + lot-rustc → lean auto-install stubs).
+# plus index.json entries (bins rustc + lot-rustc → lean auto-install stubs; depends on wasm-opt for the
+# asyncify step, registered by package-linkers.sh; the linker is the package's own rust-lld).
 #   toolchain/wali/package-rustc.sh [rust-src-dir]
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"; REPO="$(cd "$HERE/../.." && pwd)"
 RUST="${1:-/tmp/rust-src/rust}"
 WASM_OPT="${LOT_WASM_OPT:-/opt/homebrew/bin/wasm-opt}"
+LLD="${LOT_LLD:-/tmp/lld23-wali/bin/lld}"   # lld 23 cross-built for wasm32-wali (see README), shipped as rust-lld
 NAME=rustc
 STAGE2="$RUST/build/wasm32-wali-linux-musl/stage2"
 [ -d "$STAGE2/bin" ] || { echo "no cross-host stage2 at $STAGE2 — did 'x.py build --stage 2 --host wasm32-wali-linux-musl compiler/rustc' finish?"; exit 1; }
@@ -26,20 +28,29 @@ cp "$BIN" "$T/rustc-raw.wasm"; wasm-strip "$T/rustc-raw.wasm"; BIN="$T/rustc-raw
   --enable-reference-types --enable-multivalue --enable-tail-call --asyncify -O1 "$BIN" -o "$R/bin/rustc.wasm"
 fi
 chmod 755 "$R/bin/rustc.wasm"
+[ -f "$LLD" ] || { echo "no WALI lld at $LLD (LOT_LLD=)"; exit 1; }
+echo "==> strip + asyncify lld ($(du -h "$LLD" | cut -f1)) -> rust-lld.wasm"
+if [ -n "${LLD_ASYNC:-}" ] && [ -f "$LLD_ASYNC" ]; then echo "    reusing $LLD_ASYNC"; cp "$LLD_ASYNC" "$R/bin/rust-lld.wasm"; else
+cp "$LLD" "$T/lld-raw.wasm"; wasm-strip "$T/lld-raw.wasm"
+"$WASM_OPT" --enable-exception-handling --enable-threads --enable-bulk-memory --enable-mutable-globals --enable-sign-ext --enable-nontrapping-float-to-int \
+  --enable-reference-types --enable-multivalue --enable-tail-call --asyncify -O1 "$T/lld-raw.wasm" -o "$R/bin/rust-lld.wasm"
+fi
+chmod 755 "$R/bin/rust-lld.wasm"
 # rustc finds its sysroot from argv[0] only when argv[0] is a symlink (otherwise it
 # dladdr()s the driver dylib, which a static build cannot do): ship a symlink.
 mv "$R/bin/rustc.wasm" "$R/bin/rustc.real.wasm"; ln -s rustc.real.wasm "$R/bin/rustc.wasm"
 # rustc on a 32-bit host looks for <sysroot>/lib32/rustlib
 ln -s lib "$R/lib32"
-cp "$LIBS"/*.rlib "$R/lib/rustlib/wasm32-wali-linux-musl/lib/"
+cp "$LIBS"/*.rlib "$R/lib/rustlib/wasm32-wali-linux-musl/lib/"   # rlibs carry full metadata (LOT_EMBED_METADATA=1 build, see README); the sibling .rmeta files are redundant
 mkdir -p "$R/lib/rustlib/wasm32-wali-linux-musl/lib/self-contained"
 cp /tmp/wali-sysroot/lib/crt1-command.o /tmp/wali-sysroot/lib/libc.a /tmp/wali-sysroot/lib/libclang_rt.builtins-wasm32-wali.a "$R/lib/rustlib/wasm32-wali-linux-musl/lib/self-contained/"
+cp /tmp/wali-libcxx/lib/libunwind.a "$R/lib/rustlib/wasm32-wali-linux-musl/lib/self-contained/"   # std links -lunwind (llvm-libunwind = "no")
 cp "$HERE"/guest/rustc "$HERE"/guest/lot-rust-ld "$HERE"/guest/lot-rustc "$P/usr/local/bin/"; chmod 755 "$P"/usr/local/bin/*
 cat > "$P/info" <<INFO
 name=$NAME
 version=$VERSION
 description=rustc for the guest — the Rust compiler as a wasm32-wali-linux-musl binary (lot-rustc hello.rs)
-depends=
+depends=wasm-opt
 built_with=toolchain/wali/package-rustc.sh
 target=wasm32-wali-linux-musl
 INFO
@@ -57,7 +68,7 @@ idx.setdefault("packages", {})[name] = {
     "version": version,
     "description": "rustc for the guest — the Rust compiler as a wasm32-wali-linux-musl binary (lot-rustc hello.rs)",
     "url": f"https://linuxontab.com/packages/{name}-{version}.tar.gz",
-    "size": int(size), "sha256": sha, "bins": ["rustc", "lot-rustc"], "depends": [], "status": "available",
+    "size": int(size), "sha256": sha, "bins": ["rustc", "lot-rustc"], "depends": ["wasm-opt"], "status": "available",
 }
 idx["generated"] = datetime.date.today().isoformat()
 json.dump(idx, open(f, "w"), indent=2); open(f, "a").write("\n"); print("updated", f)

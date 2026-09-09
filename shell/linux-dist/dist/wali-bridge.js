@@ -78,7 +78,21 @@ export function makeWaliImports({ memory, kernel, syscall, log }) {
     const putStr = (p, s, max) => { const b = new TextEncoder().encode(s); const k = Math.min(b.length, max - 1); u8().set(b.subarray(0, k), p); u8()[p + k] = 0; return k; };
 
     // ---- host-side memory ---------------------------------------------------
-    const MAP_ANONYMOUS = 0x20;
+    const MAP_ANONYMOUS = 0x20, MAP_SHARED = 0x01, PROT_WRITE = 0x2;
+    // Writable MAP_SHARED file mappings (lld's OnDiskBuffer writes the output
+    // file through one, then munmaps and renames): the mapping is a private
+    // copy here, so remember {fd(dup), off, len} and pwrite it back on
+    // munmap/msync. The fd is dup'ed (F_DUPFD) so a close() before munmap
+    // (LLVM's mapped_file_region outlives the FD) cannot strand the data.
+    const shared = new Map();                            // base -> { fd, off, len }
+    const writeBack = (base, m, len) => {
+        let put = 0; const n = Math.min(len, m.len);
+        while (put < n) {
+            const r = sc(68, m.fd, base + put, n - put, m.off + put);   // pwrite64
+            if (r <= 0) { dbg('wali: mmap writeback failed ' + r); break; }
+            put += r;
+        }
+    };
     // Page allocator over memory.grow. wasm memory never shrinks, and mallocng
     // mmaps/munmaps 4 KB groups constantly (every ratatui frame), so growing a
     // fresh 64 KB wasm page per mmap exhausted --max-memory in minutes.
@@ -112,15 +126,32 @@ export function makeWaliImports({ memory, kernel, syscall, log }) {
         const base = grow(len);
         if (base < 0) return base;
         if ((fl & MAP_ANONYMOUS) || f < 0) return base;   // fresh pages are zero
-        // File mapping: read the range in (MAP_PRIVATE semantics are all the
-        // callers here need — wali-musl maps its env file, Rust mmaps nothing).
+        // File mapping: read the range in (a private copy; see `shared` above
+        // for the writable MAP_SHARED case).
         let off = Number(big(offset)), got = 0;
         while (got < len) {
             const r = sc(67, f, base + got, len - got, off + got);     // pread64
             if (r <= 0) break;
             got += r;
         }
+        if ((fl & MAP_SHARED) && (i32(prot) & PROT_WRITE)) {
+            const d = sc(25, f, 0, 0, 0, 0, 0);                        // fcntl(F_DUPFD, 0)
+            shared.set(base, { fd: d >= 0 ? d : f, own: d >= 0, off, len });
+            if (debugAll) dbg('wali: shared writable file mmap fd=' + f + ' len=' + len + ' @' + base.toString(16));
+        }
         return base;
+    };
+    const host_munmap = (addr, len) => {
+        const base = i32(addr) >>> 0, n = i32(len) >>> 0;
+        const m = shared.get(base);
+        if (m) { writeBack(base, m, n); if (m.own) sc(57, m.fd, 0, 0, 0, 0, 0); shared.delete(base); }   // close
+        release(base, n);
+        return 0;
+    };
+    const host_msync = (addr, len) => {
+        const base = i32(addr) >>> 0, m = shared.get(base);
+        if (m) writeBack(base, m, i32(len) >>> 0);
+        return 0;
     };
     let brk = 0;
     const host_brk = (addr) => { if (!brk) brk = memory.buffer.byteLength; return brk; }; // never moves -> malloc uses mmap
@@ -300,10 +331,10 @@ export function makeWaliImports({ memory, kernel, syscall, log }) {
         SYS_getrusage: (who, ru) => R(getrusage(who, i32(ru))),
         // memory (host-side)
         SYS_mmap: (addr, len, prot, flags, fd, off) => R(host_mmap(addr, len, prot, flags, fd, off)),
-        SYS_munmap: (addr, len) => { release(i32(addr), i32(len) >>> 0); return R(0); },
+        SYS_munmap: (addr, len) => R(host_munmap(addr, len)),
         // Linear memory has no protection bits and no advice: std's stack guard
         // page (mprotect) and allocator hints (madvise) just succeed.
-        SYS_mprotect: () => R(0), SYS_madvise: () => R(0), SYS_msync: () => R(0),
+        SYS_mprotect: () => R(0), SYS_madvise: () => R(0), SYS_msync: (addr, len) => R(host_msync(addr, len)),
         SYS_mremap: (old, oldLen, newLen, flags) => {   // grow + copy (MREMAP_MAYMOVE)
             const b = grow(i32(newLen) >>> 0);
             if (b < 0) return R(b);
@@ -325,6 +356,12 @@ export function makeWaliImports({ memory, kernel, syscall, log }) {
         __init: () => { loadArgs(); return 0; },
         __deinit: () => 0,
         __proc_exit: (code) => { sc(94, i32(code)); },
+        // setjmp/longjmp are host imports in WALI (iwasm implements them natively).
+        // lld/LLVM only reach them from CrashRecoveryContext (sigsetjmp around the
+        // link, siglongjmp from a crash handler): setjmp → 0 ("direct return"),
+        // longjmp → abort, since no crash handler ever runs here.
+        setjmp: () => 0,
+        longjmp: (env, val) => { dbg('wali: longjmp(' + i32(val) + ') unsupported'); sc(94, 134); },
         __cl_get_argc: () => loadArgs().argv.length,
         __cl_get_argv_len: (i) => new TextEncoder().encode(loadArgs().argv[i32(i)] || '').length,
         __cl_copy_argv: (buf, i) => { const s = loadArgs().argv[i32(i)] || ''; const b = new TextEncoder().encode(s); u8().set(b, i32(buf)); u8()[i32(buf) + b.length] = 0; return b.length; },

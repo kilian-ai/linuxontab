@@ -1,12 +1,22 @@
 #!/bin/sh
 # Compile a Rust source file into a runnable guest program:
-#   lot-rustc hello.rs            -> ./hello   (asyncified, executable)
-# = rustc (WALI build) + wasm-opt --asyncify, the same transform every guest
-# binary gets at package time.
+#   lot-rustc hello.rs            -> ./hello
+# = rustc (WALI build, links with the package's rust-lld) + wasm-opt --asyncify,
+# the transform every guest binary gets at package time. Asyncify is what lets a
+# program fork (std::process::Command); everything else — threads, sleep, blocking
+# reads — works on the raw module too, so if wasm-opt is unavailable or fails the
+# raw module is kept and still runs.
 [ -n "$1" ] || { echo "usage: lot-rustc <file.rs> [rustc args...]"; exit 1; }
 src="$1"; shift
 out="${src%.rs}"
 rustc "$src" -o "$out.raw.wasm" "$@" || exit 1
-wasm-opt --enable-exception-handling --enable-threads --enable-bulk-memory --enable-mutable-globals --enable-sign-ext --enable-nontrapping-float-to-int --asyncify -O1 "$out.raw.wasm" -o "$out" || exit 1
-rm -f "$out.raw.wasm"; chmod +x "$out"
+if BINARYEN_CORES=1 wasm-opt --enable-exception-handling --enable-threads --enable-bulk-memory --enable-mutable-globals --enable-sign-ext \
+     --enable-nontrapping-float-to-int --enable-reference-types --enable-multivalue --enable-tail-call \
+     --asyncify -O1 "$out.raw.wasm" -o "$out" 2>/dev/null; then
+  rm -f "$out.raw.wasm"
+else
+  echo "lot-rustc: wasm-opt --asyncify failed; keeping the raw module (runs fine unless it spawns processes)" >&2
+  mv "$out.raw.wasm" "$out"
+fi
+chmod +x "$out"
 echo "built ./$out"

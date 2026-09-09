@@ -1,0 +1,15 @@
+diff --git a/src/bootstrap/src/core/builder/cargo.rs b/src/bootstrap/src/core/builder/cargo.rs
+index 3a1e4299b54..0491f832ba8 100644
+--- a/src/bootstrap/src/core/builder/cargo.rs
++++ b/src/bootstrap/src/core/builder/cargo.rs
+@@ -1196,7 +1196,9 @@ fn cargo(
+         // Enable usage of unstable features
+         cargo.env("RUSTC_BOOTSTRAP", "1");
+ 
+-        if matches!(mode, Mode::Std) {
++        // LinuxOnTab: LOT_EMBED_METADATA=1 keeps full metadata inside the rlibs (no sibling
++        // .rmeta files) so the guest sysroot package stays small and self-contained.
++        if matches!(mode, Mode::Std) && std::env::var_os("LOT_EMBED_METADATA").is_none() {
+             // The `-Zembed-metadata` flag was renamed from `-Zno-embed-metadata`.
+             if self.local_rebuild {
+                 cargo.arg("-Zembed-metadata=no");

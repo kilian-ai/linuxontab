@@ -139,10 +139,10 @@ export class Machine extends EventEmitter {
         const boot_console_close = () => {
             this.#boot_console_writer.close();
         };
-        const spawn_worker = (fn, arg, name, user_module, user_memory, fork_bufPtr = null, fork_retPtr = null, thread_entry_fn = null, thread_entry_arg = null) => {
+        const spawn_worker = (fn, arg, name, user_module, user_memory, fork_bufPtr = null, fork_retPtr = null, thread_entry_fn = null, thread_entry_arg = null, parent_mem_max = 0, fork_entry_fn = null, fork_entry_arg = 0) => {
             const mem_shared = user_memory ? (user_memory.buffer instanceof SharedArrayBuffer) : null;
             console.log('[SPAWN_WORKER] name=' + name + ' fn=' + fn + ' has_user_mem=' + (user_memory != null) + ' shared=' + mem_shared);
-            const __wjurl = new URL("./worker.js", import.meta.url); __wjurl.searchParams.set("waliv", "31"); const worker = new Worker(__wjurl, {
+            const __wjurl = new URL("./worker.js", import.meta.url); __wjurl.searchParams.set("waliv", "41"); const worker = new Worker(__wjurl, {
                 type: "module",
                 name,
             });
@@ -150,7 +150,7 @@ export class Machine extends EventEmitter {
             worker.onmessage = (event) => {
                 switch (event.data.type) {
                     case "spawn_worker":
-                        spawn_worker(event.data.fn, event.data.arg, event.data.name, event.data.user_module, event.data.user_memory, event.data.fork_bufPtr ?? null, event.data.fork_retPtr ?? null, event.data.thread_entry_fn ?? null, event.data.thread_entry_arg ?? null);
+                        spawn_worker(event.data.fn, event.data.arg, event.data.name, event.data.user_module, event.data.user_memory, event.data.fork_bufPtr ?? null, event.data.fork_retPtr ?? null, event.data.thread_entry_fn ?? null, event.data.thread_entry_arg ?? null, event.data.parent_mem_max ?? 0, event.data.fork_entry_fn ?? null, event.data.fork_entry_arg ?? 0);
                         break;
                     case "boot_console_write":
                         boot_console_write(event.data.message);
@@ -200,6 +200,9 @@ export class Machine extends EventEmitter {
                     fork_retPtr,
                     thread_entry_fn,
                     thread_entry_arg,
+                    parent_mem_max,
+                    fork_entry_fn,
+                    fork_entry_arg,
                     debuglog: DEBUG_LOG,
                 });
             } catch (e) {
