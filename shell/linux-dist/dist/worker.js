@@ -1,6 +1,6 @@
 import { assert } from "./util.js";
 import { HALT_KERNEL, kernel_imports, } from "./wasm.js";
-import { makeWaliImports } from './wali-bridge.js?v=11';
+import { makeWaliImports } from './wali-bridge.js?v=12';
 
 /**
  * Scan a Uint8Array for a valid WASM module of exactly expectedSize bytes.
@@ -796,6 +796,27 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                     };
                     return;
                 }
+                // WALI (Rust) thread: wali-musl's __wasm_thread_spawn(fn, args) came
+                // through the bridge as clone(fn, args); its entry is
+                // __wasm_thread_start_libc(tid, args), which installs the stack and
+                // TLS wali-musl allocated itself — none of the C thread setup below
+                // applies. See wali-bridge.js.
+                if (WebAssembly.Module.imports(module).some((i) => i.module === 'wali')) {
+                    call_entry = () => {
+                        call_entry = call_start;
+                        assert(instance);
+                        const f = instance.exports.__indirect_function_table.get(fn);
+                        assert(typeof f === "function" && f.length === 2, "Invalid WALI thread entry signature");
+                        const tid = get_kernel_instance().exports.syscall(178, 0, 0, 0, 0, 0, 0);   // gettid
+                        workerLog('wali thread start fn=' + fn + ' arg=' + arg + ' tid=' + tid);
+                        f(tid, arg);
+                    };
+                    return;
+                }
+                // This is a thread-clone child (CLONE_THREAD): it shares the parent's
+                // memory (SharedArrayBuffer) and runs a specific entry function rather
+                // than _start(). Mark it so that signal/sleep shims apply correctly.
+                markAsThreadCloneChild?.();
                 call_entry = () => {
                     // Reset call_entry to call_start so the next for(;;) iteration
                     // runs the real userspace program (_start). For NOMMU clone, fn

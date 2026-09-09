@@ -142,7 +142,7 @@ export class Machine extends EventEmitter {
         const spawn_worker = (fn, arg, name, user_module, user_memory, fork_bufPtr = null, fork_retPtr = null, thread_entry_fn = null, thread_entry_arg = null) => {
             const mem_shared = user_memory ? (user_memory.buffer instanceof SharedArrayBuffer) : null;
             console.log('[SPAWN_WORKER] name=' + name + ' fn=' + fn + ' has_user_mem=' + (user_memory != null) + ' shared=' + mem_shared);
-            const __wjurl = new URL("./worker.js", import.meta.url); __wjurl.searchParams.set("waliv", "22"); const worker = new Worker(__wjurl, {
+            const __wjurl = new URL("./worker.js", import.meta.url); __wjurl.searchParams.set("waliv", "23"); const worker = new Worker(__wjurl, {
                 type: "module",
                 name,
             });

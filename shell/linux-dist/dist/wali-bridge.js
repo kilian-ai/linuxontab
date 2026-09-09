@@ -323,10 +323,20 @@ export function makeWaliImports({ memory, kernel, syscall, log }) {
         __cl_get_argv_len: (i) => new TextEncoder().encode(loadArgs().argv[i32(i)] || '').length,
         __cl_copy_argv: (buf, i) => { const s = loadArgs().argv[i32(i)] || ''; const b = new TextEncoder().encode(s); u8().set(b, i32(buf)); u8()[i32(buf) + b.length] = 0; return b.length; },
         __get_init_envfile: (buf, size) => { const f = writeEnvFile(); if (!f) return 0; return putStr(i32(buf), f, i32(size)); },
-        // threads (wali-musl pthread_impl.h): not bridged yet — pthread_create
-        // fails with EAGAIN so std::thread::Builder::spawn returns an Err
-        // instead of the process dying. __set_thread_area just records TLS.
-        __wasm_thread_spawn: () => { dbg('wali: __wasm_thread_spawn -> EAGAIN (threads not bridged)'); return -11; },
+        // threads (wali-musl pthread_impl.h / pthread_create.c): the host must
+        // run `start_fn(tid, args)` on a new thread sharing this memory and
+        // return the tid. That is this kernel's clone(fn, arg, flags, ...) —
+        // the child worker's switch_entry sees a WALI module and calls the
+        // table entry with (tid, arg) (C clone entries take just (arg)).
+        // wali-musl allocated the stack + TLS itself (start_fn installs them),
+        // clears its own tid on exit and joins on detach_state, so no
+        // SETTLS/SETTID/CLEARTID flags are needed.
+        __wasm_thread_spawn: (fn, args) => {
+            const CLONE_THREAD_FLAGS = 0x50f00;   // VM|FS|FILES|SIGHAND|THREAD|SYSVSEM
+            const r = sc(220, i32(fn), i32(args), CLONE_THREAD_FLAGS, 0, 0, 0);
+            if (debugAll) dbg('wali: __wasm_thread_spawn fn=' + i32(fn) + ' -> ' + r);
+            return r;
+        },
         __clone: () => ENOSYS,
         __set_thread_area: () => 0,
         __unmapself: () => {},
