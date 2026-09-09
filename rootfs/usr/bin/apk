@@ -348,6 +348,7 @@ _install_pkg() {
     workdir="/var/tmp/apk-work-$pkg"
     rm -rf "$workdir" && mkdir -p "$workdir"
     tar xzf "$tmptar" -C "$workdir" 2>/dev/null || _err "Failed to extract tarball"
+    rm -f "$tmptar"   # the tree is on disk now; free the tarball before installing
 
     pkgroot="$workdir/pkg-$pkg"
     [ -d "$pkgroot" ] || _err "Malformed tarball: pkg-$pkg/ not found"
@@ -368,10 +369,12 @@ _install_pkg() {
         echo "$_dest" >> "$manifest"
     done
 
-    # Install: copy entire pkg tree to / preserving permissions.
-    # Packages are pre-asyncify-transformed at build time (make-packages.sh).
-    # cp -rp is a single depth-2 fork — safe in the asyncify fork chain.
-    cp -rp "$pkgroot/." / 2>/dev/null || _err "Failed to install files for $pkg"
+    # Install: hard-link the pkg tree into / (same ext4: no second copy of the
+    # data — rustc's 300 MB tree plus a copy did not fit the 512 MiB lean disk),
+    # falling back to a copy. Both are a single depth-2 fork — safe in the
+    # asyncify fork chain. Packages are pre-asyncify-transformed at build time.
+    cp -rlp "$pkgroot/." / 2>/dev/null || cp -rp "$pkgroot/." / 2>/dev/null || _err "Failed to install files for $pkg"
+    rm -rf "$workdir"   # links remain; the work tree was never cleaned up before
     # Make installed files executable (WASM binaries require +x).
     # Use the manifest (installed paths) not pkgroot — cp already happened.
     # BATCHED via xargs: a per-file `chmod` loop forks once per file — ~10k
