@@ -3289,7 +3289,10 @@ async function doBoat() {
   // request — small transfers are reliable) to load a tarball, the page
   // fetches it and fills this buffer, and the guest reads it from /dev/vdb.
   // Single-buffer: installs are serial (apk holds the flow), so no locking.
-  window.__pkgDropBytes = window.__pkgDropBytes || new Uint8Array(64 * 1024 * 1024);
+  // Sized for the largest package the CDN can carry (GitHub Pages caps files
+  // at 100 MB; rustc is 88 MB) plus the 8 KB control header. The pages are
+  // only committed when a tarball is written, so an idle tab pays nothing.
+  window.__pkgDropBytes = window.__pkgDropBytes || new Uint8Array(100 * 1024 * 1024 + 8192);
   const pkgDropBytes = window.__pkgDropBytes;
   // Block-channel package requests — NO TCP anywhere in the install path.
   // The guest writes "LOTREQ <nonce> <file>\n" into block 0 of /dev/vdb; this
