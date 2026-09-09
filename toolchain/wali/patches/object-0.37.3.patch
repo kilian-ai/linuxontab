@@ -1,0 +1,11 @@
+diff -ruN --exclude=target a/object-0.37.3/src/read/mod.rs b/object-0.37.3/src/read/mod.rs
+--- a/object-0.37.3/src/read/mod.rs	2006-07-23 18:21:28
++++ b/object-0.37.3/src/read/mod.rs	2026-09-09 09:26:03
+@@ -156,6 +156,7 @@
+ #[cfg(all(
+     unix,
+     not(target_os = "macos"),
++    not(target_family = "wasm"),   // LinuxOnTab: wasm32-wali-linux-musl is unix+wasm; its native file is wasm
+     target_pointer_width = "32",
+     feature = "elf"
+ ))]

@@ -16,7 +16,7 @@ patch-binaries-for-nix = false
 [llvm]
 download-ci-llvm = true
 link-shared = true
-static-libstdcpp = true
+static-libstdcpp = false
 
 [rust]
 channel = "nightly"

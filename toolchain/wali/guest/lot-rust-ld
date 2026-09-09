@@ -2,5 +2,5 @@
 # Linker rustc invokes on the guest (flavor wasm-lld, raw lld args): the guest's
 # own wasm-ld plus the WALI runtime pieces and the guest memory model.
 R=/usr/local/lib/rust-wali/lib/rustlib/wasm32-wali-linux-musl/lib
-exec /usr/local/bin/wasm-ld "$@" "$R/self-contained/crt1-command.o" -L"$R/self-contained" -lc "$R/self-contained/libclang_rt.builtins-wasm32-wali.a" \
+exec /usr/local/bin/wasm-ld "$@" -L"$R/self-contained" -lc "$R/self-contained/libclang_rt.builtins-wasm32-wali.a" \
   --import-memory --export-memory --export-table --export=__heap_base --export=__data_end --shared-memory --max-memory=268435456 -z stack-size=8388608
