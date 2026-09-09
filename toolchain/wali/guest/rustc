@@ -1,0 +1,9 @@
+#!/bin/sh
+# rustc on the LinuxOnTab guest: the real compiler is a wasm32-wali-linux-musl
+# binary (rustc.wasm, run through the WALI bridge). It only targets the guest
+# itself, links with the guest's wasm-ld through lot-rust-ld, and produces a
+# module that must be asyncified before the kernel can run it (see lot-rustc).
+R=/usr/local/lib/rust-wali
+exec "$R/bin/rustc.wasm" --sysroot "$R" --target wasm32-wali-linux-musl \
+  -C linker="$R/bin/lot-rust-ld" -C link-self-contained=no -C panic=abort \
+  -C target-feature=+atomics,+bulk-memory,+mutable-globals "$@"

@@ -1,0 +1,12 @@
+#!/bin/sh
+# Compile a Rust source file into a runnable guest program:
+#   lot-rustc hello.rs            -> ./hello   (asyncified, executable)
+# = rustc (WALI build) + wasm-opt --asyncify, the same transform every guest
+# binary gets at package time.
+[ -n "$1" ] || { echo "usage: lot-rustc <file.rs> [rustc args...]"; exit 1; }
+src="$1"; shift
+out="${src%.rs}"
+rustc "$src" -o "$out.raw.wasm" "$@" || exit 1
+wasm-opt --enable-exception-handling --enable-threads --enable-bulk-memory --enable-mutable-globals --enable-sign-ext --enable-nontrapping-float-to-int --asyncify -O1 "$out.raw.wasm" -o "$out" || exit 1
+rm -f "$out.raw.wasm"; chmod +x "$out"
+echo "built ./$out"

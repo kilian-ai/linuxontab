@@ -1,0 +1,42 @@
+# LinuxOnTab: cross-build rustc for the wasm guest (host = wasm32-wali-linux-musl)
+profile = "compiler"
+change-id = 999999
+
+[build]
+build = "aarch64-apple-darwin"
+host = ["aarch64-apple-darwin", "wasm32-wali-linux-musl"]
+target = ["aarch64-apple-darwin", "wasm32-wali-linux-musl"]
+docs = false
+extended = false
+tools = []
+sanitizers = false
+profiler = false
+patch-binaries-for-nix = false
+
+[llvm]
+download-ci-llvm = true
+link-shared = true
+static-libstdcpp = true
+
+[rust]
+channel = "nightly"
+rpath = false
+llvm-libunwind = "no"
+lld = false
+llvm-tools = false
+debug-assertions = false
+codegen-units = 1
+incremental = false
+optimize = true
+debug = false
+
+[target.wasm32-wali-linux-musl]
+cc = "/tmp/wali-tools/wali-cc"
+cxx = "/tmp/wali-tools/wali-c++"
+ar = "/tmp/llvm22/bin/llvm-ar"
+ranlib = "/tmp/llvm22/bin/llvm-ranlib"
+linker = "/tmp/wali-tools/wali-wasm-ld"
+musl-root = "/tmp/wali-sysroot"
+crt-static = true
+llvm-config = "/tmp/wali-tools/llvm-config"
+llvm-libunwind = "no"

@@ -1,3 +1,7 @@
 #!/bin/sh
-# C++ compiler wrapper for the wasm32-wali-linux-musl target: clang 22 + wali-musl + the WALI libc++ (/tmp/wali-libcxx)
-exec /tmp/llvm22/bin/clang++ --target=wasm32-unknown-linux-muslwali --sysroot=/tmp/wali-sysroot -O2 -pthread -fdeclspec -fwasm-exceptions -mcpu=generic -matomics -mbulk-memory -mexception-handling -stdlib=libc++ -nostdinc++ -isystem /tmp/wali-libcxx/include/c++/v1 -Wno-user-defined-literals -Wno-nullability-completeness "$@"
+# C++ compiler wrapper for the wasm32-wali-linux-musl target: clang 22 + wali-musl + the WALI libc++ (/tmp/wali-libcxx).
+# WASM exception handling is enabled unless the caller compiles with -fno-exceptions (LLVM does):
+# clang aborts on -fwasm-exceptions together with -fno-exceptions. The WALI triple goes last so it wins.
+EH="-fwasm-exceptions"
+for a in "$@"; do [ "$a" = "-fno-exceptions" ] && EH=""; done
+exec /tmp/llvm22/bin/clang++ --sysroot=/tmp/wali-sysroot -O2 -pthread -fdeclspec $EH -mcpu=generic -matomics -mbulk-memory -mexception-handling -stdlib=libc++ -nostdinc++ -isystem /tmp/wali-libcxx/include/c++/v1 -Wno-user-defined-literals -Wno-nullability-completeness "$@" --target=wasm32-unknown-linux-muslwali

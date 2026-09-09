@@ -19,7 +19,9 @@ for a in "$@"; do
     --libnames) ls "$OUT"/lib/libLLVM*.a | xargs -n1 basename | tr '\n' ' '; echo;;
     --libfiles) ls "$OUT"/lib/libLLVM*.a | tr '\n' ' '; echo;;
     --system-libs) echo "";;
-    --components) ls "$OUT"/lib/libLLVM*.a | sed 's#.*/libLLVM\([^.]*\)\.a#\1#' | tr 'A-Z' 'a-z' | tr '\n' ' '; echo;;
+    # rustc gates target support on llvm_component="webassembly" (llvm-config's target
+    # component name), which no library name lowercases to — add it explicitly.
+    --components) { ls "$OUT"/lib/libLLVM*.a | sed 's#.*/libLLVM\([^.]*\)\.a#\1#' | tr 'A-Z' 'a-z'; echo webassembly; } | tr '\n' ' '; echo;;
     --targets-built) echo "WebAssembly";;
     --shared-mode) echo "static";;
     --build-mode) echo "Release";;
