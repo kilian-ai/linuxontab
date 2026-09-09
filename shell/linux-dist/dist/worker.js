@@ -1,6 +1,6 @@
 import { assert } from "./util.js";
 import { HALT_KERNEL, kernel_imports, } from "./wasm.js";
-import { makeWaliImports } from './wali-bridge.js?v=17';
+import { makeWaliImports } from './wali-bridge.js?v=20';
 
 /**
  * Scan a Uint8Array for a valid WASM module of exactly expectedSize bytes.

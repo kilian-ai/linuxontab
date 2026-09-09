@@ -72,6 +72,11 @@ cp -Rp "$ROOTFS/usr/share/terminfo" "$STAGE/usr/share/terminfo"
 cp -p "$PKGDIR/index.json" "$STAGE/packages/index.json"
 # Dev hook: LEAN_EXTRA_BIN="/path/a.wasm /path/b.wasm" drops test binaries into
 # /usr/local/bin of a LOCAL lean image (never set this for a publish build).
+# LEAN_EXTRA_TREE=/path/to/tree: overlay a whole directory tree (e.g. an unpacked
+# package: usr/local/lib/... + usr/local/bin/...) into a LOCAL lean image.
+if [ -n "${LEAN_EXTRA_TREE:-}" ]; then
+    cp -Rp "$LEAN_EXTRA_TREE"/. "$STAGE"/ && echo "==> lean extra tree: $LEAN_EXTRA_TREE"
+fi
 for _xb in ${LEAN_EXTRA_BIN:-}; do
     cp -p "$_xb" "$STAGE/usr/local/bin/$(basename "$_xb" .wasm)"
     chmod +x "$STAGE/usr/local/bin/$(basename "$_xb" .wasm)"

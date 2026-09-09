@@ -368,13 +368,23 @@ export function makeWaliImports({ memory, kernel, syscall, log }) {
                     if (k === 'SYS_ioctl' && n(a[1]) === 0x5413) { const d = dv(), p = n(a[2]); extra = ' winsize=' + [0, 2, 4, 6].map((o) => d.getUint16(p + o, true)).join('x'); }
                     if (k === 'SYS_write' && n(a[2]) <= 200) extra = ' ' + JSON.stringify(new TextDecoder().decode(u8().slice(n(a[1]), n(a[1]) + n(a[2]))));
                     if (k === 'SYS_epoll_ctl') { const d = dv(), p = n(a[3]); extra = ' events=0x' + d.getUint32(p, true).toString(16) + ' data=' + d.getBigUint64(p + 8, true); }
+                    const pathArg = { SYS_open: 0, SYS_openat: 1, SYS_access: 0, SYS_faccessat: 1, SYS_stat: 0, SYS_lstat: 0, SYS_newfstatat: 1, SYS_readlink: 0, SYS_readlinkat: 1, SYS_execve: 0, SYS_statx: 1, SYS_mkdir: 0, SYS_unlink: 0, SYS_chdir: 0 }[k];
+                    if (pathArg !== undefined) { const m = u8(), p = n(a[pathArg]); let e = p; while (m[e] && e - p < 200) e++; extra += ' path=' + JSON.stringify(new TextDecoder().decode(m.slice(p, e))); }
+                    if (k === 'SYS_read' && r > 0 && r <= 80) extra += ' ' + JSON.stringify(new TextDecoder().decode(u8().slice(n(a[1]), n(a[1]) + r)));
                 } catch (_) {}
                 dbg(k + '(' + a.map(n).join(',') + ') = ' + r + extra);
             }
             return r;
         };
     }
-    const envExtra = { _Unwind_Backtrace: () => 0, _Unwind_GetIP: () => 0, _Unwind_GetIPInfo: () => 0, _Unwind_GetCFA: () => 0, _Unwind_GetRegionStart: () => 0 };
+    // Unwinder entry points std's backtrace support imports but the wasm
+    // libunwind does not define (panic=abort, so they are never reached).
+    const envExtra = {
+        _Unwind_Backtrace: () => 0, _Unwind_GetIP: () => 0, _Unwind_GetIPInfo: () => 0, _Unwind_GetCFA: () => 0,
+        _Unwind_GetRegionStart: () => 0, _Unwind_FindEnclosingFunction: () => 0, _Unwind_GetDataRelBase: () => 0,
+        _Unwind_GetTextRelBase: () => 0, _Unwind_GetLanguageSpecificData: () => 0, _Unwind_SetGR: () => {}, _Unwind_SetIP: () => {},
+        _Unwind_GetGR: () => 0, _Unwind_RaiseException: () => 9, _Unwind_Resume: () => {}, _Unwind_DeleteException: () => {},
+    };
     // Any SYS_* a module imports that is not bridged above links to an ENOSYS
     // stub (logged on first use) instead of failing instantiation outright:
     // std links ~150 syscalls it will never call in a given program.

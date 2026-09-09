@@ -1,8 +1,8 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 0d36c3f242d..f280b031182 100644
+index 0d36c3f242d..6f287a53284 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -94,3 +94,8 @@ codegen-units = 1
+@@ -94,3 +94,11 @@ codegen-units = 1
  # For git dependencies, also add your source to ALLOWED_SOURCES in src/tools/tidy/src/extdeps.rs.
  #[patch.crates-io]
  
@@ -11,6 +11,9 @@ index 0d36c3f242d..f280b031182 100644
 +[patch.crates-io]
 +linux-raw-sys = { path = "/tmp/wali-vendor-rustc/linux-raw-sys-0.11.0" }
 +rustix = { path = "/tmp/wali-vendor-rustc/rustix-1.1.2" }
++object = { path = "/tmp/wali-vendor-rustc/object-0.38.1" }
++object_037 = { package = "object", path = "/tmp/wali-vendor-rustc/object-0.37.3" }
++libc = { path = "/tmp/wali-vendor-rustc/libc-0.2.183" }
 diff --git a/compiler/rustc_driver/Cargo.toml b/compiler/rustc_driver/Cargo.toml
 index 51909719827..c7b92dc1c59 100644
 --- a/compiler/rustc_driver/Cargo.toml

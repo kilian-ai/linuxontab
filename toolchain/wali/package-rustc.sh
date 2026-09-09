@@ -13,16 +13,18 @@ STAGE2="$RUST/build/wasm32-wali-linux-musl/stage2"
 [ -d "$STAGE2/bin" ] || { echo "no cross-host stage2 at $STAGE2 — did 'x.py build --stage 2 --host wasm32-wali-linux-musl compiler/rustc' finish?"; exit 1; }
 BIN="$(ls "$STAGE2"/bin/rustc* | head -1)"
 # the cross-host stage2 sysroot is empty; the target std built by stage1 lives under the build host
-LIBS="$RUST/build/aarch64-apple-darwin/stage2/lib/rustlib/wasm32-wali-linux-musl/lib"
-[ -n "$(ls "$LIBS"/libstd-*.rlib 2>/dev/null)" ] || LIBS="$STAGE2/lib/rustlib/wasm32-wali-linux-musl/lib"
+LIBS="$RUST/build/aarch64-apple-darwin/stage1/lib/rustlib/wasm32-wali-linux-musl/lib"   # std built by the stage1 compiler (same version string as the stage2 rustc)
 [ -d "$LIBS" ] || { echo "no target std at $LIBS"; exit 1; }
-VERSION="$(grep -o '^version = "[^"]*"' "$RUST/src/version" 2>/dev/null | head -1 | cut -d'"' -f2)"; VERSION="${VERSION:-$(cat "$RUST/src/version" 2>/dev/null | tr -d '\n')}"; VERSION="${VERSION:-nightly}"
+VERSION="$(tr -d '
+' < "$RUST/src/version" 2>/dev/null || true)"; VERSION="${VERSION:-nightly}"
 T="$(mktemp -d /tmp/pkg-rustc.XXXXXX)"; P="$T/pkg-$NAME"; R="$P/usr/local/lib/rust-wali"
 mkdir -p "$R/bin" "$R/lib/rustlib/wasm32-wali-linux-musl/lib" "$P/usr/local/bin"
 echo "==> strip + asyncify $(basename "$BIN") ($(du -h "$BIN" | cut -f1)) — the guest runs asyncified modules"
+if [ -n "${RUSTC_ASYNC:-}" ] && [ -f "$RUSTC_ASYNC" ]; then echo "    reusing $RUSTC_ASYNC"; cp "$RUSTC_ASYNC" "$R/bin/rustc.wasm"; else
 cp "$BIN" "$T/rustc-raw.wasm"; wasm-strip "$T/rustc-raw.wasm"; BIN="$T/rustc-raw.wasm"
 "$WASM_OPT" --enable-exception-handling --enable-threads --enable-bulk-memory --enable-mutable-globals --enable-sign-ext --enable-nontrapping-float-to-int \
   --enable-reference-types --enable-multivalue --enable-tail-call --asyncify -O1 "$BIN" -o "$R/bin/rustc.wasm"
+fi
 chmod 755 "$R/bin/rustc.wasm"
 cp "$LIBS"/*.rlib "$R/lib/rustlib/wasm32-wali-linux-musl/lib/"
 mkdir -p "$R/lib/rustlib/wasm32-wali-linux-musl/lib/self-contained"

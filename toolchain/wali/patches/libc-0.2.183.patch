@@ -1,0 +1,14 @@
+diff -ruN --exclude=target a/libc-0.2.183/src/primitives.rs b/libc-0.2.183/src/primitives.rs
+--- a/libc-0.2.183/src/primitives.rs	2006-07-23 18:21:28
++++ b/libc-0.2.183/src/primitives.rs	2026-09-09 12:10:09
+@@ -54,7 +54,9 @@
+ }
+ 
+ cfg_if! {
+-    if #[cfg(all(target_pointer_width = "64", not(windows)))] {
++    // LinuxOnTab: wasm32-wali-linux-musl is LP64-on-wasm32 (long = 64-bit, pointers 32-bit);
++    // core::ffi and this crate's musl/b64 types already say so, this cfg must agree.
++    if #[cfg(any(all(target_pointer_width = "64", not(windows)), all(target_arch = "wasm32", target_os = "linux")))] {
+         pub type c_long = i64;
+         pub type c_ulong = u64;
+     } else {
