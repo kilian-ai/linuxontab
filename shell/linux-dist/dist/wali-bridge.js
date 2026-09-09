@@ -312,8 +312,14 @@ export function makeWaliImports({ memory, kernel, syscall, log }) {
             return R(b);
         },
         SYS_brk: (addr) => R(host_brk(addr)),
-        // not provided by this kernel / not bridged (yet): processes, threads
-        SYS_fork: () => R(ENOSYS), SYS_vfork: () => R(ENOSYS), SYS_clone: () => R(ENOSYS), SYS_clone3: () => R(ENOSYS),
+        // fork(): the worker intercepts clone(SIGCHLD, 0) from asyncified modules
+        // and implements a real fork (unwind, duplicate the process, rewind the
+        // child) — the same path C programs built with wasm-stubs.c use. Rust's
+        // Command::spawn on Linux is fork + execve, so this is what rustc uses to
+        // run the linker.
+        SYS_fork: () => R(sc(220, 17, 0, 0, 0, 0, 0)),
+        SYS_vfork: () => R(sc(220, 17, 0, 0, 0, 0, 0)),
+        SYS_clone: () => R(ENOSYS), SYS_clone3: () => R(ENOSYS),
         SYS_fadvise: () => R(0),
         // lifecycle + argv/env (see wali-musl/arch/wasm32/init_env.h)
         __init: () => { loadArgs(); return 0; },
@@ -337,7 +343,16 @@ export function makeWaliImports({ memory, kernel, syscall, log }) {
             if (debugAll) dbg('wali: __wasm_thread_spawn fn=' + i32(fn) + ' -> ' + r);
             return r;
         },
-        __clone: () => ENOSYS,
+        // __clone(fn, stack, flags, arg, ...): wali-musl's posix_spawn does
+        // __clone(child, stack, CLONE_VM|CLONE_VFORK|SIGCHLD, &args) — the same
+        // NOMMU vfork pattern busybox uses, which the worker's clone intercept
+        // already implements (asyncify unwind; the child runs fn(arg) natively
+        // and execs). Maps to this kernel's clone(fn, arg, flags, ...).
+        __clone: (fn, stack, flags, arg) => {
+            const r = sc(220, i32(fn), i32(arg), i32(flags), 0, 0, 0);
+            if (debugAll) dbg('wali: __clone fn=' + i32(fn) + ' flags=0x' + (i32(flags) >>> 0).toString(16) + ' -> ' + r);
+            return r;
+        },
         __set_thread_area: () => 0,
         __unmapself: () => {},
     });

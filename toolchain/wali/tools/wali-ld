@@ -1,0 +1,4 @@
+#!/bin/sh
+# Link driver for the WALI target. clang's driver passes a bare `crt1.o` for this
+# triple (wasm-ld does not search -L for it), so start files are given explicitly.
+exec /tmp/llvm22/bin/clang++ --target=wasm32-unknown-linux-muslwali --sysroot=/tmp/wali-sysroot -fuse-ld=lld -stdlib=libc++ -nostartfiles /tmp/wali-sysroot/lib/crt1.o -L/tmp/wali-libcxx/lib -L/tmp/wali-sysroot/lib -Wl,--import-memory -Wl,--export-memory -Wl,--export-table -Wl,--export=__heap_base -Wl,--export=__data_end -Wl,--shared-memory -Wl,--max-memory=4294967296 -Wl,-z,stack-size=8388608 "$@"

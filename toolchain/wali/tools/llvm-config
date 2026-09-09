@@ -1,0 +1,30 @@
+#!/bin/sh
+# llvm-config shim for the wasm32-wali-linux-musl LLVM 23 build (/tmp/llvm23-wali).
+# The real llvm-config is a target (wasm) binary; rustc's build.rs runs this on the host.
+OUT=/tmp/llvm23-wali; SRC=/tmp/rust-src/rust/src/llvm-project/llvm
+out=""
+for a in "$@"; do
+  case "$a" in
+    --version) echo "23.1.0";;
+    --host-target) echo "wasm32-wali-linux-musl";;
+    --prefix) echo "$OUT";;
+    --bindir) echo "$OUT/bin";;
+    --libdir) echo "$OUT/lib";;
+    --includedir) echo "$OUT/include";;
+    --cmakedir) echo "$OUT/lib/cmake/llvm";;
+    --cxxflags) echo "-I$OUT/include -I$SRC/include -std=c++17 -fno-exceptions -fno-rtti -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS";;
+    --cflags) echo "-I$OUT/include -I$SRC/include -D_GNU_SOURCE -D__STDC_CONSTANT_MACROS -D__STDC_FORMAT_MACROS -D__STDC_LIMIT_MACROS";;
+    --ldflags) echo "-L$OUT/lib";;
+    --libs) ls "$OUT"/lib/libLLVM*.a | sed 's#.*/lib\(LLVM[^.]*\)\.a#-l\1#' | tr '\n' ' '; echo;;
+    --libnames) ls "$OUT"/lib/libLLVM*.a | xargs -n1 basename | tr '\n' ' '; echo;;
+    --libfiles) ls "$OUT"/lib/libLLVM*.a | tr '\n' ' '; echo;;
+    --system-libs) echo "";;
+    --components) ls "$OUT"/lib/libLLVM*.a | sed 's#.*/libLLVM\([^.]*\)\.a#\1#' | tr 'A-Z' 'a-z' | tr '\n' ' '; echo;;
+    --targets-built) echo "WebAssembly";;
+    --shared-mode) echo "static";;
+    --build-mode) echo "Release";;
+    --assertion-mode) echo "OFF";;
+    --link-static|--link-shared|--ignore-libllvm) ;;
+    *) ;;   # component names for --libs are ignored: every static lib is returned
+  esac
+done

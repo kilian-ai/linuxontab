@@ -31,6 +31,11 @@ fi
 
 # 3. Build wali-musl -> sysroot (WALI's musl_config equivalent)
 cd "$WALI_SRC/wali-musl"
+# musl's generic src/thread/clone.c defines __clone as `return -ENOSYS`, which
+# shadows wali-musl's own `wali.__clone` host import — so posix_spawn (Rust's
+# Command::spawn) failed with ENOSYS before ever reaching the bridge. The
+# bridge implements __clone via the kernel's vfork path; drop the stub.
+rm -f src/thread/clone.c
 cat > config.mak <<EOF
 SHARED_LIBS =
 COMPILER_BIN = $LLVM_DIR/bin

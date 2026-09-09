@@ -1,6 +1,6 @@
 import { assert } from "./util.js";
 import { HALT_KERNEL, kernel_imports, } from "./wasm.js";
-import { makeWaliImports } from './wali-bridge.js?v=12';
+import { makeWaliImports } from './wali-bridge.js?v=17';
 
 /**
  * Scan a Uint8Array for a valid WASM module of exactly expectedSize bytes.
@@ -39,6 +39,33 @@ function findValidWasm(buf, expectedSize, startOffset) {
     }
     return -1;
 }
+/**
+ * Read the maximum (in pages) a module declares for its imported `env.memory`
+ * from the raw bytes; 0 if it imports no memory or declares no maximum.
+ */
+function importedMemoryMax(buf) {
+    let pos = 8;
+    const leb = () => { let v = 0, sh = 0, b; do { b = buf[pos++]; v |= (b & 0x7f) << sh; sh += 7; } while (b & 0x80); return v >>> 0; };
+    try {
+        while (pos < buf.length) {
+            const id = buf[pos++]; const size = leb(); const end = pos + size;
+            if (id !== 2) { pos = end; continue; }
+            const count = leb();
+            for (let i = 0; i < count; i++) {
+                const ml = leb(); pos += ml; const fl = leb(); pos += fl;   // module + field names
+                const kind = buf[pos++];
+                if (kind === 0) leb();
+                else if (kind === 1) { pos++; const f = leb(); leb(); if (f & 1) leb(); }
+                else if (kind === 2) { const f = leb(); leb(); return (f & 1) ? leb() : 0; }
+                else if (kind === 3) pos += 2;
+                else if (kind === 4) { pos++; leb(); }
+                else return 0;
+            }
+            return 0;
+        }
+    } catch (_) {}
+    return 0;
+}
 const unavailable = () => {
     throw new Error("not available on worker thread");
 };
@@ -73,6 +100,7 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
     // switch_entry) don't trigger the "module changed" → fresh memory path on their
     // first instantiate(0) call. Only a genuine execve changes module away from this.
     let _lastInstantiatedModule = parent_module ?? null;
+    let moduleMemMax = 0;   // maximum (pages) the module declares for its imported memory, 0 = unknown
     function call_start() {
         assert(instance);
         const { _start } = instance.exports;
@@ -178,7 +206,14 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                 }
                 try {
                     module = new WebAssembly.Module(bytes);
-                    workerLog('compile OK size=' + size);
+                    // A module that imports memory with a maximum above the default
+                    // 256 MB (rustc links --max-memory=4G) needs a memory created with
+                    // that maximum, or instantiation fails on the limits check.
+                    // Only for WALI (Rust) modules: C binaries all declare 4 GB but run
+                    // fine in 256 MB, and reserving 4 GB of address space per process
+                    // would add up across a guest's dozens of processes.
+                    moduleMemMax = WebAssembly.Module.imports(module).some((i) => i.module === 'wali') ? importedMemoryMax(bytes) : 0;
+                    workerLog('compile OK size=' + size + (moduleMemMax ? ' memMax=' + moduleMemMax + ' pages' : ''));
                     return 0;
                 }
                 catch (e) {
@@ -211,7 +246,7 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                     // 4096 pages = 256MB max; SAB uses virtual memory only.
                     memory = new WebAssembly.Memory({
                         initial: size,
-                        maximum: 4096,
+                        maximum: moduleMemMax || 4096,
                         shared: true,
                     });
                 }
@@ -806,7 +841,16 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                         call_entry = call_start;
                         assert(instance);
                         const f = instance.exports.__indirect_function_table.get(fn);
-                        assert(typeof f === "function" && f.length === 2, "Invalid WALI thread entry signature");
+                        assert(typeof f === "function", "Invalid WALI clone entry");
+                        if (f.length === 1) {
+                            // vfork child from wali-musl's posix_spawn (__clone(child, ...)):
+                            // int child(void *arg) — runs natively and execs, like busybox's
+                            // NOMMU subshell path.
+                            workerLog('wali vfork child fn=' + fn + ' arg=' + arg);
+                            f(arg);
+                            return;
+                        }
+                        assert(f.length === 2, "Invalid WALI thread entry signature");
                         const tid = get_kernel_instance().exports.syscall(178, 0, 0, 0, 0, 0, 0);   // gettid
                         workerLog('wali thread start fn=' + fn + ' arg=' + arg + ' tid=' + tid);
                         f(tid, arg);

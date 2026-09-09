@@ -1,0 +1,3 @@
+#!/bin/sh
+# C compiler wrapper for the wasm32-wali-linux-musl target (LLVM 22 clang + wali-musl sysroot)
+exec /tmp/llvm22/bin/clang --target=wasm32-unknown-linux-muslwali --sysroot=/tmp/wali-sysroot -O2 -pthread -fdeclspec -fwasm-exceptions -mcpu=generic -matomics -mbulk-memory -mexception-handling -Wno-implicit-function-declaration -Wno-int-conversion -Wno-incompatible-function-pointer-types -Wno-incompatible-pointer-types -Wno-nullability-completeness "$@"

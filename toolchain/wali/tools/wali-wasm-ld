@@ -1,0 +1,4 @@
+#!/bin/sh
+# wasm-ld wrapper used as rustc's linker for wasm32-wali-linux-musl (flavor wasm-lld, raw lld args):
+# adds the WALI start file, libc, the C++ runtime (for rustc's LLVM) and the guest's memory model.
+exec /tmp/llvm22/bin/wasm-ld "$@" /tmp/wali-sysroot/lib/crt1-command.o -L/tmp/wali-sysroot/lib -L/tmp/wali-libcxx/lib -lc -lc++ -lc++abi -lunwind /tmp/wali-sysroot/lib/libclang_rt.builtins-wasm32-wali.a --import-memory --export-memory --export-table --export=__heap_base --export=__data_end --shared-memory --max-memory=4294967296 -z stack-size=8388608
