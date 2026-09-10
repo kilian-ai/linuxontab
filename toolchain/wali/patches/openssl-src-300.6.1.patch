@@ -1,0 +1,23 @@
+diff -ruN --exclude=target --exclude=.cargo-ok /Users/kilian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openssl-src-300.6.1+3.6.3/src/lib.rs /tmp/wali-vendor-rustc/openssl-src/src/lib.rs
+--- a/openssl-src-300.6.1+3.6.3/src/lib.rs	2006-07-23 18:21:28
++++ b/openssl-src/src/lib.rs	2026-09-10 10:07:12
+@@ -408,6 +408,7 @@
+             "x86_64-unknown-netbsd" => "BSD-x86_64",
+             "x86_64-uwp-windows-msvc" => "VC-WIN64A-UWP",
+             "x86_64-pc-solaris" => "solaris64-x86_64-gcc",
++            "wasm32-wali-linux-musl" => "linux-generic32",   // LinuxOnTab: WALI guest (musl, pthreads, no asm)
+             "wasm32-unknown-emscripten" => "gcc",
+             "wasm32-unknown-unknown" => "gcc",
+             "wasm32-wasi" => "gcc",
+@@ -578,6 +579,11 @@
+                 }
+             }
+ 
++            if target == "wasm32-wali-linux-musl" {
++                // wasm32 has no OpenSSL assembly; secure-memory needs madvise/mlock
++                // semantics linear memory cannot provide; afalg/devcrypto are Linux-specific engines.
++                configure.args(["no-asm", "no-afalgeng", "no-devcryptoeng", "no-secure-memory", "-D__STDC_NO_ATOMICS__"]);
++            }
+             if target.contains("emscripten") {
+                 // As of OpenSSL 1.1.1 the source apparently wants to include
+                 // `stdatomic.h`, but this doesn't exist on Emscripten. After

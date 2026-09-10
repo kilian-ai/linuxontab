@@ -95,7 +95,21 @@ object in ~2 s. Pieces:
 - Kernel cmdline gets `rcupdate.rcu_cpu_stall_suppress=1` (wasm.html): a link
   that holds the single CPU for minutes triggers the RCU stall report, whose
   show_regs() is a BUG() in this port and halted the guest.
-- Not possible yet: proc-macro crates (need a dynamic loader), cargo.
+- **cargo** (`packages/cargo-0.100.0.tar.gz`, 11 MB, depends on rustc): built by the
+  same bootstrap, `x.py build --stage 2 --host wasm32-wali-linux-musl src/tools/cargo`
+  with `build.cargo-native-static = true` (vendored OpenSSL 3 / curl / nghttp2 /
+  libgit2 / libssh2 / zlib / sqlite, all compiled by the cc crate through the wali
+  wrappers; OpenSSL needs patches/openssl-src-300.6.1.patch mapping the triple to
+  `linux-generic32 no-asm`; an empty `libatomic.a` in the sysroot satisfies a
+  `-latomic` some build script emits). cargo has its own workspace and lockfile, so
+  the crate fixes are vendored again for its versions (patches/cargo-wali-host.patch
+  = the `[patch.crates-io]` block): rustix 1.1.4 + linux-raw-sys 0.12.1 + mio 1.2.1
+  (as for trust), gix-pack (a `not(wasm32)` gate on gix-tempfile), is_executable
+  (unix + wasm impls both matched), filetime (stub module for any non-emscripten
+  wasm). Guest: `package-cargo.sh`, wrapper `guest/cargo` (seeds
+  `$CARGO_HOME/config.toml`: build.rustc = the guest rustc wrapper, linker,
+  panic=abort, jobs=1; `CARGO_HTTP_MULTIPLEXING=false`).
+- Not possible yet: proc-macro crates (need a dynamic loader).
 - Local test image: `LEAN_SIZE_MIB=1024 LEAN_EXTRA_TREE=<unpacked pkgs>
   ./cloudflare/build-lean-rootfs.sh` (rustc + wasm-opt trees; 512 MiB overflows
   silently — mke2fs fails and the stale image is served).

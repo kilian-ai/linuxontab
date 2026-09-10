@@ -1,0 +1,12 @@
+diff -ruN --exclude=target --exclude=.cargo-ok a/is_executable-1.0.6/src/lib.rs b/is_executable-1.0.6/src/lib.rs
+--- a/is_executable-1.0.6/src/lib.rs	2006-07-23 18:21:28
++++ b/is_executable-1.0.6/src/lib.rs	2026-09-10 10:13:49
+@@ -122,7 +122,7 @@
+ // Since wasm and wasi
+ //  is not supposed to add executables ideologically,
+ // specify them collectively
+-#[cfg(any(target_os = "wasi", target_family = "wasm"))]
++#[cfg(all(any(target_os = "wasi", target_family = "wasm"), not(unix)))]   // LinuxOnTab: wasm32-wali-linux-musl is unix
+ mod wasm {
+     use std::path::Path;
+ 

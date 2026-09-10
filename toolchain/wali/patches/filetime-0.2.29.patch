@@ -1,0 +1,12 @@
+diff -ruN --exclude=target --exclude=.cargo-ok /Users/kilian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/filetime-0.2.29/src/lib.rs /tmp/wali-vendor-rustc/filetime-0.2.29/src/lib.rs
+--- a/filetime-0.2.29/src/lib.rs	2006-07-23 18:21:28
++++ b/filetime-0.2.29/src/lib.rs	2026-09-10 10:20:32
+@@ -47,7 +47,7 @@
+     } else if #[cfg(windows)] {
+         #[path = "windows.rs"]
+         mod imp;
+-    } else if #[cfg(all(target_family = "wasm", not(target_os = "emscripten")))] {
++    } else if #[cfg(all(target_family = "wasm", not(target_os = "emscripten"), not(target_os = "linux")))] {   // LinuxOnTab: wasm32-wali-linux-musl uses the unix impl
+         #[path = "wasm.rs"]
+         mod imp;
+     } else {

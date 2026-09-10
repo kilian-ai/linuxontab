@@ -1,0 +1,21 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index b2fc229..ac2e31d 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -298,3 +298,16 @@ http-transport-reqwest = ["gix/blocking-http-transport-reqwest"]
+ 
+ [lints]
+ workspace = true
++
++# LinuxOnTab: crates patched for the wasm32-wali-linux-musl host (see
++# toolchain/wali/patches in the LinuxOnTab repo).
++[patch.crates-io]
++libc = { path = "/tmp/wali-vendor-rustc/libc-0.2.186" }
++rustix = { path = "/tmp/wali-vendor-rustc/rustix-1.1.4" }
++linux-raw-sys = { path = "/tmp/wali-vendor-rustc/linux-raw-sys-0.12.1" }
++mio = { path = "/tmp/wali-vendor-rustc/mio-1.2.1" }
++openssl-src = { path = "/tmp/wali-vendor-rustc/openssl-src" }
++gix-pack = { path = "/tmp/wali-vendor-rustc/gix-pack-0.72.0" }
++is_executable = { path = "/tmp/wali-vendor-rustc/is_executable-1.0.6" }
++filetime = { path = "/tmp/wali-vendor-rustc/filetime-0.2.29" }
++tar = { path = "/tmp/wali-vendor-rustc/tar-0.4.46" }

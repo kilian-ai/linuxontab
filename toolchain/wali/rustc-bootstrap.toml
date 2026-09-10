@@ -3,6 +3,7 @@ profile = "compiler"
 change-id = 999999
 
 [build]
+cargo-native-static = true   # cargo: vendored openssl/curl/libgit2 (all-static)
 build = "aarch64-apple-darwin"
 host = ["aarch64-apple-darwin", "wasm32-wali-linux-musl"]
 target = ["aarch64-apple-darwin", "wasm32-wali-linux-musl"]

@@ -1,0 +1,13 @@
+diff -ruN --exclude=target --exclude=.cargo-ok a/gix-pack-0.72.0/Cargo.toml b/gix-pack-0.72.0/Cargo.toml
+--- a/gix-pack-0.72.0/Cargo.toml	2006-07-23 18:21:28
++++ b/gix-pack-0.72.0/Cargo.toml	2026-09-10 10:12:26
+@@ -156,7 +156,8 @@
+ [dev-dependencies.memmap2]
+ version = "0.9.10"
+ 
+-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.gix-tempfile]
++# LinuxOnTab: wasm32-wali-linux-musl has a filesystem; the wasm32 gate does not apply
++[dependencies.gix-tempfile]
+ version = "^23.0.0"
+ optional = true
+ default-features = false

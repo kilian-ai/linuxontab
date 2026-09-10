@@ -1,0 +1,31 @@
+#!/bin/sh
+# cargo on the guest (wasm32-wali-linux-musl host build, see toolchain/wali/README.md).
+# Seeds $CARGO_HOME/config.toml so every build uses the package's rustc and linker.
+R=/usr/local/lib/rust-wali
+export HOME="${HOME:-/root}"
+export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+[ -d "$R/lib/rustlib" ] || { echo "cargo: the rustc package is missing (run: apk add rustc)" >&2; exit 1; }
+if [ ! -f "$CARGO_HOME/config.toml" ]; then
+  mkdir -p "$CARGO_HOME"
+  cat > "$CARGO_HOME/config.toml" <<'CFG'
+# LinuxOnTab guest defaults (seeded by /usr/local/bin/cargo; edit freely)
+[build]
+rustc = "/usr/local/bin/rustc"
+jobs = 1
+
+[target.wasm32-wali-linux-musl]
+linker = "/usr/local/bin/lot-rust-ld"
+
+[profile.dev]
+panic = "abort"
+[profile.release]
+panic = "abort"
+
+[net]
+retry = 3
+git-fetch-with-cli = false
+CFG
+fi
+# curl inside cargo: single-threaded resolver, no HTTP/2 multiplexing surprises
+export CARGO_HTTP_MULTIPLEXING="${CARGO_HTTP_MULTIPLEXING:-false}"
+exec "$R/bin/cargo.wasm" "$@"

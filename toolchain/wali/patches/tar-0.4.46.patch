@@ -1,0 +1,181 @@
+diff -ruN --exclude=target --exclude=.cargo-ok /Users/kilian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tar-0.4.46/src/entry.rs /tmp/wali-vendor-rustc/tar-0.4.46/src/entry.rs
+--- a/tar-0.4.46/src/entry.rs	2006-07-23 18:21:28
++++ b/tar-0.4.46/src/entry.rs	2026-09-10 10:29:29
+@@ -593,7 +593,7 @@
+             }
+             return Ok(Unpacked::__Nonexhaustive);
+ 
+-            #[cfg(target_arch = "wasm32")]
++            #[cfg(all(target_arch = "wasm32", not(target_os = "linux")))]
+             #[allow(unused_variables)]
+             fn symlink(src: &Path, dst: &Path) -> io::Result<()> {
+                 Err(io::Error::new(io::ErrorKind::Other, "Not implemented"))
+@@ -604,7 +604,7 @@
+                 ::std::os::windows::fs::symlink_file(src, dst)
+             }
+ 
+-            #[cfg(all(unix, not(target_arch = "wasm32")))]
++            #[cfg(all(unix, not(all(target_arch = "wasm32", not(target_os = "linux")))))]
+             fn symlink(src: &Path, dst: &Path) -> io::Result<()> {
+                 ::std::os::unix::fs::symlink(src, dst)
+             }
+@@ -730,7 +730,7 @@
+             })
+         }
+ 
+-        #[cfg(all(unix, not(target_arch = "wasm32")))]
++        #[cfg(all(unix, not(all(target_arch = "wasm32", not(target_os = "linux")))))]
+         fn _set_ownerships(
+             dst: &Path,
+             f: &Option<&mut std::fs::File>,
+@@ -771,7 +771,7 @@
+         }
+ 
+         // Windows does not support posix numeric ownership IDs
+-        #[cfg(any(windows, target_arch = "wasm32"))]
++        #[cfg(any(windows, all(target_arch = "wasm32", not(target_os = "linux"))))]
+         fn _set_ownerships(
+             _: &Path,
+             _: &Option<&mut std::fs::File>,
+@@ -801,7 +801,7 @@
+             })
+         }
+ 
+-        #[cfg(all(unix, not(target_arch = "wasm32")))]
++        #[cfg(all(unix, not(all(target_arch = "wasm32", not(target_os = "linux")))))]
+         fn _set_perms(
+             dst: &Path,
+             f: Option<&mut std::fs::File>,
+@@ -845,7 +845,7 @@
+             }
+         }
+ 
+-        #[cfg(target_arch = "wasm32")]
++        #[cfg(all(target_arch = "wasm32", not(target_os = "linux")))]
+         #[allow(unused_variables)]
+         fn _set_perms(
+             dst: &Path,
+@@ -857,7 +857,7 @@
+             Err(io::Error::new(io::ErrorKind::Other, "Not implemented"))
+         }
+ 
+-        #[cfg(all(unix, not(target_arch = "wasm32"), feature = "xattr"))]
++        #[cfg(all(unix, not(all(target_arch = "wasm32", not(target_os = "linux"))), feature = "xattr"))]
+         fn set_xattrs(me: &mut EntryFields, dst: &Path) -> io::Result<()> {
+             use std::ffi::OsStr;
+             use std::os::unix::prelude::*;
+@@ -895,7 +895,7 @@
+         }
+         // Windows does not completely support posix xattrs
+         // https://en.wikipedia.org/wiki/Extended_file_attributes#Windows_NT
+-        #[cfg(any(windows, not(feature = "xattr"), target_arch = "wasm32"))]
++        #[cfg(any(windows, not(feature = "xattr"), all(target_arch = "wasm32", not(target_os = "linux"))))]
+         fn set_xattrs(_: &mut EntryFields, _: &Path) -> io::Result<()> {
+             Ok(())
+         }
+diff -ruN --exclude=target --exclude=.cargo-ok /Users/kilian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tar-0.4.46/src/header.rs /tmp/wali-vendor-rustc/tar-0.4.46/src/header.rs
+--- a/tar-0.4.46/src/header.rs	2006-07-23 18:21:28
++++ b/tar-0.4.46/src/header.rs	2026-09-10 10:29:29
+@@ -1,4 +1,4 @@
+-#[cfg(all(unix, not(target_arch = "wasm32")))]
++#[cfg(all(unix, not(all(target_arch = "wasm32", not(target_os = "linux")))))]
+ use std::os::unix::prelude::*;
+ #[cfg(windows)]
+ use std::os::windows::prelude::*;
+@@ -20,7 +20,7 @@
+ ///
+ /// This value, chosen after careful deliberation, corresponds to _Jul 23, 2006_,
+ /// which is the date of the first commit for what would become Rust.
+-#[cfg(all(any(unix, windows), not(target_arch = "wasm32")))]
++#[cfg(all(any(unix, windows), not(all(target_arch = "wasm32", not(target_os = "linux")))))]
+ pub const DETERMINISTIC_TIMESTAMP: u64 = 1153704088;
+ 
+ pub(crate) const BLOCK_SIZE: u64 = 512;
+@@ -779,13 +779,13 @@
+         }
+     }
+ 
+-    #[cfg(target_arch = "wasm32")]
++    #[cfg(all(target_arch = "wasm32", not(target_os = "linux")))]
+     #[allow(unused_variables)]
+     fn fill_platform_from(&mut self, meta: &fs::Metadata, mode: HeaderMode) {
+         unimplemented!();
+     }
+ 
+-    #[cfg(all(unix, not(target_arch = "wasm32")))]
++    #[cfg(all(unix, not(all(target_arch = "wasm32", not(target_os = "linux")))))]
+     fn fill_platform_from(&mut self, meta: &fs::Metadata, mode: HeaderMode) {
+         match mode {
+             HeaderMode::Complete => {
+@@ -1670,7 +1670,7 @@
+     copy_path_into_inner(slot, path, is_link_name, true, allow_absolute)
+ }
+ 
+-#[cfg(target_arch = "wasm32")]
++#[cfg(all(target_arch = "wasm32", not(target_os = "linux")))]
+ fn ends_with_slash(p: &Path) -> bool {
+     p.to_string_lossy().ends_with('/')
+ }
+@@ -1681,12 +1681,12 @@
+     last == Some(b'/' as u16) || last == Some(b'\\' as u16)
+ }
+ 
+-#[cfg(all(unix, not(target_arch = "wasm32")))]
++#[cfg(all(unix, not(all(target_arch = "wasm32", not(target_os = "linux")))))]
+ fn ends_with_slash(p: &Path) -> bool {
+     p.as_os_str().as_bytes().ends_with(b"/")
+ }
+ 
+-#[cfg(any(windows, target_arch = "wasm32"))]
++#[cfg(any(windows, all(target_arch = "wasm32", not(target_os = "linux"))))]
+ pub fn path2bytes(p: &Path) -> io::Result<Cow<'_, [u8]>> {
+     p.as_os_str()
+         .to_str()
+@@ -1708,7 +1708,7 @@
+         })
+ }
+ 
+-#[cfg(all(unix, not(target_arch = "wasm32")))]
++#[cfg(all(unix, not(all(target_arch = "wasm32", not(target_os = "linux")))))]
+ /// On unix this will never fail
+ pub fn path2bytes(p: &Path) -> io::Result<Cow<'_, [u8]>> {
+     Ok(Cow::Borrowed(p.as_os_str().as_bytes()))
+@@ -1737,7 +1737,7 @@
+     }
+ }
+ 
+-#[cfg(all(unix, not(target_arch = "wasm32")))]
++#[cfg(all(unix, not(all(target_arch = "wasm32", not(target_os = "linux")))))]
+ /// On unix this operation can never fail.
+ pub fn bytes2path(bytes: Cow<[u8]>) -> io::Result<Cow<Path>> {
+     use std::ffi::{OsStr, OsString};
+@@ -1748,7 +1748,7 @@
+     })
+ }
+ 
+-#[cfg(target_arch = "wasm32")]
++#[cfg(all(target_arch = "wasm32", not(target_os = "linux")))]
+ pub fn bytes2path(bytes: Cow<[u8]>) -> io::Result<Cow<Path>> {
+     Ok(match bytes {
+         Cow::Borrowed(bytes) => {
+@@ -1760,7 +1760,7 @@
+     })
+ }
+ 
+-#[cfg(target_arch = "wasm32")]
++#[cfg(all(target_arch = "wasm32", not(target_os = "linux")))]
+ fn invalid_utf8<T>(_: T) -> io::Error {
+     io::Error::new(io::ErrorKind::InvalidData, "Invalid utf-8")
+ }
+diff -ruN --exclude=target --exclude=.cargo-ok /Users/kilian/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tar-0.4.46/src/lib.rs /tmp/wali-vendor-rustc/tar-0.4.46/src/lib.rs
+--- a/tar-0.4.46/src/lib.rs	2006-07-23 18:21:28
++++ b/tar-0.4.46/src/lib.rs	2026-09-10 10:29:29
+@@ -46,7 +46,7 @@
+ pub use crate::entry::{Entry, Unpacked};
+ pub use crate::entry_type::EntryType;
+ pub use crate::header::GnuExtSparseHeader;
+-#[cfg(all(any(unix, windows), not(target_arch = "wasm32")))]
++#[cfg(all(any(unix, windows), not(all(target_arch = "wasm32", not(target_os = "linux")))))]
+ pub use crate::header::DETERMINISTIC_TIMESTAMP;
+ pub use crate::header::{GnuHeader, GnuSparseHeader, Header, HeaderMode, OldHeader, UstarHeader};
+ pub use crate::pax::{PaxExtension, PaxExtensions};
