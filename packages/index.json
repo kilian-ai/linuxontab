@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated": "2026-09-09",
+  "generated": "2026-09-10",
   "packages": {
     "busybox": {
       "version": "1.37.0",
@@ -779,6 +779,20 @@
         "wasm-opt"
       ],
       "depends": [],
+      "status": "available"
+    },
+    "cargo": {
+      "version": "0.100.0",
+      "description": "cargo for the guest \u2014 Rust's build tool as a wasm32-wali-linux-musl binary (cargo new/build/run)",
+      "url": "https://linuxontab.com/packages/cargo-0.100.0.tar.gz",
+      "size": 11606116,
+      "sha256": "23d16f8436430b390d690882b1364c9b3b4413441c91d99c026cbdf0994516e0",
+      "bins": [
+        "cargo"
+      ],
+      "depends": [
+        "rustc"
+      ],
       "status": "available"
     }
   }
