@@ -195,10 +195,17 @@ case "$_CMDLINE" in
 		read -r _cmdline_svc < /tmp/.lot-svc-cmd 2>/dev/null
 		rm -f /tmp/.lot-svc-cmd
 		_cmdline_svc="${_cmdline_svc#*|}"
-		if [ -n "$_cmdline_svc" ]; then
+		case "$_cmdline_svc" in
+		tty:*)
+			# foreground terminal app (TUI): runs on the console once boot is
+			# done, before the interactive shell — see the shell loop below
+			echo "${_cmdline_svc#tty:}" > /tmp/.lot-autorun
+			;;
+		?*)
 			echo "[lot] starting: $_cmdline_svc"
 			sh -c "$_cmdline_svc" > "/tmp/svc-$_svc.log" 2>&1 &
-		fi
+			;;
+		esac
 	done
 	;;
 esac
@@ -221,6 +228,7 @@ case "$_CMDLINE" in
 		read -r _rcmd < /tmp/.lot-run-cmd 2>/dev/null
 		rm -f /tmp/.lot-run-cmd
 		_rcmd="${_rcmd#*|}"
+		case "$_rcmd" in tty:*) echo "${_rcmd#tty:}" > /tmp/.lot-autorun; _rcmd="";; esac
 		if [ -n "$_rcmd" ]; then
 			echo "[lot] starting: $_rcmd"
 			sh -c "$_rcmd" > "/tmp/svc-$_rsvc.log" 2>&1 &
@@ -248,6 +256,17 @@ fi
 # the line discipline has no pgrp to signal). getty -l /bin/sh is broken in
 # this busybox build (clone fn=446), so setsid+cttyhack instead; the loop
 # also respawns the shell after ^D/exit instead of killing init.
+# A `tty:` registry command (?image=trust → trust) runs here in the
+# foreground with the console as its tty; the shell takes over when it exits.
+if [ -f /tmp/.lot-autorun ]; then
+	_app=""
+	read -r _app < /tmp/.lot-autorun
+	rm -f /tmp/.lot-autorun
+	if [ -n "$_app" ]; then
+		echo "[lot] starting on the console: $_app"
+		setsid cttyhack /bin/sh -c "cd /root && $_app"
+	fi
+fi
 while true; do
 	setsid cttyhack /bin/sh -i
 done
@@ -262,6 +281,7 @@ redis|redis-server --port 6379 --bind 0.0.0.0 --protected-mode no
 nginx|nginx-demo
 httpd|httpd-demo
 spiel|spiel-demo
+trust|tty:trust
 EOF
 
 # ── Lean motd ────────────────────────────────────────────────────────────────

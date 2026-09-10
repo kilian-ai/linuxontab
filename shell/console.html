@@ -196,6 +196,12 @@ const WEBDEMOS = [
   { name: 'httpd-demo', image: 'httpd', web: 8081, what: 'Apache httpd 2.4 serving the demo site' },
   { name: 'spiel-demo', image: 'spiel', web: 8080, what: 'the Spiel media server — FastAPI backend + React UI (installs python3 first, ~1 min)' },
 ];
+// Terminal apps: the container installs the package and starts the program in
+// the foreground on the console (registry line `name|tty:command` in
+// /etc/lot-services.conf); the shell takes over when it exits.
+const TUIAPPS = [
+  { name: 'trust-ide', image: 'trust', what: 'TRUST — retro DOS-style Rust IDE on the console; F5 builds and runs with the guest rustc + cargo (installed on first use)' },
+];
 const imgDb = () => new Promise((res, rej) => {
   const rq = indexedDB.open('lot-images', 1);
   rq.onupgradeneeded = () => rq.result.createObjectStore('images', { keyPath: 'name' });
@@ -309,6 +315,10 @@ async function renderImages(force) {
     for (const d of WEBDEMOS) {
       tb.appendChild(imageRow(d.name, 'web demo', 'on demand', null, d.image, d.name,
         { web: d.web, kiosk: '' }, d.what + ' — opens the served page in a new tab, menu hidden'));
+    }
+    for (const d of TUIAPPS) {
+      tb.appendChild(imageRow(d.name, 'terminal app', 'on demand', null, d.image, d.name,
+        {}, d.what + ' — opens the console with the app already running'));
     }
     for (const im of committed) {
       const push = document.createElement('button');
