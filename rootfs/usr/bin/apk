@@ -172,7 +172,9 @@ cmd_update() {
     mkdir -p /var/cache/apk
     _info "Fetching package index..."
     # Try virtual gateway first (fast, served locally by wasm.html)
-    if _dl "$APK_REPO_VGWX/index.json" "$tmpidx" 2>/dev/null && \
+    # No 2>/dev/null: lotfetch prints "retry n/10" on a tty, so a slow
+    # gateway shows progress instead of looking hung for up to ~45 s/URL.
+    if _dl "$APK_REPO_VGWX/index.json" "$tmpidx" && \
        [ -s "$tmpidx" ] && grep -q '"packages"' "$tmpidx" 2>/dev/null; then
         mv "$tmpidx" "$APK_CACHED_INDEX"
         APK_INDEX="$APK_CACHED_INDEX"
@@ -180,7 +182,7 @@ cmd_update() {
         return 0
     fi
     # Fall back to HTTPS registry
-    if _dl "$APK_REPO_HTTP/index.json" "$tmpidx" 2>/dev/null && \
+    if _dl "$APK_REPO_HTTP/index.json" "$tmpidx" && \
        [ -s "$tmpidx" ] && grep -q '"packages"' "$tmpidx" 2>/dev/null; then
         mv "$tmpidx" "$APK_CACHED_INDEX"
         APK_INDEX="$APK_CACHED_INDEX"

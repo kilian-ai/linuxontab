@@ -577,7 +577,14 @@ class WispSlirp {
       try { this.#ws.close(); } catch (_) {}
     }
     this.#streams.clear();
-    this.#tcpConns.clear();
+    // Only WISP-backed connections die with the socket. Gateway connections
+    // (wispId === null: the local HTTP proxy at 192.168.86.1:80) never touch
+    // WISP, yet clearing them here aborted in-flight package/index fetches
+    // every time the relay recycled its idle WebSocket (~every 60 s): the
+    // paced sender saw the conn vanish, sent no FIN/RST, and the guest sat
+    // out its read deadline before retrying.
+    for (const [port, c] of this.#tcpConns)
+      if (c.wispId !== null && c.wispId !== undefined) this.#tcpConns.delete(port);
     if (!this.#reconnectTimer) {
       this.#reconnectTimer = setTimeout(() => {
         this.#reconnectTimer = null;
@@ -934,6 +941,16 @@ class WispSlirp {
     if (!conn) {
       if (window.__gwdbg && dstPort === 80)
         console.log('[GWRX] no-conn', srcPort, 'fl=0x' + flags.toString(16), 'seq=' + seq, 'len=' + data.length);
+      // Gateway port, no connection: answer with RST instead of silence. The
+      // guest reaches here retransmitting a FIN whose FIN-ACK we sent but it
+      // never processed — traced as 60 s of LAST_ACK retries at RTO backoff
+      // per finished fetch. RST seq = the guest's ack (its rcv.nxt, so it is
+      // not dropped as out-of-window), ack = everything it sent.
+      if (dstPort === 80 && !(flags & RST) && !(flags & SYN) && (flags & ACK) &&
+          WispSlirp.#ipEq(dstIp, WispSlirp.GW_IP)) {
+        this.#sendRstRaw(dstIp, dstPort, srcPort, ackNum,
+          (seq + data.length + ((flags & FIN) ? 1 : 0)) >>> 0);
+      }
       return;
     }
     if (window.__gwdbg && conn.httpBuf !== undefined)
