@@ -2519,7 +2519,9 @@ async function createRootfsOverlay(rootfsBytes, baseHash) {
 
   let pendingBlocks = new Set();
   let persistTimer = null;
-  let persistRunning = false;
+  // Persists run strictly one after another; a caller (the guest's flush)
+  // that arrives while one is in flight waits for it and then gets its own.
+  let persistChain = Promise.resolve();
 
   async function loadInto(targetBytes) {
     let loaded = 0;
@@ -2546,32 +2548,65 @@ async function createRootfsOverlay(rootfsBytes, baseHash) {
     return loaded;
   }
 
-  async function persistNow() {
-    if (!pendingBlocks.size || persistRunning) return;
-    persistRunning = true;
-    const batch = Array.from(pendingBlocks);
-    pendingBlocks.clear();
+  // Snapshot every pending block into one IndexedDB transaction.
+  //
+  // Consistency model: the block copies are taken synchronously below, and the
+  // guest's disk writes land on this same thread, so a batch is the disk at
+  // one instant. Blocks written after that instant stay pending, so what the
+  // store holds after a commit is exactly the image as of that commit — a
+  // power-loss snapshot, which the guest's ext4 journal replays at mount.
+  // The stored overlay is recorded CLEAN only by a persist that runs after the
+  // guest has been quiet (reason 'idle': no disk writes for IDLE_MS, or
+  // 'quiesced': the storage panel after an explicit sync). Every other persist
+  // — the 200 ms debounce mid-burst, the device flush, pagehide — clears it.
+  // A flush is NOT a safe point by itself: journaled ext4 follows every
+  // commit's flush with plain checkpoint writes of the metadata blocks.
+  function persistNow(reason) {
+    const run = persistChain.then(() => persistBatch(reason === 'idle' || reason === 'quiesced'));
+    // Keep the chain alive past failures so later persists still run.
+    persistChain = run.catch(() => {});
+    return run;
+  }
+
+  async function persistBatch(quiet) {
+    if (!pendingBlocks.size && !quiet) return;
+    // Swap the set out so blocks dirtied while the transaction is in flight
+    // go into the next batch; the batch is only dropped once it committed.
+    const batch = pendingBlocks;
+    pendingBlocks = new Set();
+    const copies = [];
+    for (const blockIndex of batch) {
+      const start = blockIndex * ROOTFS_BLOCK_SIZE;
+      const end = Math.min(start + ROOTFS_BLOCK_SIZE, rootfsBytes.byteLength);
+      copies.push([blockIndex, rootfsBytes.slice(start, end)]);  // detached copy
+    }
     try {
       const tx = db.transaction(['blocks', 'meta'], 'readwrite');
       const blocksStore = tx.objectStore('blocks');
       const metaStore = tx.objectStore('meta');
-      for (const blockIndex of batch) {
-        const start = blockIndex * ROOTFS_BLOCK_SIZE;
-        const end = Math.min(start + ROOTFS_BLOCK_SIZE, rootfsBytes.byteLength);
-        // Store a detached copy so future mutations don't affect persisted data.
-        const copy = rootfsBytes.slice(start, end);
-        blocksStore.put(copy, [baseHash, blockIndex]);
-      }
-      metaStore.put({ baseHash, updatedAt: Date.now() }, 'active');
+      for (const [blockIndex, copy] of copies) blocksStore.put(copy, [baseHash, blockIndex]);
+      // clean = the stored image is the disk at rest (see persistNow).
+      metaStore.put({ baseHash, updatedAt: Date.now(), clean: quiet }, 'active');
       await new Promise((resolve, reject) => {
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error || new Error('Failed writing rootfs overlay blocks'));
         tx.onabort = () => reject(tx.error || new Error('Rootfs overlay write aborted'));
       });
-    } finally {
-      persistRunning = false;
-      if (pendingBlocks.size) schedulePersist();
+    } catch (err) {
+      for (const b of batch) pendingBlocks.add(b);  // nothing was stored — retry later
+      schedulePersist();
+      throw err;
     }
+    if (pendingBlocks.size) schedulePersist();
+  }
+
+  // Was the stored overlay's last snapshot taken at a flush barrier?
+  // undefined = unknown (written by an older page build).
+  async function isClean() {
+    const tx = db.transaction('meta', 'readonly');
+    const meta = await idbReq(tx.objectStore('meta').get('active')).catch(() => null);
+    if (!meta || meta.baseHash !== baseHash) return undefined;
+    return meta.clean;
   }
 
   async function countPersistedBlocks() {
@@ -2676,11 +2711,24 @@ async function createRootfsOverlay(rootfsBytes, baseHash) {
     }, 200);
   }
 
+  // Trailing-edge idle persist: re-armed by every write, fires once the guest
+  // has been quiet for IDLE_MS and records the overlay as clean.
+  const IDLE_MS = 1000;
+  let idleTimer = null;
+  function armIdlePersist() {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      idleTimer = null;
+      persistNow('idle').catch(err => console.warn('[overlay] idle persist failed:', err));
+    }, IDLE_MS);
+  }
+
   function markDirtyRange(offset, length) {
     const startBlock = Math.floor(offset / ROOTFS_BLOCK_SIZE);
     const endBlock = Math.floor((offset + length - 1) / ROOTFS_BLOCK_SIZE);
     for (let i = startBlock; i <= endBlock; i++) pendingBlocks.add(i);
     schedulePersist();
+    armIdlePersist();
   }
 
   // Queue blocks without scheduling a write — used when persistence is
@@ -2695,10 +2743,14 @@ async function createRootfsOverlay(rootfsBytes, baseHash) {
       clearTimeout(persistTimer);
       persistTimer = null;
     }
+    if (idleTimer) {
+      clearTimeout(idleTimer);
+      idleTimer = null;
+    }
     db.close();
   }
 
-  return { loadInto, markDirtyRange, seedDirtyBlocks, persistNow, close, baseHash, getStats, exportSnapshot, importSnapshot, clearCurrent };
+  return { loadInto, markDirtyRange, seedDirtyBlocks, persistNow, isClean, close, baseHash, getStats, exportSnapshot, importSnapshot, clearCurrent };
 }
 
 async function clearAllRootfsOverlays() {
@@ -3271,10 +3323,11 @@ async function doBoat() {
   }
   hideDlProgress();
 
-  // Persisted overlay is OPT-IN. It snapshots individual dirty blocks of a live,
-  // never-unmounted ext4 (debounced), so restoring it across reloads can replay
-  // a TORN, inconsistent filesystem — some blocks pre-write, some post, the
-  // journal half-committed — which corrupts the guest (garbled /etc/motd, etc.).
+  // Persisted overlay is OPT-IN. It stores point-in-time snapshots of a live,
+  // never-unmounted ext4 — i.e. power-loss images. That is safe only because
+  // the lean image carries a journal (build-lean-rootfs.sh) that ext4 replays
+  // at mount; on a journal-less base a snapshot taken between a flush barrier
+  // and the next one is restored only if it was marked clean (see below).
   // For the public preview every load should boot the pristine image. Enable
   // persistence explicitly with ?persist=1 or localStorage 'lot.persist'='1'.
   let persistEnabled = false;
@@ -3299,9 +3352,27 @@ async function doBoat() {
       bootOverlayKey = await lotOverlayKey();
       rootfsOverlay = await createRootfsOverlay(rootfsBytes, bootOverlayKey);
       if (rootfsOverlay) {
-        const restoredBlocks = await rootfsOverlay.loadInto(rootfsBytes);
-        if (restoredBlocks > 0) {
-          term.write(`\r\n\x1b[36m[overlay] restored ${restoredBlocks} persisted block(s)\x1b[0m\r\n`);
+        // clean === true: last snapshot was at a guest flush barrier — always
+        // consistent. Otherwise it is a mid-run power-loss image: fine when
+        // the base has a journal (ext4 replays it), but on a journal-less
+        // base it is exactly the "Corrupt inode bitmap / doubly allocated
+        // inode" state, so leave those blocks in the store and boot pristine.
+        const clean = await rootfsOverlay.isClean();
+        const sb = rootfsBytes.subarray(0x400, 0x800);   // ext4 superblock
+        const hasJournal = sb.length >= 0x60 &&
+          ((sb[0x5C] | (sb[0x5D] << 8) | (sb[0x5E] << 16) | (sb[0x5F] << 24)) & 0x4) !== 0;
+        if (clean === true || hasJournal) {
+          const restoredBlocks = await rootfsOverlay.loadInto(rootfsBytes);
+          if (restoredBlocks > 0) {
+            term.write(`\r\n\x1b[36m[overlay] restored ${restoredBlocks} persisted block(s)` +
+              (clean === true ? '' : ' — unclean snapshot, the ext4 journal will replay it') +
+              `\x1b[0m\r\n`);
+          }
+        } else {
+          const stats = await rootfsOverlay.getStats().catch(() => null);
+          if (stats && stats.storedBlocks > 0) {
+            term.write(`\r\n\x1b[33m[overlay] ${stats.storedBlocks} persisted block(s) NOT restored: the snapshot was not taken at a sync point and this disk image has no journal to repair it. Boot with ?disk=full or clear the overlay in the storage panel.\x1b[0m\r\n`);
+          }
         }
       }
     }
@@ -3324,7 +3395,10 @@ async function doBoat() {
       for (let b = offset >> 12; b <= ((offset + data.byteLength - 1) >> 12); b++) lotDirty.add(b);
       return Promise.resolve(data.byteLength);
     },
-    flush: () => rootfsOverlay ? rootfsOverlay.persistNow().then(() => undefined) : Promise.resolve(),
+    // A virtio-blk flush is the guest's journal-commit / sync barrier: persist
+    // everything pending before acknowledging it, so a `sync` in the guest
+    // is durable in IndexedDB. (Clean-ness is decided by the idle persist.)
+    flush: () => rootfsOverlay ? rootfsOverlay.persistNow('flush').then(() => undefined) : Promise.resolve(),
   });
 
   // ── lotCommit(name): snapshot this container's changes as a named image ───
@@ -3649,15 +3723,17 @@ function disablePersistence() {
   try { localStorage.removeItem('lot.persist'); } catch (_) {}
 }
 
-// Quiesce the guest before snapshotting: the lean ext4 has no journal, so a
-// synced filesystem is consistent, while a mid-write snapshot can be torn.
+// Quiesce the guest before snapshotting: after `sync` plus a settle period the
+// disk is at rest, so the snapshot is recorded as clean (restorable even on a
+// journal-less base). This guarantees it before the caller's next step
+// (export, disable, reload) instead of waiting for the idle persist.
 async function syncAndPersist() {
   if (!rootfsOverlay) return;
   if (booted) {
     guestWrite(new TextEncoder().encode('sync\n'));
     await new Promise(r => setTimeout(r, 2000));
   }
-  await rootfsOverlay.persistNow();
+  await rootfsOverlay.persistNow('quiesced');
 }
 
 async function refreshStoragePanel() {

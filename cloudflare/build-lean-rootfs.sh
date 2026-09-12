@@ -363,9 +363,14 @@ du -sh "$STAGE" | awk '{print "    " $1}'
 # ── mke2fs ───────────────────────────────────────────────────────────────────
 OUT="$OUTDIR/rootfs-lean.ext4"
 rm -f "$OUT"
-echo "==> mke2fs -d (512 MiB geometry, no journal)"
+# Journaled on purpose: the page's persisted overlay is a point-in-time
+# snapshot of a live disk (a power-loss image). With a journal ext4 replays
+# it at mount; without one a snapshot taken mid-metadata-update boots with
+# "Corrupt inode bitmap / doubly allocated inode". The journal is zero-filled
+# except its superblock, so the sparse .data grows by a single block.
+echo "==> mke2fs -d (512 MiB geometry, 8 MiB journal)"
 "$MKE2FS" -F -q -t ext4 -b $BLOCK -I 256 -m 0 -L lotlean \
-    -O ^has_journal \
+    -J size=8 \
     -E lazy_itable_init=1,no_copy_xattrs \
     -d "$STAGE" "$OUT" $SIZE_BLOCKS
 
