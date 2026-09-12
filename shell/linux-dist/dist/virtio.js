@@ -410,6 +410,19 @@ export class NetworkDevice extends VirtioDevice {
         }
         if (sent || force)
             this.trigger_interrupt("vring");
+        // TX completions get the same missed-IRQ insurance as RX frames: the
+        // guest driver stops its transmit queue when the ring fills with
+        // unreclaimed descriptors and only restarts it from an interrupt. A
+        // coalesced/missed completion IRQ therefore left the guest MUTE — it
+        // kept receiving (SYNs, ACKs) but sent nothing (tx_packets frozen,
+        // an 80 KB response stuck in a FIN_WAIT1 send queue retransmitting at
+        // RTO backoff) until some RX interrupt ran the TX clean-up as a side
+        // effect. Measured on the web proxy: 20 s stalls + 3 s SYN timeouts.
+        if (sent) {
+            this.#txKicks = NetworkDevice.#TX_KICKS;
+            this.#rekickStep = 0;   // fresh completions — restart the decay schedule
+            this.#armRekick();
+        }
     }
     // Queue of frames waiting for the guest to provide RX descriptors.
     #rxPending = [];
@@ -423,6 +436,8 @@ export class NetworkDevice extends VirtioDevice {
     #rekickTimer = null;
     #rekickStep = 0;
     #unconsumed = 0;
+    #txKicks = 0;                       // pending TX-completion re-kicks
+    static #TX_KICKS = 6;               // the decaying schedule, ~2 s
     // Bounded + decaying: a fixed unthrottled interval turned into an IRQ storm
     // that froze the guest outright. A few spaced kicks per frame batch is
     // enough to drain a partially-processed ring without starving the guest.
@@ -442,8 +457,10 @@ export class NetworkDevice extends VirtioDevice {
             return;
         const step = () => {
             this.#rekickTimer = null;
-            if (this.#unconsumed <= 0 && this.#rxPending.length === 0)
+            if (this.#unconsumed <= 0 && this.#rxPending.length === 0 && this.#txKicks <= 0)
                 return;
+            if (this.#txKicks > 0)
+                this.#txKicks--;
             if (this.#rekickStep >= NetworkDevice.#REKICK_MAX_STEPS)
                 return; // give up; next injected frame re-arms
             try { this.trigger_interrupt("vring"); } catch (e) { /* not set up yet */ }
@@ -502,6 +519,13 @@ export class NetworkDevice extends VirtioDevice {
                 if (offset < HDR) {
                     // write 12-byte header: 10 zeros (no offloading) + num_buffers=1 (LE16)
                     const hdrBytes = Math.min(HDR - offset, slice.byteLength);
+                    // The zeros MUST be written, not assumed: RX buffers are recycled
+                    // guest pages, and after bulk traffic bytes 0-9 hold old payload
+                    // (non-zero flags/gso_type) — virtio_net_hdr_to_skb() then rejects
+                    // the frame (rx_frame_errors++) and the guest goes deaf: SYNs
+                    // counted by the driver, never seen by IP, for seconds at a time
+                    // (44 of 114 frames dropped in one measured window).
+                    slice.fill(0, 0, hdrBytes);
                     // bytes 10-11 = num_buffers = 1 (little-endian)
                     if (offset <= 10 && offset + hdrBytes > 10) slice[10 - offset] = 1;
                     if (offset <= 11 && offset + hdrBytes > 11) slice[11 - offset] = 0;
