@@ -302,7 +302,7 @@
       <button id="storage-close" style="margin-left:auto">close</button>
     </div>
     <div id="storage-body">
-      <div class="hint" style="font-size:11px">Block-delta overlay stored in IndexedDB. Base image updates auto-isolate old overlays.</div>
+      <div class="hint" style="font-size:11px">Block-delta overlay in this browser's IndexedDB, restored on every boot while persistence is on. "save now" syncs the guest first so the saved filesystem is consistent. Base image updates auto-isolate old overlays.</div>
       <div id="storage-summary">
         <div class="k">state</div><div class="v" id="storage-state">not booted</div>
         <div class="k">base hash</div><div class="v" id="storage-base">-</div>
@@ -311,6 +311,7 @@
         <div class="k">last write</div><div class="v" id="storage-updated">-</div>
       </div>
       <div id="storage-actions">
+        <button id="storage-enable">enable persistence</button>
         <button id="storage-save">save now</button>
         <button id="storage-export">export snapshot</button>
         <button id="storage-import">import snapshot</button>
@@ -1706,6 +1707,12 @@ class WispSlirp {
         this.#serverConns.delete(key);
         return;
       }
+      // An unanswered SYN usually means the guest is parked with net IRQs
+      // masked (see __lotConsoleKick): the frame sits in the ring until any
+      // other interrupt runs the softirq pass. Kick before each retry — a
+      // deaf guest cost 3 s per attempt (6 SYNs, teardown, re-inject), and a
+      // React app's first paint spent ~20 s in those cycles.
+      try { window.__lotConsoleKick && window.__lotConsoleKick(); } catch (_) {}
       sendSyn();
     }, 500);
     relayWs.binaryType = 'arraybuffer';
@@ -2446,6 +2453,9 @@ function setOutputMode(nextMode) {
 const ROOTFS_BLOCK_SIZE = 4096;
 const ROOTFS_OVERLAY_DB = 'lot-rootfs-overlay-v1';
 let rootfsOverlay = null;
+// Live boot state the storage panel needs to switch persistence on after the
+// fact: the disk buffer, its overlay key, and the always-on dirty-block set.
+let lotLive = null;
 
 function bytesToBase64(bytes) {
   let s = '';
@@ -2656,6 +2666,13 @@ async function createRootfsOverlay(rootfsBytes, baseHash) {
     schedulePersist();
   }
 
+  // Queue blocks without scheduling a write — used when persistence is
+  // switched on mid-session to pick up everything written since boot; the
+  // caller decides when to flush (after a guest sync).
+  function seedDirtyBlocks(blocks) {
+    for (const b of blocks) pendingBlocks.add(b);
+  }
+
   function close() {
     if (persistTimer) {
       clearTimeout(persistTimer);
@@ -2664,7 +2681,7 @@ async function createRootfsOverlay(rootfsBytes, baseHash) {
     db.close();
   }
 
-  return { loadInto, markDirtyRange, persistNow, close, baseHash, getStats, exportSnapshot, importSnapshot, clearCurrent };
+  return { loadInto, markDirtyRange, seedDirtyBlocks, persistNow, close, baseHash, getStats, exportSnapshot, importSnapshot, clearCurrent };
 }
 
 async function clearAllRootfsOverlays() {
@@ -2806,9 +2823,29 @@ async function doBoat() {
           window.__lotTermTail = ((window.__lotTermTail || '') + tt).slice(-500);
         } catch (_) {}
       }
+      if (window.__lotBootCmds && window.__lotBootCmds.length) lotWatchPrompt(chunk);
       term.write(chunk);
     },
   });
+
+  // ?cmd= runner: the shell's first prompt ("/ # ") is the boot-done signal.
+  // Debounced because the prompt can be redrawn (stty resize, rc respawn);
+  // the command list is consumed once, so a later `reset` won't re-run it.
+  let lotPromptTail = '', lotCmdTimer = null;
+  const lotPromptDecoder = new TextDecoder();
+  function lotWatchPrompt(chunk) {
+    const tt = (chunk instanceof Uint8Array)
+      ? lotPromptDecoder.decode(chunk.slice(), { stream: true }) : String(chunk);
+    lotPromptTail = (lotPromptTail + tt).slice(-64);
+    if (!/(^|[\r\n])[^\r\n]{0,40}[#$] $/.test(lotPromptTail)) return;
+    clearTimeout(lotCmdTimer);
+    lotCmdTimer = setTimeout(() => {
+      const cmds = window.__lotBootCmds || [];
+      window.__lotBootCmds = null;
+      // One line per send, spaced so hush reads each at its own prompt.
+      cmds.forEach((c, i) => setTimeout(() => guestSend(c), i * 150));
+    }, 400);
+  }
 
   const consoleDev = new ConsoleDevice(inputTransform.readable, outputStream);
   const entropyDev = new EntropyDevice();
@@ -2894,6 +2931,18 @@ async function doBoat() {
   // committed-image boots where the binaries are already in the overlay).
   let lotRun = lotParams.get('run') || '';
   if (!/^[A-Za-z0-9_,.-]*$/.test(lotRun)) lotRun = '';
+  // ?cmd=<shell line> — typed into the guest shell at its first prompt after
+  // boot, i.e. AFTER ?image=/?run= service autostart (those run in /etc/rc
+  // before the shell). Repeatable; a %0A inside one value = several lines.
+  // Deliberately page-side rather than a lot_cmd= cmdline field: no kernel
+  // cmdline quoting limits, and the command echoes in the terminal exactly
+  // like something the user typed. Example:
+  //   ?autoboot&image=vitetris&cmd=vitetris
+  //   ?autoboot&cmd=cd%20%2Fopt%2Fapp&cmd=.%2Frun.sh%20--port%208080
+  window.__lotBootCmds = lotParams.getAll('cmd')
+    .flatMap(v => v.split('\n'))
+    .map(s => s.replace(/[\r\x00-\x08\x0b-\x1f\x7f]/g, '').trim())
+    .filter(Boolean).slice(0, 32).map(s => s.slice(0, 1024));
 
   // ── Committed images: IndexedDB store of {name, baseSha, extents, data} ──
   const lotImgDb = () => new Promise((res, rej) => {
@@ -3217,12 +3266,21 @@ async function doBoat() {
       || localStorage.getItem('lot.persist') === '1';
   } catch (_) { persistEnabled = false; }
 
+  // Overlay key: the lean manifest sha (plus the @image name when one was
+  // applied, so persisted blocks never splice across different images); the
+  // full-disk path hashes the whole image. Computed lazily — hashing 512 MiB
+  // only matters when persistence is actually used.
+  const lotOverlayKey = async () => {
+    if (window.__lotBaseSha) return window.__lotBaseSha + (lotOverlayName ? ':@' + lotOverlayName : '');
+    return await sha256Hex(rootfsBytes.buffer);
+  };
+  let bootOverlayKey = null;
   try {
     if (rootfsOverlay && rootfsOverlay.close) rootfsOverlay.close();
     rootfsOverlay = null;
     if (persistEnabled) {
-      const baseHash = await sha256Hex(rootfsBuffer);
-      rootfsOverlay = await createRootfsOverlay(rootfsBytes, baseHash);
+      bootOverlayKey = await lotOverlayKey();
+      rootfsOverlay = await createRootfsOverlay(rootfsBytes, bootOverlayKey);
       if (rootfsOverlay) {
         const restoredBlocks = await rootfsOverlay.loadInto(rootfsBytes);
         if (restoredBlocks > 0) {
@@ -3232,12 +3290,14 @@ async function doBoat() {
     }
   } catch (err) {
     console.warn('[overlay] disabled due to initialization failure:', err);
+    term.write(`\r\n\x1b[33m[overlay] persistence disabled: ${err.message || err}\x1b[0m\r\n`);
   }
-  refreshStoragePanel().catch(() => {});
 
   // Always-on dirty-block set (4 KiB granularity) — the raw material for
   // `lotCommit`: a committed image is just these blocks as sparse extents.
   const lotDirty = new Set();
+  lotLive = { rootfsBytes, lotDirty, overlayKey: bootOverlayKey, computeKey: lotOverlayKey };
+  refreshStoragePanel().catch(() => {});
   const blockDev = new BlockDevice({
     capacity: rootfsBytes.byteLength,
     read: (offset, length) => Promise.resolve(rootfsBytes.slice(offset, offset + length)),
@@ -3550,10 +3610,49 @@ function formatTime(ts) {
   try { return new Date(ts).toLocaleString(); } catch (_) { return String(ts); }
 }
 
+// Switch persistence on for the running machine: create the overlay against
+// the live disk buffer and queue every block written since boot, so the first
+// save captures the whole session, not just writes from now on. Remembered in
+// localStorage so the next boot restores the overlay automatically.
+async function enablePersistence() {
+  if (rootfsOverlay) return rootfsOverlay;
+  if (!lotLive) throw new Error('boot the machine first');
+  if (!lotLive.overlayKey) lotLive.overlayKey = await lotLive.computeKey();
+  const ov = await createRootfsOverlay(lotLive.rootfsBytes, lotLive.overlayKey);
+  if (!ov) throw new Error('IndexedDB unavailable in this browser');
+  ov.seedDirtyBlocks(lotLive.lotDirty);
+  rootfsOverlay = ov;
+  try { localStorage.setItem('lot.persist', '1'); } catch (_) {}
+  return ov;
+}
+
+function disablePersistence() {
+  if (rootfsOverlay && rootfsOverlay.close) rootfsOverlay.close();
+  rootfsOverlay = null;
+  try { localStorage.removeItem('lot.persist'); } catch (_) {}
+}
+
+// Quiesce the guest before snapshotting: the lean ext4 has no journal, so a
+// synced filesystem is consistent, while a mid-write snapshot can be torn.
+async function syncAndPersist() {
+  if (!rootfsOverlay) return;
+  if (booted) {
+    guestWrite(new TextEncoder().encode('sync\n'));
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  await rootfsOverlay.persistNow();
+}
+
 async function refreshStoragePanel() {
   const hasOverlay = !!rootfsOverlay;
-  $('storage-state').textContent = hasOverlay ? 'active' : (('indexedDB' in window) ? 'idle (boot to activate)' : 'IndexedDB unavailable');
+  const hasIdb = ('indexedDB' in window);
+  $('storage-state').textContent = hasOverlay ? 'active — changes persist across reloads'
+    : !hasIdb ? 'IndexedDB unavailable'
+    : lotLive ? 'off — this session is not being saved'
+    : 'not booted';
   $('storage-base').textContent = hasOverlay ? shortHash(rootfsOverlay.baseHash) : '-';
+  $('storage-enable').textContent = hasOverlay ? 'disable persistence' : 'enable persistence';
+  $('storage-enable').disabled = !hasIdb || (!hasOverlay && !lotLive);
   $('storage-save').disabled = !hasOverlay;
   $('storage-export').disabled = !hasOverlay;
   $('storage-import').disabled = !hasOverlay;
@@ -3577,14 +3676,36 @@ async function refreshStoragePanel() {
 }
 
 $('storage-refresh').onclick = () => refreshStoragePanel();
+$('storage-enable').onclick = async () => {
+  try {
+    if (rootfsOverlay) {
+      await syncAndPersist();
+      disablePersistence();
+      storageLog('persistence off — saved blocks kept, but not restored on the next boot', 'info');
+    } else {
+      const ov = await enablePersistence();
+      const st = await ov.getStats();
+      storageLog('persistence on — ' + st.pendingBlocks + ' block(s) changed since boot queued; click "save now" or keep working (writes autosave)', 'ok');
+    }
+    await refreshStoragePanel();
+  } catch (err) {
+    storageLog('enable failed: ' + err.message, 'err');
+  }
+};
 $('storage-save').onclick = async () => {
   if (!rootfsOverlay) return;
+  const btn = $('storage-save');
+  btn.disabled = true;
   try {
-    await rootfsOverlay.persistNow();
-    storageLog('persisted pending blocks to IndexedDB', 'ok');
+    storageLog('syncing guest filesystem…', 'info');
+    await syncAndPersist();
+    const st = await rootfsOverlay.getStats();
+    storageLog('saved — ' + st.storedBlocks + ' block(s) (' + (st.storedBlocks * 4 / 1024).toFixed(1) + ' MB) persisted in IndexedDB', 'ok');
     await refreshStoragePanel();
   } catch (err) {
     storageLog('save failed: ' + err.message, 'err');
+  } finally {
+    btn.disabled = !rootfsOverlay;
   }
 };
 
@@ -4783,6 +4904,9 @@ const guestWeb = (() => {
       const watchdog = setInterval(() => {
         const now = performance.now();
         if (now - lastData > stallMs || now - started > timeoutMs) fin(true);
+        // Mid-exchange silence > 1 s: the guest may have parked with the next
+        // segment (or our ACK) undelivered — unpark it (harmless if awake).
+        else if (now - lastData > 1000) { try { window.__lotConsoleKick && window.__lotConsoleKick(); } catch (_) {} }
       }, 250);
       const cat = () => { const o = new Uint8Array(total); let p = 0; for (const c of chunks) { o.set(c, p); p += c.length; } return o; };
       const fin = (rst) => {
