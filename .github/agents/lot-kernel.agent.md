@@ -784,6 +784,10 @@ fly deploy -a linuxontab-net -c services/wisp-backend/fly.toml --ha=false --remo
 - Debug log is at `/tmp/wasm-kernel-debug.log`. It grows large — tail it, don't cat.
 - Never modify `shell/linux-dist/vmlinux.wasm` or `shell/linux-dist/initramfs.cpio`
   unless explicitly working on the kernel itself. These come from `@tombl/linux`.
+  If you do regenerate `initramfs.cpio`, keep cpio's stderr OUT of the archive
+  (no `2>&1`): its trailing "N blocks" line after the TRAILER record makes the
+  kernel log "Initramfs unpacking failed: invalid magic at start of compressed
+  archive" on every boot. The file must end on a 512-byte block boundary.
 - The branch is `feature/linux-kernel-integration`. Do not merge to main without
   explicit instruction.
 - After services changes, deploy the CF Workers (relay-tunnel, relay) via wrangler.
