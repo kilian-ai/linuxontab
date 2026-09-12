@@ -216,7 +216,7 @@ export class Machine extends EventEmitter {
             env: { memory: this.#memory },
             boot: {
                 get_devicetree: (buf, size) => {
-                    assert(size >= devicetree.byteLength, "Device tree truncated");
+                    assert(size >= devicetree.byteLength, `Device tree truncated: ${devicetree.byteLength} bytes > kernel buffer ${size} (long ?hosts=/cmdline — needs a vmlinux.wasm with a bigger devicetree[] in arch/wasm/kernel/setup.c)`);
                     this.memory.set(devicetree, buf);
                 },
                 get_initramfs: (buf, size) => {
