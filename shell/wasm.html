@@ -277,7 +277,7 @@
         <div class="spin"></div>
         <div id="wv-loading-title">loading the guest's web app …</div>
         <div id="wv-loading-detail"></div>
-        <div id="wv-loading-note">the guest serves it through this tab, one request at a time — big apps take a moment</div>
+        <div id="wv-loading-note">the guest serves it through this tab — a big app's first load takes a few seconds, later loads come from the browser cache</div>
         <button id="wv-loading-retry" hidden>retry</button>
       </div>
     </div>
@@ -5105,11 +5105,26 @@ const guestWeb = (() => {
 window.guestWeb = guestWeb;   // console/debug access to the proxy engine
 
 let wvSwReady = null;
+let wvShellId = null;   // this page's SW client id — routes its frame's requests here
 function wvEnsureSw() {
   if (!('serviceWorker' in navigator)) return Promise.reject(new Error('no ServiceWorker support'));
   if (!wvSwReady) {
     wvSwReady = navigator.serviceWorker.register('./sw-guest-proxy.js')
-      .then(() => navigator.serviceWorker.ready);
+      .then(() => navigator.serviceWorker.ready)
+      .then(async (reg) => {
+        // Ask the worker who we are. Older workers (no 'whoami') never reply:
+        // fall back to the id-less path after a short wait.
+        const sw = reg.active || navigator.serviceWorker.controller;
+        if (sw) {
+          wvShellId = await new Promise((res) => {
+            const ch = new MessageChannel();
+            const t = setTimeout(() => res(null), 1500);
+            ch.port1.onmessage = (ev) => { clearTimeout(t); res(ev.data && ev.data.id || null); };
+            try { sw.postMessage({ type: 'whoami' }, [ch.port2]); } catch (_) { clearTimeout(t); res(null); }
+          });
+        }
+        return reg;
+      });
   }
   return wvSwReady;
 }
@@ -5216,7 +5231,7 @@ let wvMode = null;   // 'sw' | 'fallback'
 // finally loads has an empty app root (a chunk failed), offer a retry.
 const wvLoading = (() => {
   const el = $('wv-loading'), detail = $('wv-loading-detail'), title = $('wv-loading-title'), retry = $('wv-loading-retry');
-  let t0 = 0, timer = null, base = { done: 0, failed: 0, retries: 0, bytes: 0 };
+  let t0 = 0, timer = null, base = { done: 0, failed: 0, retries: 0, bytes: 0 }, autoRetries = 0;
   const fmt = (s) => {
     const d = s.done - base.done, r = s.retries - base.retries, kb = Math.round((s.bytes - base.bytes) / 1024);
     const cur = s.active ? ' · ' + s.active.split('?')[0].split('/').pop().slice(0, 40) : '';
@@ -5225,6 +5240,7 @@ const wvLoading = (() => {
   const show = () => {
     const s = guestWeb.stats; base = { done: s.done, failed: s.failed, retries: s.retries, bytes: s.bytes };
     t0 = performance.now(); title.textContent = "loading the guest's web app …"; retry.hidden = true; detail.textContent = '';
+    if (!el.hidden) { /* re-shown by an auto-retry: keep the counter */ } else autoRetries = 0;
     el.hidden = false;
     clearInterval(timer); timer = setInterval(() => { detail.textContent = fmt(guestWeb.stats); if (performance.now() - t0 > 20000) retry.hidden = false; }, 500);
   };
@@ -5241,7 +5257,12 @@ const wvLoading = (() => {
       const root = doc.getElementById('root') || doc.getElementById('app');
       const text = (doc.body.innerText || '').trim();
       if (root && root.childElementCount === 0 && !text) failed("the app's files didn't all arrive — retry");
-      else if (/^guest proxy:/.test(text)) failed(text.slice(0, 120));
+      else if (/^guest proxy:/.test(text)) {
+        // The first request after the readiness probe can still race the
+        // server's start-up: retry a few times before showing the error.
+        if (autoRetries < 4) { autoRetries++; title.textContent = 'the guest\'s web server did not answer yet — retrying (' + autoRetries + ')'; setTimeout(() => retry.onclick(), 1500 * autoRetries); }
+        else failed(text.slice(0, 120));
+      }
       else hide();
     }, 800);
   });
@@ -5256,7 +5277,7 @@ function wvOpen() {
   wvEnsureSw().then(() => {
     wvMode = 'sw';
     wvLoading.show();
-    $('wv-frame').src = new URL('guest/' + port + '/', location.href).pathname;
+    $('wv-frame').src = new URL('guest/' + (wvShellId ? wvShellId + '/' : '') + port + '/', location.href).pathname;
     $('wv-reload').disabled = false;
     $('wv-status').textContent = 'proxying guest :' + port + ' — serialized; first request can take ~2 s';
   }).catch(() => {

@@ -18,10 +18,22 @@
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
+// 'whoami': a shell page asks for its client id (to put into its frame path).
+self.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'whoami' && e.ports && e.ports[0]) {
+    e.ports[0].postMessage({ id: e.source && e.source.id });
+  }
+});
 
 // Matches both deploy layouts: /guest/8080/... (Pages, page at /) and
 // /shell/guest/8080/... (local serve.sh, page at /shell/wasm.html).
-const GUEST_RE = /^(.*\/guest\/(\d{2,5}))(\/.*)?$/;
+// /guest/<port>/... or /guest/<shellClientId>/<port>/...: the shell page embeds
+// its own SW client id (learned via a 'whoami' message) so the worker delivers
+// its frame's requests to THAT page. Without the id, requests went to the
+// focused/visible shell — with the console page and several container tabs
+// open, a web view was routed to some other tab's guest and got "no response
+// from guest :8080" for a server that was up.
+const GUEST_RE = /^(.*\/guest\/(?:([A-Za-z0-9-]{8,})\/)?(\d{2,5}))(\/.*)?$/;
 
 function textResponse(status, msg) {
   return new Response(msg + '\n', {
@@ -35,7 +47,10 @@ function textResponse(status, msg) {
   });
 }
 
-async function findShell() {
+async function findShell(shellId) {
+  if (shellId) {
+    try { const c = await self.clients.get(shellId); if (c) return c; } catch (_) {}
+  }
   const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
   const shells = cs.filter((c) => !GUEST_RE.test(new URL(c.url).pathname));
   shells.sort((a, b) =>
@@ -51,9 +66,9 @@ async function findShell() {
 // index.html and /api/* are never cached.
 const ASSET_RE = /\/assets\/[^/?]+-[A-Za-z0-9_-]{8}\.(?:js|css|woff2?|ttf|png|svg|webp)(?:\?.*)?$/;
 const ASSET_CACHE = 'guest-assets-v1';
-async function proxyCached(request, port, pathq, prefix) {
+async function proxyCached(request, port, pathq, prefix, shellId) {
   const cacheable = request.method === 'GET' && !request.headers.has('range') && ASSET_RE.test(pathq);
-  if (!cacheable) return proxy(request, port, pathq, prefix);
+  if (!cacheable) return proxy(request, port, pathq, prefix, shellId);
   const key = new Request(self.location.origin + '/__guest_asset' + pathq.split('?')[0]);
   let cache = null;
   try {
@@ -61,13 +76,13 @@ async function proxyCached(request, port, pathq, prefix) {
     const hit = await cache.match(key);
     if (hit) return hit;
   } catch (_) { /* no CacheStorage (private mode) — fall through */ }
-  const resp = await proxy(request, port, pathq, prefix);
+  const resp = await proxy(request, port, pathq, prefix, shellId);
   if (cache && resp.status === 200) { try { await cache.put(key, resp.clone()); } catch (_) {} }
   return resp;
 }
 
-async function proxy(request, port, pathq, prefix) {
-  const shell = await findShell();
+async function proxy(request, port, pathq, prefix, shellId) {
+  const shell = await findShell(shellId);
   if (!shell) return textResponse(502, 'guest proxy: shell page not found — keep the LinuxOnTab tab open.');
   const body = (request.method === 'GET' || request.method === 'HEAD')
     ? null
@@ -107,7 +122,7 @@ self.addEventListener('fetch', (e) => {
   // Direct hit under the /guest/<port>/ prefix.
   const m = url.pathname.match(GUEST_RE);
   if (m) {
-    e.respondWith(proxyCached(e.request, +m[2], (m[3] || '/') + url.search, m[1]));
+    e.respondWith(proxyCached(e.request, +m[3], (m[4] || '/') + url.search, m[1], m[2]));
     return;
   }
 
@@ -118,14 +133,14 @@ self.addEventListener('fetch', (e) => {
   if (ref.startsWith(self.location.origin + '/') && ref.includes('/guest/')) {
     const rm = new URL(ref).pathname.match(GUEST_RE);
     if (rm) {
-      const base = rm[1];                                  // e.g. /guest/8080
+      const base = rm[1];                                  // e.g. /guest/<id>/8080
       if (e.request.mode === 'navigate') {
         e.respondWith(new Response(null, {
           status: 307,
           headers: { location: base + url.pathname + url.search },
         }));
       } else {
-        e.respondWith(proxyCached(e.request, +rm[2], url.pathname + url.search, base));
+        e.respondWith(proxyCached(e.request, +rm[3], url.pathname + url.search, base, rm[2]));
       }
     }
   }
