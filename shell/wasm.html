@@ -391,6 +391,7 @@
 
 <script src="./xterm.js"></script>
 <script src="./xterm-addon-fit.js"></script>
+<script src="./wisp-transport.js"></script>
 <script type="module">
 // ─────────────────────────────────────────────────────────────────────────────
 // @tombl/linux Machine API
@@ -588,7 +589,10 @@ class WispSlirp {
 
   // ── WISP connection ────────────────────────────────────────────────────────
   #connectWisp() {
-    this.#ws = new WebSocket(this.#url);
+    // openWispTransport keeps ws:// and wss:// on a real WebSocket and lets a
+    // backend that cannot be reached by URL — an in-page one on vnet:<port> —
+    // be used instead. See shell/wisp-transport.js.
+    this.#ws = openWispTransport(this.#url);
     this.#ws.binaryType = 'arraybuffer';
     this.#ws.onopen = () => {
       console.log('[WISP] WebSocket open');
