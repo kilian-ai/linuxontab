@@ -929,7 +929,10 @@ class WispSlirp {
         // and the transfer truncated/hung). Defer the FIN until fully drained.
         s.onClose = () => { conn.peerClosed = true; this.#finishIfDrainedOut(conn); };
       }
-      this.#tcpSynAck(conn, seq);
+      // Deferred for the same reason as the gateway branch above: the SYN-ACK
+      // must not be injected from inside the guest's own TX callback. Same-tick
+      // injection on the first WISP connect wedged the page (2026-09-22).
+      setTimeout(() => { if (this.#tcpConns.get(srcPort) === conn) this.#tcpSynAck(conn, seq); }, 10);
       return;
     }
 
