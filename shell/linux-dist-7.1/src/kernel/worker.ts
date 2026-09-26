@@ -66,6 +66,7 @@ const postMessage = (message: WorkerMessage, transfer?: Transferable[]) =>
 //   child:  switch_entry() sees ForkRewind → retval=0, rewind from the same
 //           buffer (it lives in the copied heap) → fork() returns 0.
 const USER_MEMORY_DEFAULT_MAX_PAGES = 4096; // 256 MiB
+const USER_MEMORY_DEFAULT_MIN_PAGES = 2048; // 128 MiB
 const NR_WASM_FORK = 9999;
 const NR_WASM_VFORK = 10000;
 const WASM_FORK_MAGIC = 0x464f524b; // 'FORK': arg0 is a caller-sized buffer
@@ -204,14 +205,14 @@ const NR_WASM_GET_ARGS = 245;
         h[(bufPtr >> 2) + 1] = bufPtr + sc.size;
       }
       pendingFork = { bufPtr, retPtr, sp: (spGlobal()?.value ?? 0) >>> 0, vfork: nr === NR_WASM_VFORK };
-      console.log("[fork] " + (self.name || "?") + " unwind buf=0x" + bufPtr.toString(16) + " ret=0x" + retPtr.toString(16) + (arg2 === WASM_FORK_MAGIC ? " dyn" : " legacy") + " sp=" + sp());
+      console.debug("[fork] " + (self.name || "?") + " unwind buf=0x" + bufPtr.toString(16) + " ret=0x" + retPtr.toString(16) + (arg2 === WASM_FORK_MAGIC ? " dyn" : " legacy") + " sp=" + sp());
       a.asyncify_start_unwind(bufPtr);
       return 0;
     }
     if (state === 2) {
       a.asyncify_stop_rewind();
       const rv = new Int32Array(context.memory.buffer)[(arg1 >>> 0) >> 2];
-      console.log("[fork] " + (self.name || "?") + " rewound, fork() returns " + rv + " sp=" + sp());
+      console.debug("[fork] " + (self.name || "?") + " rewound, fork() returns " + rv + " sp=" + sp());
       return rv;
     }
     return -38;
@@ -347,6 +348,14 @@ const NR_WASM_GET_ARGS = 245;
           // 6.1 host did; only WALI (Rust) modules keep their declared limit.
           const wali_module = WebAssembly.Module.imports(module).some((i) => i.module === "wali");
           if (!wali_module) maximum = Math.min(maximum, USER_MEMORY_DEFAULT_MAX_PAGES);
+          // Start C processes at 128 MiB like the 6.1 host did (its random
+          // 2048-3048 pages). This is not just headroom: a process whose heap
+          // had to grow through memory.grow before it forked corrupts mallocng
+          // metadata in BOTH parent and child on the second fork (free() of
+          // the fork buffer trips get_meta's checks; forktest [2]-[5], ash/zsh
+          // subshells), while the same binaries are fine when their heap never
+          // needs to grow. Root cause not yet found — see kernel-7-1-port notes.
+          if (!wali_module) minimum = Math.max(minimum, Math.min(USER_MEMORY_DEFAULT_MIN_PAGES, maximum));
         } catch {
           return -8; // exec format error
         }
@@ -361,7 +370,7 @@ const NR_WASM_GET_ARGS = 245;
         }
 
         const next_context = { module, ...allocated };
-        console.log("[user-memory] " + (self.name || "?") + " declared min=" + minimum + " max=" + declared_max +
+        console.debug("[user-memory] " + (self.name || "?") + " declared min=" + minimum + " max=" + declared_max +
           " rlimit=" + rlimit_pages + " requested max=" + maximum + " granted max=" + allocated.maximum_pages + " pages");
         pending = next_context;
         return 0;
@@ -391,7 +400,7 @@ const NR_WASM_GET_ARGS = 245;
                 // Asyncify buffer header: [cursor, end]; the data starts at +8.
                 const h = new Int32Array(context.memory.buffer);
                 const cursor = h[fork.bufPtr >> 2], end = h[(fork.bufPtr >> 2) + 1];
-                console.log("[fork] " + (self.name || "?") + " unwound: asyncify used=" + (cursor - (fork.bufPtr + 8)) +
+                console.debug("[fork] " + (self.name || "?") + " unwound: asyncify used=" + (cursor - (fork.bufPtr + 8)) +
                   " capacity=" + (end - (fork.bufPtr + 8)) + " bytes, mem pages=" + (context.memory.buffer.byteLength >> 16));
               }
               // Real clone without CLONE_VM: the kernel copies the user memory
@@ -406,7 +415,7 @@ const NR_WASM_GET_ARGS = 245;
                 set_pending_child_fork(null);
               }
               new Int32Array(context.memory.buffer)[fork.retPtr >> 2] = pid;
-              console.log("[fork] " + (self.name || "?") + " clone -> " + pid + ", rewinding parent sp=" + sp());
+              console.debug("[fork] " + (self.name || "?") + " clone -> " + pid + ", rewinding parent sp=" + sp());
               a.asyncify_start_rewind!(fork.bufPtr);
               continue; // call_entry re-runs _start(), which rewinds to the sentinel
             }
@@ -437,7 +446,7 @@ const NR_WASM_GET_ARGS = 245;
             new Int32Array(context.memory.buffer)[rw.retPtr >> 2] = 0; // fork() returns 0 in the child
             const g = spGlobal();
             if (g && rw.sp) g.value = rw.sp;
-            console.log("[fork] " + (self.name || "?") + " child rewinding buf=0x" + rw.bufPtr.toString(16) + " sp=" + sp() + (g ? " (restored)" : " (no __stack_pointer export!)"));
+            console.debug("[fork] " + (self.name || "?") + " child rewinding buf=0x" + rw.bufPtr.toString(16) + " sp=" + sp() + (g ? " (restored)" : " (no __stack_pointer export!)"));
             a.asyncify_start_rewind(rw.bufPtr);
             call_start();
           };
@@ -590,7 +599,7 @@ function start({
       const destination = memory_bytes(copied.memory, 0, source.byteLength);
       if (!destination) throw new RangeError("invalid destination memory");
       destination.set(source);
-      console.log("[user-memory] " + (self.name || "?") + " fork copy pages=" + source.byteLength / 0x10000 +
+      console.debug("[user-memory] " + (self.name || "?") + " fork copy pages=" + source.byteLength / 0x10000 +
         " parent max=" + user_context.maximum_pages + " granted max=" + copied.maximum_pages);
       user_context = { module: user_context.module, ...copied };
       Atomics.store(user_copy_status, 0, 1);

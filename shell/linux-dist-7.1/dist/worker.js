@@ -446,6 +446,7 @@ var unavailable = () => {
 var endpoint = platform.worker_endpoint();
 var postMessage = (message, transfer) => post_endpoint(endpoint, message, transfer);
 var USER_MEMORY_DEFAULT_MAX_PAGES = 4096;
+var USER_MEMORY_DEFAULT_MIN_PAGES = 2048;
 var NR_WASM_FORK = 9999;
 var NR_WASM_VFORK = 1e4;
 var WASM_FORK_MAGIC = 1179603531;
@@ -535,14 +536,14 @@ function user_imports({
         h[(bufPtr >> 2) + 1] = bufPtr + sc.size;
       }
       pendingFork = { bufPtr, retPtr, sp: (spGlobal()?.value ?? 0) >>> 0, vfork: nr === NR_WASM_VFORK };
-      console.log("[fork] " + (self.name || "?") + " unwind buf=0x" + bufPtr.toString(16) + " ret=0x" + retPtr.toString(16) + (arg2 === WASM_FORK_MAGIC ? " dyn" : " legacy") + " sp=" + sp());
+      console.debug("[fork] " + (self.name || "?") + " unwind buf=0x" + bufPtr.toString(16) + " ret=0x" + retPtr.toString(16) + (arg2 === WASM_FORK_MAGIC ? " dyn" : " legacy") + " sp=" + sp());
       a.asyncify_start_unwind(bufPtr);
       return 0;
     }
     if (state === 2) {
       a.asyncify_stop_rewind();
       const rv = new Int32Array(context.memory.buffer)[arg1 >>> 0 >> 2];
-      console.log("[fork] " + (self.name || "?") + " rewound, fork() returns " + rv + " sp=" + sp());
+      console.debug("[fork] " + (self.name || "?") + " rewound, fork() returns " + rv + " sp=" + sp());
       return rv;
     }
     return -38;
@@ -643,6 +644,7 @@ function user_imports({
           maximum = Math.min(declared_max, rlimit_pages);
           const wali_module = WebAssembly.Module.imports(module).some((i) => i.module === "wali");
           if (!wali_module) maximum = Math.min(maximum, USER_MEMORY_DEFAULT_MAX_PAGES);
+          if (!wali_module) minimum = Math.max(minimum, Math.min(USER_MEMORY_DEFAULT_MIN_PAGES, maximum));
         } catch {
           return -8;
         }
@@ -654,7 +656,7 @@ function user_imports({
           return -12;
         }
         const next_context = { module, ...allocated };
-        console.log("[user-memory] " + (self.name || "?") + " declared min=" + minimum + " max=" + declared_max + " rlimit=" + rlimit_pages + " requested max=" + maximum + " granted max=" + allocated.maximum_pages + " pages");
+        console.debug("[user-memory] " + (self.name || "?") + " declared min=" + minimum + " max=" + declared_max + " rlimit=" + rlimit_pages + " requested max=" + maximum + " granted max=" + allocated.maximum_pages + " pages");
         pending = next_context;
         return 0;
       },
@@ -681,7 +683,7 @@ function user_imports({
               {
                 const h = new Int32Array(context.memory.buffer);
                 const cursor = h[fork.bufPtr >> 2], end = h[(fork.bufPtr >> 2) + 1];
-                console.log("[fork] " + (self.name || "?") + " unwound: asyncify used=" + (cursor - (fork.bufPtr + 8)) + " capacity=" + (end - (fork.bufPtr + 8)) + " bytes, mem pages=" + (context.memory.buffer.byteLength >> 16));
+                console.debug("[fork] " + (self.name || "?") + " unwound: asyncify used=" + (cursor - (fork.bufPtr + 8)) + " capacity=" + (end - (fork.bufPtr + 8)) + " bytes, mem pages=" + (context.memory.buffer.byteLength >> 16));
               }
               set_pending_child_fork({ bufPtr: fork.bufPtr, retPtr: fork.retPtr, sp: fork.sp });
               let pid;
@@ -699,7 +701,7 @@ function user_imports({
                 set_pending_child_fork(null);
               }
               new Int32Array(context.memory.buffer)[fork.retPtr >> 2] = pid;
-              console.log("[fork] " + (self.name || "?") + " clone -> " + pid + ", rewinding parent sp=" + sp());
+              console.debug("[fork] " + (self.name || "?") + " clone -> " + pid + ", rewinding parent sp=" + sp());
               a.asyncify_start_rewind(fork.bufPtr);
               continue;
             }
@@ -726,7 +728,7 @@ function user_imports({
             new Int32Array(context.memory.buffer)[rw.retPtr >> 2] = 0;
             const g = spGlobal();
             if (g && rw.sp) g.value = rw.sp;
-            console.log("[fork] " + (self.name || "?") + " child rewinding buf=0x" + rw.bufPtr.toString(16) + " sp=" + sp() + (g ? " (restored)" : " (no __stack_pointer export!)"));
+            console.debug("[fork] " + (self.name || "?") + " child rewinding buf=0x" + rw.bufPtr.toString(16) + " sp=" + sp() + (g ? " (restored)" : " (no __stack_pointer export!)"));
             a.asyncify_start_rewind(rw.bufPtr);
             call_start();
           };
@@ -850,7 +852,7 @@ function start({
       const destination = memory_bytes(copied.memory, 0, source.byteLength);
       if (!destination) throw new RangeError("invalid destination memory");
       destination.set(source);
-      console.log("[user-memory] " + (self.name || "?") + " fork copy pages=" + source.byteLength / 65536 + " parent max=" + user_context.maximum_pages + " granted max=" + copied.maximum_pages);
+      console.debug("[user-memory] " + (self.name || "?") + " fork copy pages=" + source.byteLength / 65536 + " parent max=" + user_context.maximum_pages + " granted max=" + copied.maximum_pages);
       user_context = { module: user_context.module, ...copied };
       Atomics.store(user_copy_status, 0, 1);
     } catch {
