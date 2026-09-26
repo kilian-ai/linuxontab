@@ -134,6 +134,9 @@ Components carry their upstream licenses:
   [tombl/linux](https://github.com/tombl/linux)); the exact commit is in
   [`kernels/vmlinux.source`](kernels/vmlinux.source) and embedded in the
   binary's `.linuxontab.source` section. See [`kernels/README.md`](kernels/README.md).
+- Page runtime (`shell/linux-dist/dist/` — `index.js`, `worker.js`, `virtio.js`,
+  `wali-bridge.js`, …; `GPL-2.0-only WITH Linux-syscall-note`) — built from
+  `tools/wasm/` in the same kernel fork; same source pointer, same license.
 - v86 (BSD 2-Clause) — copy.sh
 - xterm.js (MIT) — Microsoft / xterm contributors
 - Alpine Linux ISOs — Alpine Linux project
