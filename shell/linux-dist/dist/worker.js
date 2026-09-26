@@ -892,6 +892,35 @@ function user_imports({ kernel_memory, get_kernel_instance, parent_user_module: 
                     assert(__indirect_function_table instanceof WebAssembly.Table, "Invalid function table");
                     const f = __indirect_function_table.get(fn);
                     assert(typeof f === "function" && f.length === 1, "Invalid function signature");
+                    // Fix Gap 3: set __stack_pointer for this thread.
+                    // musl's pthread_create allocates a stack via malloc and stores its
+                    // top in pthread->stack (empirically at tp+52, verified from musl
+                    // wasm32 binary — struct layout: self+dtv+prev+next+sysinfo+canary+
+                    // tid+errno(=28)+detach+cancel+flags+map_base+map_size+stack(=52)).
+                    // Each thread worker's WASM instance initialises __stack_pointer to
+                    // the module's default value (the main-thread stack region), so all
+                    // threads would clobber the same shadow-stack area. Reading the thread's
+                    // TLS value (set by CLONE_SETTLS via kernel before switch_entry) and
+                    // dereferencing pthread->stack gives the correct per-thread stack top.
+                    if (isThreadCloneChild?.() && instance.exports.__stack_pointer && memory) {
+                        try {
+                            const tp = get_kernel_instance().exports.get_thread_area();
+                            const PTHREAD_STACK_OFFSET = 52; // offsetof(struct pthread, stack)
+                            if (tp > 0 && (tp + PTHREAD_STACK_OFFSET + 4) <= memory.buffer.byteLength) {
+                                const threadStackTop = new Int32Array(memory.buffer)[(tp + PTHREAD_STACK_OFFSET) >> 2];
+                                if (threadStackTop > 0 && threadStackTop <= memory.buffer.byteLength) {
+                                    instance.exports.__stack_pointer.value = threadStackTop;
+                                    workerLog('thread-stack: set __stack_pointer=0x' + threadStackTop.toString(16) + ' tp=0x' + tp.toString(16));
+                                } else {
+                                    workerLog('thread-stack: WARN invalid threadStackTop=0x' + threadStackTop.toString(16) + ' tp=0x' + tp.toString(16));
+                                }
+                            } else {
+                                workerLog('thread-stack: WARN tp=0x' + tp.toString(16) + ' out of bounds');
+                            }
+                        } catch(e) {
+                            workerLog('thread-stack: error reading thread stack: ' + e);
+                        }
+                    }
                     workerLog('call_entry calling fn=' + fn);
                     f(arg);
                     // f(arg) returned normally — for NOMMU clone this is expected (the hook
@@ -1007,6 +1036,15 @@ self.onmessage = (event) => {
         },
         isThreadCloneChild() {
             return threadCloneChildActive;
+        },
+        markAsThreadCloneChild() {
+            // Called from switch_entry for non-fork clone children (CLONE_THREAD).
+            // Enables the signal/sleep shims that are needed when running user code
+            // outside the kernel's task context on a shared-memory worker.
+            if (!threadCloneChildActive) {
+                threadCloneChildActive = true;
+                workerLog('thread: marked as thread-clone child');
+            }
         },
     });
     workerLog('start: user imports ready');
