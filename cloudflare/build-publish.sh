@@ -40,6 +40,7 @@ cp "$SRC/sw-guest-proxy.js"    "$PUB/sw-guest-proxy.js"
 cp "$SRC/xterm.js"             "$PUB/xterm.js"
 cp "$SRC/xterm.css"           "$PUB/xterm.css"
 cp "$SRC/xterm-addon-fit.js"  "$PUB/xterm-addon-fit.js"
+cp "$SRC/wisp-transport.js"   "$PUB/wisp-transport.js"   # openWispTransport (loaded by wasm.html)
 
 # Kernel + userland: the dist/ JS, the vmlinux .wasm, initramfs — everything
 # under linux-dist EXCEPT the big rootfs (R2), editor backups, and source maps.
