@@ -23,6 +23,11 @@ export interface InitMessage {
   vmlinux: WebAssembly.Module;
   memory: WebAssembly.Memory;
   user: UserContext | null;
+  /**
+   * LinuxOnTab asyncify fork: the child rewinds into the parent's fork() call
+   * instead of running a clone entry function (see fork handling below).
+   */
+  fork?: ForkRewind | null;
   /** One-shot user-memory copy result: 0 pending, 1 complete, negative errno. */
   user_copy_status: Int32Array<SharedArrayBuffer> | null;
 }
@@ -50,14 +55,59 @@ const endpoint = platform.worker_endpoint();
 const postMessage = (message: WorkerMessage, transfer?: Transferable[]) =>
   post_endpoint(endpoint, message, transfer);
 
+// LinuxOnTab asyncify fork()/vfork() — see sysroot/wasm_fork.c for the
+// userspace half. fork() cannot exist natively in wasm (a call stack cannot
+// be duplicated), so binaries are transformed with wasm-opt --asyncify and
+// fork() is a sentinel syscall carrying an asyncify buffer:
+//   parent: sentinel (state 0) → asyncify_start_unwind → _start() returns →
+//           call() sees state 1 → real clone (kernel copies user memory,
+//           spawns the child worker with ForkRewind) → retval=pid, rewind →
+//           the sentinel is re-entered at state 2 → returns retval.
+//   child:  switch_entry() sees ForkRewind → retval=0, rewind from the same
+//           buffer (it lives in the copied heap) → fork() returns 0.
+const USER_MEMORY_DEFAULT_MAX_PAGES = 4096; // 256 MiB
+const NR_WASM_FORK = 9999;
+const NR_WASM_VFORK = 10000;
+const WASM_FORK_MAGIC = 0x464f524b; // 'FORK': arg0 is a caller-sized buffer
+const NR_CLONE = 220;
+const SIGCHLD = 17;
+const CLONE_VFORK = 0x4000;
+const FORK_SCRATCH_BYTES = 4 * 1024 * 1024; // legacy binaries without their own buffer
+
+export interface ForkRewind {
+  bufPtr: number;
+  retPtr: number;
+  /**
+   * The parent's __stack_pointer at the fork. Asyncify skips non-call code
+   * (function prologues included) while rewinding, so a fresh instance
+   * would resume inside fork() with SP still at the stack top, and every
+   * later callee frame would be carved out over the copied outer frames.
+   * Restoring SP before the rewind keeps the child's stack coherent.
+   */
+  sp: number;
+}
+
+interface AsyncifyExports {
+  asyncify_get_state?: () => number;
+  asyncify_start_unwind?: (buf: number) => void;
+  asyncify_stop_unwind?: () => void;
+  asyncify_start_rewind?: (buf: number) => void;
+  asyncify_stop_rewind?: () => void;
+}
+
 function user_imports({
   kernel_memory,
   get_kernel_instance,
   parent_user: parent,
+  fork_rewind = null,
+  set_pending_child_fork,
 }: {
   kernel_memory: WebAssembly.Memory;
   get_kernel_instance: () => Instance;
   parent_user: UserContext | null;
+  fork_rewind?: ForkRewind | null;
+  /** Hands the next spawned child its ForkRewind (parent side of a fork). */
+  set_pending_child_fork: (fork: ForkRewind | null) => void;
 }): {
   context: UserContext | null;
   prepare(): void;
@@ -119,6 +169,54 @@ const NR_WASM_GET_ARGS = 245;
   }
   let call_entry = call_start;
 
+  // LinuxOnTab fork state. pendingFork: set by the sentinel syscall while the
+  // parent unwinds; forkRewind: this worker is a fork child that must rewind.
+  let pendingFork: (ForkRewind & { vfork: boolean }) | null = null;
+  const spGlobal = () => { const g = (instance?.exports as any)?.__stack_pointer; return g instanceof WebAssembly.Global ? g : null; };
+  let forkRewind: ForkRewind | null = fork_rewind;
+  let forkScratch: { memory: WebAssembly.Memory; bufPtr: number; retPtr: number; size: number } | null = null;
+  const asyncify = () => (instance ? (instance.exports as unknown as AsyncifyExports) : null);
+  const sp = () => { const g = (instance?.exports as any)?.__stack_pointer; return g instanceof WebAssembly.Global ? "0x" + (g.value >>> 0).toString(16) : "n/a"; };
+  // Per-worker scratch for binaries that do not bring their own buffer:
+  // memory.grow'n pages the guest allocator can never hand out.
+  function acquireForkScratch(memory: WebAssembly.Memory) {
+    if (forkScratch && forkScratch.memory === memory) return forkScratch;
+    const base = memory.grow(FORK_SCRATCH_BYTES >> 16) * 65536;
+    forkScratch = { memory, retPtr: base, bufPtr: base + 16, size: FORK_SCRATCH_BYTES - 16 };
+    return forkScratch;
+  }
+  function fork_sentinel(nr: number, arg0: number, arg1: number, arg2: number): number {
+    const a = asyncify();
+    assert(context);
+    if (!a?.asyncify_get_state || !a.asyncify_start_unwind || !a.asyncify_stop_rewind) return -38; // ENOSYS: not asyncify-transformed
+    const state = a.asyncify_get_state();
+    if (state === 0) {
+      let bufPtr: number, retPtr: number;
+      if (arg2 === WASM_FORK_MAGIC) {
+        bufPtr = arg0 >>> 0; retPtr = arg1 >>> 0; // header + size already written by wasm_fork.c
+      } else {
+        // Legacy thunk: the binary still supplies its own retval slot (arg1);
+        // only the asyncify buffer is replaced by the per-worker scratch.
+        const sc = acquireForkScratch(context.memory);
+        bufPtr = sc.bufPtr; retPtr = arg1 >>> 0;
+        const h = new Int32Array(context.memory.buffer);
+        h[bufPtr >> 2] = bufPtr + 8;
+        h[(bufPtr >> 2) + 1] = bufPtr + sc.size;
+      }
+      pendingFork = { bufPtr, retPtr, sp: (spGlobal()?.value ?? 0) >>> 0, vfork: nr === NR_WASM_VFORK };
+      console.log("[fork] " + (self.name || "?") + " unwind buf=0x" + bufPtr.toString(16) + " ret=0x" + retPtr.toString(16) + (arg2 === WASM_FORK_MAGIC ? " dyn" : " legacy") + " sp=" + sp());
+      a.asyncify_start_unwind(bufPtr);
+      return 0;
+    }
+    if (state === 2) {
+      a.asyncify_stop_rewind();
+      const rv = new Int32Array(context.memory.buffer)[(arg1 >>> 0) >> 2];
+      console.log("[fork] " + (self.name || "?") + " rewound, fork() returns " + rv + " sp=" + sp());
+      return rv;
+    }
+    return -38;
+  }
+
   function create_instance(context: UserContext): WebAssembly.Instance {
     const kernel_instance = get_kernel_instance();
     return new WebAssembly.Instance(context.module, {
@@ -133,6 +231,7 @@ const NR_WASM_GET_ARGS = 245;
           arg4: number,
           arg5: number,
         ) => {
+          if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
           const original_instance = instance;
           const ret = kernel_instance.exports.syscall(nr, arg0, arg1, arg2, arg3, arg4, arg5);
           if (instance !== original_instance) {
@@ -215,6 +314,7 @@ const NR_WASM_GET_ARGS = 245;
         let module: WebAssembly.Module;
         let minimum: number;
         let maximum: number;
+        let declared_max = 0;
         try {
           const memories = read_wasm_memories(bytes);
           const memory_import = memories.imports[0];
@@ -237,7 +337,16 @@ const NR_WASM_GET_ARGS = 245;
           }
 
           minimum = Number(memory_import.type.minimum);
-          maximum = Math.min(Number(memory_import.type.maximum), rlimit_pages);
+          declared_max = Number(memory_import.type.maximum);
+          maximum = Math.min(declared_max, rlimit_pages);
+          // LinuxOnTab: C binaries all declare a 4 GiB maximum, and reserving
+          // that much address space per process makes the browser refuse (or
+          // allocate_shared_memory degrade the maximum toward the initial
+          // size) once a few dozen processes exist — after which malloc's
+          // memory.grow fails and musl traps. Cap them at 256 MiB like the
+          // 6.1 host did; only WALI (Rust) modules keep their declared limit.
+          const wali_module = WebAssembly.Module.imports(module).some((i) => i.module === "wali");
+          if (!wali_module) maximum = Math.min(maximum, USER_MEMORY_DEFAULT_MAX_PAGES);
         } catch {
           return -8; // exec format error
         }
@@ -252,6 +361,8 @@ const NR_WASM_GET_ARGS = 245;
         }
 
         const next_context = { module, ...allocated };
+        console.log("[user-memory] " + (self.name || "?") + " declared min=" + minimum + " max=" + declared_max +
+          " rlimit=" + rlimit_pages + " requested max=" + maximum + " granted max=" + allocated.maximum_pages + " pages");
         pending = next_context;
         return 0;
       },
@@ -269,7 +380,39 @@ const NR_WASM_GET_ARGS = 245;
           } catch (error) {
             if (error === HALT_USER) continue;
             if (error === HALT_KERNEL) throw error;
-            console.error("error running user module:", error);
+            // Asyncify fork: _start() returned because the stack was unwound.
+            const a = asyncify();
+            if (pendingFork && a?.asyncify_get_state?.() === 1) {
+              const fork = pendingFork;
+              pendingFork = null;
+              assert(context);
+              a.asyncify_stop_unwind!();
+              {
+                // Asyncify buffer header: [cursor, end]; the data starts at +8.
+                const h = new Int32Array(context.memory.buffer);
+                const cursor = h[fork.bufPtr >> 2], end = h[(fork.bufPtr >> 2) + 1];
+                console.log("[fork] " + (self.name || "?") + " unwound: asyncify used=" + (cursor - (fork.bufPtr + 8)) +
+                  " capacity=" + (end - (fork.bufPtr + 8)) + " bytes, mem pages=" + (context.memory.buffer.byteLength >> 16));
+              }
+              // Real clone without CLONE_VM: the kernel copies the user memory
+              // (spawn_worker COPY) and the new worker gets ForkRewind, so it
+              // rewinds into fork() instead of calling a clone entry.
+              set_pending_child_fork({ bufPtr: fork.bufPtr, retPtr: fork.retPtr, sp: fork.sp });
+              let pid: number;
+              try {
+                pid = get_kernel_instance().exports.syscall(
+                  NR_CLONE, 0, 0, SIGCHLD | (fork.vfork ? CLONE_VFORK : 0), 0, 0, 0);
+              } finally {
+                set_pending_child_fork(null);
+              }
+              new Int32Array(context.memory.buffer)[fork.retPtr >> 2] = pid;
+              console.log("[fork] " + (self.name || "?") + " clone -> " + pid + ", rewinding parent sp=" + sp());
+              a.asyncify_start_rewind!(fork.bufPtr);
+              continue; // call_entry re-runs _start(), which rewinds to the sentinel
+            }
+            console.error("error running user module in " + (self.name || "?") + ":", error,
+              "\n" + String((error as Error)?.stack ?? "").slice(0, 3000),
+              "| asyncify_state=" + (asyncify()?.asyncify_get_state?.() ?? "n/a") + " pendingFork=" + !!pendingFork + " forkRewind=" + !!forkRewind);
             return;
           }
         }
@@ -281,6 +424,25 @@ const NR_WASM_GET_ARGS = 245;
         // before the kernel enters this callback.
 
         assert(parent);
+
+        // LinuxOnTab fork child: rewind into the parent's fork() call.
+        if (forkRewind) {
+          const rw = forkRewind;
+          forkRewind = null;
+          call_entry = () => {
+            call_entry = call_start;
+            assert(instance && context);
+            const a = asyncify();
+            assert(a?.asyncify_start_rewind, "fork child without asyncify exports");
+            new Int32Array(context.memory.buffer)[rw.retPtr >> 2] = 0; // fork() returns 0 in the child
+            const g = spGlobal();
+            if (g && rw.sp) g.value = rw.sp;
+            console.log("[fork] " + (self.name || "?") + " child rewinding buf=0x" + rw.bufPtr.toString(16) + " sp=" + sp() + (g ? " (restored)" : " (no __stack_pointer export!)"));
+            a.asyncify_start_rewind(rw.bufPtr);
+            call_start();
+          };
+          return;
+        }
 
         call_entry = () => {
           assert(instance);
@@ -402,6 +564,7 @@ function start({
   memory,
   user: initial_user_context,
   user_copy_status,
+  fork,
 }: InitMessage) {
   // Refresh every WebAssembly.Memory received across a worker boundary
   // immediately, including any future additions to InitMessage. Chromium can
@@ -427,6 +590,8 @@ function start({
       const destination = memory_bytes(copied.memory, 0, source.byteLength);
       if (!destination) throw new RangeError("invalid destination memory");
       destination.set(source);
+      console.log("[user-memory] " + (self.name || "?") + " fork copy pages=" + source.byteLength / 0x10000 +
+        " parent max=" + user_context.maximum_pages + " granted max=" + copied.maximum_pages);
       user_context = { module: user_context.module, ...copied };
       Atomics.store(user_copy_status, 0, 1);
     } catch {
@@ -440,10 +605,13 @@ function start({
     }
   }
 
+  let pending_child_fork: ForkRewind | null = null;
   const user = user_imports({
     kernel_memory: memory,
     get_kernel_instance: () => instance,
     parent_user: user_context,
+    fork_rewind: fork ?? null,
+    set_pending_child_fork: (f) => { pending_child_fork = f; },
   });
 
   const imports = {
@@ -475,6 +643,7 @@ function start({
           memory,
           user,
           user_copy_status,
+          fork: pending_child_fork,
         } satisfies InitMessage);
         if (!user_copy_status) return 0;
         // If publication wins the race, wait returns "not-equal"; no wakeup

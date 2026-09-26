@@ -445,10 +445,20 @@ var unavailable = () => {
 };
 var endpoint = platform.worker_endpoint();
 var postMessage = (message, transfer) => post_endpoint(endpoint, message, transfer);
+var USER_MEMORY_DEFAULT_MAX_PAGES = 4096;
+var NR_WASM_FORK = 9999;
+var NR_WASM_VFORK = 1e4;
+var WASM_FORK_MAGIC = 1179603531;
+var NR_CLONE = 220;
+var SIGCHLD = 17;
+var CLONE_VFORK = 16384;
+var FORK_SCRATCH_BYTES = 4 * 1024 * 1024;
 function user_imports({
   kernel_memory,
   get_kernel_instance,
-  parent_user: parent
+  parent_user: parent,
+  fork_rewind = null,
+  set_pending_child_fork
 }) {
   const HALT_USER = Symbol("halt user");
   const NR_WASM_GET_ARGS = 245;
@@ -488,12 +498,62 @@ function user_imports({
     throw new Error("_start reached the end without exiting");
   }
   let call_entry = call_start;
+  let pendingFork = null;
+  const spGlobal = () => {
+    const g = instance?.exports?.__stack_pointer;
+    return g instanceof WebAssembly.Global ? g : null;
+  };
+  let forkRewind = fork_rewind;
+  let forkScratch = null;
+  const asyncify = () => instance ? instance.exports : null;
+  const sp = () => {
+    const g = instance?.exports?.__stack_pointer;
+    return g instanceof WebAssembly.Global ? "0x" + (g.value >>> 0).toString(16) : "n/a";
+  };
+  function acquireForkScratch(memory) {
+    if (forkScratch && forkScratch.memory === memory) return forkScratch;
+    const base = memory.grow(FORK_SCRATCH_BYTES >> 16) * 65536;
+    forkScratch = { memory, retPtr: base, bufPtr: base + 16, size: FORK_SCRATCH_BYTES - 16 };
+    return forkScratch;
+  }
+  function fork_sentinel(nr, arg0, arg1, arg2) {
+    const a = asyncify();
+    assert(context);
+    if (!a?.asyncify_get_state || !a.asyncify_start_unwind || !a.asyncify_stop_rewind) return -38;
+    const state = a.asyncify_get_state();
+    if (state === 0) {
+      let bufPtr, retPtr;
+      if (arg2 === WASM_FORK_MAGIC) {
+        bufPtr = arg0 >>> 0;
+        retPtr = arg1 >>> 0;
+      } else {
+        const sc = acquireForkScratch(context.memory);
+        bufPtr = sc.bufPtr;
+        retPtr = arg1 >>> 0;
+        const h = new Int32Array(context.memory.buffer);
+        h[bufPtr >> 2] = bufPtr + 8;
+        h[(bufPtr >> 2) + 1] = bufPtr + sc.size;
+      }
+      pendingFork = { bufPtr, retPtr, sp: (spGlobal()?.value ?? 0) >>> 0, vfork: nr === NR_WASM_VFORK };
+      console.log("[fork] " + (self.name || "?") + " unwind buf=0x" + bufPtr.toString(16) + " ret=0x" + retPtr.toString(16) + (arg2 === WASM_FORK_MAGIC ? " dyn" : " legacy") + " sp=" + sp());
+      a.asyncify_start_unwind(bufPtr);
+      return 0;
+    }
+    if (state === 2) {
+      a.asyncify_stop_rewind();
+      const rv = new Int32Array(context.memory.buffer)[arg1 >>> 0 >> 2];
+      console.log("[fork] " + (self.name || "?") + " rewound, fork() returns " + rv + " sp=" + sp());
+      return rv;
+    }
+    return -38;
+  }
   function create_instance(context2) {
     const kernel_instance = get_kernel_instance();
     return new WebAssembly.Instance(context2.module, {
       env: { memory: context2.memory },
       linux: {
         syscall: (nr, arg0, arg1, arg2, arg3, arg4, arg5) => {
+          if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
           const original_instance = instance;
           const ret = kernel_instance.exports.syscall(nr, arg0, arg1, arg2, arg3, arg4, arg5);
           if (instance !== original_instance) {
@@ -567,6 +627,7 @@ function user_imports({
         let module;
         let minimum;
         let maximum;
+        let declared_max = 0;
         try {
           const memories = read_wasm_memories(bytes);
           const memory_import = memories.imports[0];
@@ -578,7 +639,10 @@ function user_imports({
             return -8;
           }
           minimum = Number(memory_import.type.minimum);
-          maximum = Math.min(Number(memory_import.type.maximum), rlimit_pages);
+          declared_max = Number(memory_import.type.maximum);
+          maximum = Math.min(declared_max, rlimit_pages);
+          const wali_module = WebAssembly.Module.imports(module).some((i) => i.module === "wali");
+          if (!wali_module) maximum = Math.min(maximum, USER_MEMORY_DEFAULT_MAX_PAGES);
         } catch {
           return -8;
         }
@@ -590,6 +654,7 @@ function user_imports({
           return -12;
         }
         const next_context = { module, ...allocated };
+        console.log("[user-memory] " + (self.name || "?") + " declared min=" + minimum + " max=" + declared_max + " rlimit=" + rlimit_pages + " requested max=" + maximum + " granted max=" + allocated.maximum_pages + " pages");
         pending = next_context;
         return 0;
       },
@@ -607,13 +672,66 @@ function user_imports({
           } catch (error) {
             if (error === HALT_USER) continue;
             if (error === HALT_KERNEL) throw error;
-            console.error("error running user module:", error);
+            const a = asyncify();
+            if (pendingFork && a?.asyncify_get_state?.() === 1) {
+              const fork = pendingFork;
+              pendingFork = null;
+              assert(context);
+              a.asyncify_stop_unwind();
+              {
+                const h = new Int32Array(context.memory.buffer);
+                const cursor = h[fork.bufPtr >> 2], end = h[(fork.bufPtr >> 2) + 1];
+                console.log("[fork] " + (self.name || "?") + " unwound: asyncify used=" + (cursor - (fork.bufPtr + 8)) + " capacity=" + (end - (fork.bufPtr + 8)) + " bytes, mem pages=" + (context.memory.buffer.byteLength >> 16));
+              }
+              set_pending_child_fork({ bufPtr: fork.bufPtr, retPtr: fork.retPtr, sp: fork.sp });
+              let pid;
+              try {
+                pid = get_kernel_instance().exports.syscall(
+                  NR_CLONE,
+                  0,
+                  0,
+                  SIGCHLD | (fork.vfork ? CLONE_VFORK : 0),
+                  0,
+                  0,
+                  0
+                );
+              } finally {
+                set_pending_child_fork(null);
+              }
+              new Int32Array(context.memory.buffer)[fork.retPtr >> 2] = pid;
+              console.log("[fork] " + (self.name || "?") + " clone -> " + pid + ", rewinding parent sp=" + sp());
+              a.asyncify_start_rewind(fork.bufPtr);
+              continue;
+            }
+            console.error(
+              "error running user module in " + (self.name || "?") + ":",
+              error,
+              "\n" + String(error?.stack ?? "").slice(0, 3e3),
+              "| asyncify_state=" + (asyncify()?.asyncify_get_state?.() ?? "n/a") + " pendingFork=" + !!pendingFork + " forkRewind=" + !!forkRewind
+            );
             return;
           }
         }
       },
       switch_entry(fn, arg) {
         assert(parent);
+        if (forkRewind) {
+          const rw = forkRewind;
+          forkRewind = null;
+          call_entry = () => {
+            call_entry = call_start;
+            assert(instance && context);
+            const a = asyncify();
+            assert(a?.asyncify_start_rewind, "fork child without asyncify exports");
+            new Int32Array(context.memory.buffer)[rw.retPtr >> 2] = 0;
+            const g = spGlobal();
+            if (g && rw.sp) g.value = rw.sp;
+            console.log("[fork] " + (self.name || "?") + " child rewinding buf=0x" + rw.bufPtr.toString(16) + " sp=" + sp() + (g ? " (restored)" : " (no __stack_pointer export!)"));
+            a.asyncify_start_rewind(rw.bufPtr);
+            call_start();
+          };
+          return;
+        }
         call_entry = () => {
           assert(instance);
           const { __indirect_function_table } = instance.exports;
@@ -714,7 +832,8 @@ function start({
   vmlinux,
   memory,
   user: initial_user_context,
-  user_copy_status
+  user_copy_status,
+  fork
 }) {
   memory.grow(0);
   initial_user_context?.memory.grow(0);
@@ -731,6 +850,7 @@ function start({
       const destination = memory_bytes(copied.memory, 0, source.byteLength);
       if (!destination) throw new RangeError("invalid destination memory");
       destination.set(source);
+      console.log("[user-memory] " + (self.name || "?") + " fork copy pages=" + source.byteLength / 65536 + " parent max=" + user_context.maximum_pages + " granted max=" + copied.maximum_pages);
       user_context = { module: user_context.module, ...copied };
       Atomics.store(user_copy_status, 0, 1);
     } catch {
@@ -743,10 +863,15 @@ function start({
       return;
     }
   }
+  let pending_child_fork = null;
   const user = user_imports({
     kernel_memory: memory,
     get_kernel_instance: () => instance,
-    parent_user: user_context
+    parent_user: user_context,
+    fork_rewind: fork ?? null,
+    set_pending_child_fork: (f) => {
+      pending_child_fork = f;
+    }
   });
   const imports = {
     env: { memory },
@@ -776,7 +901,8 @@ function start({
           vmlinux,
           memory,
           user: user2,
-          user_copy_status: user_copy_status2
+          user_copy_status: user_copy_status2,
+          fork: pending_child_fork
         });
         if (!user_copy_status2) return 0;
         Atomics.wait(user_copy_status2, 0, 0);
