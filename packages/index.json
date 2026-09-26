@@ -794,6 +794,20 @@
         "rustc"
       ],
       "status": "available"
+    },
+    "iredis": {
+      "version": "1.15.2",
+      "description": "iredis \u2014 interactive Redis client with completion and syntax highlighting (needs redis-server)",
+      "url": "https://linuxontab.com/packages/iredis-1.15.2.tar.gz",
+      "size": 2462406,
+      "sha256": "30ba783a5456777d8926b1912313c5a145deeb37bee46ce5da810de5a2fb4cee",
+      "bins": [
+        "iredis"
+      ],
+      "depends": [
+        "python3"
+      ],
+      "status": "available"
     }
   }
 }
