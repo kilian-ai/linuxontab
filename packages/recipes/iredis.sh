@@ -27,6 +27,17 @@ build() {
     for w in "$SRC"/wheels/*.whl; do
         unzip -qo "$w" -d "$SP"
     done
+    # Pre-bake the pycs on the host. The guest's first import otherwise
+    # compiles ~1,100 modules and writes their __pycache__ to ext4, and that
+    # first run reliably died in python3.11's mallocng get_meta trap (the
+    # second run, with pycs on disk, was fine). unchecked-hash: the guest
+    # never revalidates against source mtimes, which extraction rewrites.
+    # -s/-p strip the stage prefix so co_filename is the guest path.
+    HOSTPY="${LOT_HOST_PYTHON311:-/opt/homebrew/bin/python3.11}"
+    "$HOSTPY" -c 'import sys; assert sys.version_info[:2]==(3,11), sys.version' || {
+        echo "iredis: need a host python3.11 (same pyc magic as the guest): set LOT_HOST_PYTHON311" >&2; exit 1; }
+    "$HOSTPY" -m compileall -q --invalidation-mode unchecked-hash \
+        -s "$STAGE" -p / "$SP" || { echo "iredis: compileall failed" >&2; exit 1; }
     # Console script from iredis's entry_points: iredis = iredis.entry:main
     cat > "$STAGE/usr/local/bin/iredis" <<'LAUNCHER'
 #!/bin/sh
