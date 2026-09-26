@@ -929,15 +929,29 @@ class WispSlirp {
       };
       this.#tcpConns.set(srcPort, conn);
       const s = this.#streams.get(wispId);
+      // The SYN-ACK is deferred a tick (same reason as the gateway branch:
+      // injecting it from inside the guest's own TX callback wedged the page
+      // with an in-page WISP backend, PR #5). Peer bytes that arrive before it
+      // goes out must wait for it: sent early they take sequence numbers
+      // below the guest's rcv.nxt — the guest discards them in SYN_SENT, the
+      // retransmit looks like an old duplicate — and a server-speaks-first
+      // greeting (SSH banner, SMTP/FTP hello) is lost for good.
+      conn.preSyn = [];
       if (s) {
-        s.onData  = chunk => this.#tcpToGuest(conn, chunk);
+        s.onData  = chunk => conn.preSyn ? conn.preSyn.push(chunk) : this.#tcpToGuest(conn, chunk);
         // The relay CLOSEs the WISP stream the moment ITS side finished pumping
         // — the windowed sender may still hold megabytes for the guest. FINing
         // here discarded that backlog (guest saw a seq gap it could never fill
         // and the transfer truncated/hung). Defer the FIN until fully drained.
-        s.onClose = () => { conn.peerClosed = true; this.#finishIfDrainedOut(conn); };
+        s.onClose = () => { conn.peerClosed = true; if (!conn.preSyn) this.#finishIfDrainedOut(conn); };
       }
-      this.#tcpSynAck(conn, seq);
+      setTimeout(() => {
+        if (this.#tcpConns.get(srcPort) !== conn) return;
+        this.#tcpSynAck(conn, seq);
+        const early = conn.preSyn; conn.preSyn = null;
+        for (const chunk of early) this.#tcpToGuest(conn, chunk);
+        if (conn.peerClosed) this.#finishIfDrainedOut(conn);
+      }, 10);
       return;
     }
 
