@@ -12,3 +12,4 @@ kernels/linux
 # 2026-08; 122 versions of it in the unpushed history made the branch
 # impossible to push (GitHub rejects blobs over 100 MB).
 shell/linux-dist/rootfs.ext4
+kernels/linux-7.1

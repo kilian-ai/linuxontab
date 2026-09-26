@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>LinuxOnTab 7.1 harness</title>
+<style>body{background:#111;color:#ddd;font:13px/1.35 ui-monospace,monospace;margin:0} pre{white-space:pre-wrap;padding:8px;margin:0} #s{padding:6px 8px;background:#222;position:sticky;top:0}</style>
+<div id="s">loading…</div>
+<pre id="out"></pre>
+<script type="module">
+import { bootMachine, consoleDevice, entropyDevice, blockDevice } from "./dist/index.js";
+const out = document.getElementById("out"), st = document.getElementById("s");
+const dec = new TextDecoder();
+const log = (t) => { out.textContent += t; window.__log = (window.__log || "") + t; if (out.textContent.length > 200000) out.textContent = out.textContent.slice(-100000); };
+window.__events = [];
+try {
+  const q = new URLSearchParams(location.search);
+  st.textContent = "fetching rootfs…";
+  const rootfs = new Uint8Array(await (await fetch("../linux-dist/rootfs.ext4")).arrayBuffer());
+  const initcpio = new Uint8Array(await (await fetch("../linux-dist/initramfs.cpio")).arrayBuffer());
+  st.textContent = "booting…";
+  const input = new TransformStream();
+  window.__stdin = input.writable.getWriter();
+  window.guestSend = async (s) => { await window.__stdin.write(new TextEncoder().encode(s)); };
+  const output = new WritableStream({ write(chunk) { log(dec.decode(chunk, { stream: true })); } });
+  const disk = {
+    capacity: rootfs.byteLength,
+    read(offset, target) { const src = rootfs.subarray(offset, offset + target.byteLength); target.set(src); return src.byteLength; },
+    write(offset, data) { rootfs.set(data, offset); return data.byteLength; },
+    flush() {},
+  };
+  const ip = "192.168.86.100";
+  const args = ["loglevel=" + (q.get("loglevel") || "7"), "nr_cpus=1", "rcupdate.rcu_cpu_stall_suppress=1", "rdinit=/init",
+    `ip=${ip}::192.168.86.1:255.255.255.0::eth0:off`, `lot_ip=${ip}`, "lot_epoch=" + Math.floor(Date.now() / 1000), "lot_tty=40x120",
+    ...(q.get("args") || "").split(" ").filter(Boolean)];
+  const machine = await bootMachine({
+    cpus: 1, args, initcpio,
+    plugins: [consoleDevice(input.readable, output), entropyDevice(), blockDevice(disk)],
+  });
+  window.__machine = machine;
+  st.textContent = "bootMachine resolved";
+  const r = machine.bootConsole.getReader();
+  (async () => { for (;;) { const { value, done } = await r.read(); if (done) break; log(dec.decode(value, { stream: true })); } })();
+  machine.closed.then(() => { st.textContent += " | closed"; window.__events.push("closed"); },
+                      (e) => { st.textContent += " | failed: " + (e && e.message || e); window.__events.push("failed: " + (e && (e.stack || e.message) || e)); });
+} catch (e) {
+  st.textContent = "boot error: " + (e && e.message || e);
+  window.__events.push("boot error: " + (e && (e.stack || e.message) || e));
+}
+</script>
