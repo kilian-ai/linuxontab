@@ -1,82 +1,65 @@
-# Linux Kernel Integration
+# Kernel source for `shell/linux-dist/vmlinux.wasm`
 
-This directory is reserved for Linux kernel development integration with LinuxOnTab.
+LinuxOnTab 2.0 boots a real Linux kernel compiled to WebAssembly. The kernel
+is GPL-2.0 (`GPL-2.0 WITH Linux-syscall-note`), so the exact source of every
+shipped binary is public:
 
-## Setup
+- **Repository:** https://github.com/kilian-ai/linux — a fork of
+  [tombl/linux](https://github.com/tombl/linux) (Thomas Stokes' `arch/wasm`
+  port; all credit for the port itself goes there)
+- **Branch:** `wasm-linuxontab`
+- **Commit behind the shipped binary:** see [`vmlinux.source`](vmlinux.source).
+  The same text is embedded in the `.wasm` as a custom section, so a binary
+  can always be traced back to its source:
 
-The Linux kernel is **not** pre-cloned to keep the worktree lightweight. Clone it when ready:
+  ```js
+  new TextDecoder().decode(
+    WebAssembly.Module.customSections(module, '.linuxontab.source')[0])
+  ```
+
+`kernels/linux/` is deliberately **not** tracked here (`.gitignore`) — it is a
+full kernel tree. Clone it next to this file:
 
 ```bash
-cd kernels
-git clone https://github.com/tombl/linux.git
-cd linux
-```
-
-## After Cloning
-
-Once you have `kernels/linux/`, the integration docs will be ready:
-
-```bash
-# Create integration guide
-cat > kernels/linux/LINUXONTAB-INTEGRATION.md << 'GUIDE'
-# LinuxOnTab + Linux Kernel Integration
-
-[See ../kernels/README.md for setup instructions]
-GUIDE
-
-# Copy relay services
-cp -r ../services kernels/linux/services-linuxontab
-
-# Copy shell UI
-cp ../shell/index.html kernels/linux/shell-ui-linuxontab.html
-
-# Copy guest scripts
-cp -r ../local kernels/linux/local-linuxontab
-
-# Commit
-git add kernels/
-git commit -m "kernel: clone tombl/linux and integrate relay services"
-```
-
-## Directory Structure (after clone)
-
-```
-kernels/
-├── README.md                        # This file
-└── linux/                           # tombl/linux (after git clone)
-    ├── services-linuxontab/         # [After copy] Relay services
-    ├── shell-ui-linuxontab.html     # [After copy] Shell UI
-    ├── local-linuxontab/            # [After copy] Guest scripts
-    ├── arch/x86/boot/bzImage        # Compiled kernel (after make)
-    └── [Linux kernel source]
+git clone -b wasm-linuxontab https://github.com/kilian-ai/linux kernels/linux
+git -C kernels/linux remote rename origin linuxontab   # the deploy script expects this name
 ```
 
 ## Build
 
-```bash
-cd kernels/linux
-make -j8
-# Produces: arch/x86/boot/bzImage
-```
-
-## Deployment
-
-After building, copy the kernel into shell UI:
+Needs LLVM **19** (`brew install llvm@19` — plain `llvm` is too new: `wasm-ld`
+isn't found and `syncconfig` wipes `autoconf.h`) and `node`:
 
 ```bash
-cp kernels/linux/arch/x86/boot/bzImage ../shell/linux.iso
-git add shell/
-git commit -m "kernel: update to latest build"
+export PATH="/opt/homebrew/opt/llvm@19/bin:$PATH"
+make -C kernels/linux tools/wasm/vmlinux.wasm -j8      # incremental: 1–2 min
 ```
 
-## Links
+That produces `kernels/linux/tools/wasm/vmlinux.wasm` with a 1 MB initramfs
+baked into a `.linux.initramfs` custom section. The shipped file replaces it
+with a 512-byte stub (the page fetches `initramfs.cpio` separately).
 
-- **Kernel source**: https://github.com/tombl/linux
-- **Parent worktree**: https://github.com/kilian-ai/linuxontab
-- **Branch**: `feature/linux-kernel-integration`
+## Ship it
 
-## Notes
+```bash
+kernels/deploy-vmlinux.sh
+git add shell/linux-dist/vmlinux.wasm kernels/vmlinux.source && git commit
+```
 
-- This is a **git worktree**, not affected by main branch
-- Kernel clone is on-demand to keep initial setup fast
-- All changes are isolated to this branch until merged
+The script builds, swaps the initramfs stub, embeds the source pointer and
+writes `vmlinux.source`. It **refuses** if the kernel tree has uncommitted
+changes or if `HEAD` isn't on the public fork branch — the binary must always
+correspond to a commit anyone can fetch. `LOT_ALLOW_DIRTY=1` overrides for a
+local-only experiment (never for a deploy).
+
+The page runtime under `shell/linux-dist/dist/` (`index.js`, `worker.js`,
+`virtio.js`, …) is built from `kernels/linux/tools/wasm/src/*.ts` in the same
+tree; it is edited in place in this repo as well.
+
+## macOS note
+
+The kernel tree contains file pairs that differ only by case
+(`xt_CONNMARK.h` / `xt_connmark.h`, `net/netfilter/xt_DSCP.c` / `xt_dscp.c`,
+one litmus test). On a case-insensitive filesystem `git status` shows them as
+modified forever; they are not edits and are not part of the wasm build. The
+deploy script ignores them. Don't commit them.

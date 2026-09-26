@@ -128,6 +128,12 @@ After a regular clone, run `git lfs pull` to fetch them.
 ## License
 
 Components carry their upstream licenses:
+- Linux kernel (`GPL-2.0 WITH Linux-syscall-note`) — the WebAssembly build
+  shipped as `shell/linux-dist/vmlinux.wasm`. Corresponding source:
+  https://github.com/kilian-ai/linux, branch `wasm-linuxontab` (a fork of
+  [tombl/linux](https://github.com/tombl/linux)); the exact commit is in
+  [`kernels/vmlinux.source`](kernels/vmlinux.source) and embedded in the
+  binary's `.linuxontab.source` section. See [`kernels/README.md`](kernels/README.md).
 - v86 (BSD 2-Clause) — copy.sh
 - xterm.js (MIT) — Microsoft / xterm contributors
 - Alpine Linux ISOs — Alpine Linux project
