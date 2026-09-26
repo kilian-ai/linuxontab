@@ -13,6 +13,21 @@ PUB="$HERE/public"
 
 [ -f "$SRC/wasm.html" ] || { echo "ERROR: $SRC/wasm.html not found"; exit 1; }
 
+# Version lock: the page and its runtime modules ship as ONE set. Publishing
+# from a working tree whose dist/*.js or wasm.html are uncommitted is how a
+# fresh clone of the branch got a worker.js that called a function the
+# committed file never defined (init died in switch_entry, a74368e) while
+# the deployed site worked. Refuse unless explicitly overridden.
+LOCKED="shell/wasm.html shell/console.html shell/linux-dist/dist shell/linux-dist/vmlinux.wasm shell/linux-dist/initramfs.cpio shell/linux-dist/rootfs-lean.data shell/linux-dist/rootfs-lean.manifest.json"
+# shellcheck disable=SC2086
+DIRTY="$(git -C "$REPO" status --porcelain -- $LOCKED 2>/dev/null || true)"
+if [ -n "$DIRTY" ] && [ "${LOT_ALLOW_DIRTY:-}" != "1" ]; then
+  echo "ERROR: refusing to publish from a dirty tree — these shipped files differ from HEAD:"
+  echo "$DIRTY" | sed 's/^/  /'
+  echo "Commit them first (a clone must get the same set), or set LOT_ALLOW_DIRTY=1 to override."
+  exit 1
+fi
+
 rm -rf "$PUB"
 mkdir -p "$PUB/linux-dist"
 
