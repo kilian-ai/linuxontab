@@ -18,7 +18,7 @@ PUB="$HERE/public"
 # fresh clone of the branch got a worker.js that called a function the
 # committed file never defined (init died in switch_entry, a74368e) while
 # the deployed site worked. Refuse unless explicitly overridden.
-LOCKED="shell/wasm.html shell/console.html shell/linux-dist/dist shell/linux-dist/vmlinux.wasm shell/linux-dist/initramfs.cpio shell/linux-dist/rootfs-lean.data shell/linux-dist/rootfs-lean.manifest.json"
+LOCKED="shell/wasm.html shell/console.html shell/linux-dist/dist shell/linux-dist-7.1/dist shell/linux-dist-7.1/vmlinux.wasm shell/linux-dist/vmlinux.wasm shell/linux-dist/initramfs.cpio shell/linux-dist/rootfs-lean.data shell/linux-dist/rootfs-lean.manifest.json"
 # shellcheck disable=SC2086
 DIRTY="$(git -C "$REPO" status --porcelain -- $LOCKED 2>/dev/null || true)"
 if [ -n "$DIRTY" ] && [ "${LOT_ALLOW_DIRTY:-}" != "1" ]; then
@@ -51,6 +51,10 @@ rsync -a \
   --exclude='*.bak' \
   --exclude='*.map' \
   "$SRC/linux-dist/" "$PUB/linux-dist/"
+# The Linux 7.1 runtime: its dist/ bundles and vmlinux.wasm (sources stay out).
+mkdir -p "$PUB/linux-dist-7.1/dist"
+cp "$SRC"/linux-dist-7.1/dist/*.js "$PUB/linux-dist-7.1/dist/"
+cp "$SRC/linux-dist-7.1/vmlinux.wasm" "$PUB/linux-dist-7.1/vmlinux.wasm"
 # (rootfs-lean.data + rootfs-lean.manifest.json ride along — a few MB, well
 # under the Pages 25 MiB cap. Only the two 512 MiB .ext4 files stay out.)
 
@@ -60,11 +64,13 @@ rsync -a \
 # content-addressed: without this, a deploy that changes them is invisible
 # to the edge and to every returning browser. Stamp every module URL with a
 # hash of the dist JS so each build gets fresh URLs (wasm.html is no-cache).
-STAMP="$(cat "$PUB"/linux-dist/dist/*.js | shasum -a 256 | cut -c1-10)"
+STAMP="$(cat "$PUB"/linux-dist/dist/*.js "$PUB"/linux-dist-7.1/dist/*.js 2>/dev/null | shasum -a 256 | cut -c1-10)"
 for f in "$PUB/index.html" "$PUB/wasm.html"; do
-  sed -i '' "s#\./linux-dist/dist/index\.js#./linux-dist/dist/index.js?b=$STAMP#g" "$f"
+  sed -i '' -e "s#\./linux-dist/dist/index\.js#./linux-dist/dist/index.js?b=$STAMP#g" \
+            -e "s#\./linux-dist-7\.1/dist/index\.js#./linux-dist-7.1/dist/index.js?b=$STAMP#g" "$f"
 done
-for f in "$PUB"/linux-dist/dist/*.js; do
+for f in "$PUB"/linux-dist/dist/*.js "$PUB"/linux-dist-7.1/dist/*.js; do
+  [ -f "$f" ] || continue
   sed -E -i '' \
     -e "s#(from [\"'])\./([A-Za-z0-9_-]+\.js)(\?[^\"']*)?([\"'])#\1./\2?b=$STAMP\4#g" \
     -e "s#new URL\(\"\./worker\.js\"#new URL(\"./worker.js?b=$STAMP\"#g" "$f"

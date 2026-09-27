@@ -29,7 +29,7 @@ echo
 # What you serve should be what a clone gets: the page and dist/*.js are
 # version-locked, and uncommitted edits to them have shipped to the site
 # while the branch stayed broken (a74368e). Warn loudly; don't block dev.
-DIRTY="$(git status --porcelain -- shell/wasm.html shell/console.html shell/linux-dist/dist shell/linux-dist/vmlinux.wasm shell/linux-dist/initramfs.cpio shell/linux-dist/rootfs-lean.data shell/linux-dist/rootfs-lean.manifest.json 2>/dev/null)"
+DIRTY="$(git status --porcelain -- shell/wasm.html shell/console.html shell/linux-dist/dist shell/linux-dist-7.1/dist shell/linux-dist-7.1/vmlinux.wasm shell/linux-dist/vmlinux.wasm shell/linux-dist/initramfs.cpio shell/linux-dist/rootfs-lean.data shell/linux-dist/rootfs-lean.manifest.json 2>/dev/null)"
 if [ -n "$DIRTY" ]; then
   echo "  WARNING: uncommitted changes in version-locked runtime files"
   echo "           (this server != a fresh clone of $(git rev-parse --short HEAD 2>/dev/null)); commit them together:"
