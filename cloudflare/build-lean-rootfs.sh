@@ -301,6 +301,7 @@ cat > "$STAGE/etc/motd" << 'EOF'
   Web servers:  nginx-demo (:8080) · httpd-demo (:8081)  → top bar: web view
   Media:        ffmpeg / ffprobe 7.0 (installs on first use, ~15 MB)
   Spiel:        spiel-demo — the Spiel media server + web UI on :8080 (web view)
+  X display:    vnc-server · vnc-snake · xtiny (X11 desktop)  → top bar: X display
   Everything runs in this tab. Nothing is sent to a server.
 
 EOF

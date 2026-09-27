@@ -278,10 +278,7 @@
       "bins": [
         "xeyes"
       ],
-      "depends": [
-        "xvfb",
-        "x11vnc"
-      ],
+      "depends": [],
       "status": "available"
     },
     "pixman": {
@@ -619,11 +616,7 @@
       "bins": [
         "xterm"
       ],
-      "depends": [
-        "libX11",
-        "libXt",
-        "libXaw"
-      ],
+      "depends": [],
       "status": "available"
     },
     "redis": {
@@ -806,6 +799,45 @@
       ],
       "depends": [
         "python3"
+      ],
+      "status": "available"
+    },
+    "vnc-server": {
+      "version": "1.0.0",
+      "description": "VNC demo: eyes that follow your mouse (open the X display panel)",
+      "url": "https://linuxontab.com/packages/vnc-server-1.0.0.tar.gz",
+      "size": 26105,
+      "sha256": "9ea6ff16c20602c530744e5f3d4348074a3cd0356338a08cc3aa3c94a329e4d5",
+      "bins": [
+        "vnc-server"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "vnc-snake": {
+      "version": "1.0.0",
+      "description": "VNC demo: snake game on the X display (arrows/WASD, p pause, r restart)",
+      "url": "https://linuxontab.com/packages/vnc-snake-1.0.0.tar.gz",
+      "size": 27088,
+      "sha256": "16d6dbc6fd1c3c9c1c9e60fd9b818e4ed252682632a9cf0c3777220b14831884",
+      "bins": [
+        "vnc-snake"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "xtiny": {
+      "version": "1.0.0",
+      "description": "Tiny X11 server + desktop on :5900 for real X clients (xterm, xeyes); open the X display panel",
+      "url": "https://linuxontab.com/packages/xtiny-1.0.0.tar.gz",
+      "size": 59363,
+      "sha256": "e5335f3a0cae98a693aa235ad216d4e296e1e5c07b0e3310551ae2054b95d846",
+      "bins": [
+        "xtiny"
+      ],
+      "depends": [
+        "xterm",
+        "xeyes"
       ],
       "status": "available"
     }
