@@ -4,6 +4,9 @@ import { listen_endpoint, post_endpoint } from "./endpoint.ts";
 import { platform } from "./platform.ts";
 import { assert } from "./util.ts";
 import { read_wasm_memories } from "./wasm_binary.ts";
+// LinuxOnTab: WALI (Rust) host imports — see src/lot/wali-bridge.js.
+// @ts-ignore plain JS module
+import { makeWaliImports } from "../lot/wali-bridge.js";
 import {
   allocate_shared_memory,
   HALT_KERNEL,
@@ -86,6 +89,8 @@ export interface ForkRewind {
    * Restoring SP before the rewind keeps the child's stack coherent.
    */
   sp: number;
+  /** WALI thread entry the forking worker runs (rewind re-enters it, not _start). */
+  entry?: { fn: number; arg: number } | null;
 }
 
 interface AsyncifyExports {
@@ -175,6 +180,19 @@ const NR_WASM_GET_ARGS = 245;
   let pendingFork: (ForkRewind & { vfork: boolean }) | null = null;
   const spGlobal = () => { const g = (instance?.exports as any)?.__stack_pointer; return g instanceof WebAssembly.Global ? g : null; };
   let forkRewind: ForkRewind | null = fork_rewind;
+  // WALI (Rust std) thread entry this worker runs, if any: __wasm_thread_start_libc(tid, args).
+  let waliThreadEntry: { fn: number; arg: number } | null = fork_rewind?.entry ?? null;
+  const is_wali = (m: WebAssembly.Module) => WebAssembly.Module.imports(m).some((i) => i.module === "wali");
+  function waliThreadRun() {
+    assert(instance && waliThreadEntry);
+    const f = instance.exports.__indirect_function_table.get(waliThreadEntry.fn) as (a: number, b: number) => void;
+    assert(typeof f === "function", "invalid WALI thread entry");
+    const tid = get_kernel_instance().exports.syscall(178, 0, 0, 0, 0, 0, 0); // gettid
+    f(tid, waliThreadEntry.arg);
+    // An asyncify fork unwind returns here normally: let call()'s catch see it.
+    if (asyncify()?.asyncify_get_state?.() === 1) throw new Error("wali thread: asyncify unwind");
+    console.warn("WALI thread entry returned");
+  }
   let forkScratch: { memory: WebAssembly.Memory; bufPtr: number; retPtr: number; size: number } | null = null;
   const asyncify = () => (instance ? (instance.exports as unknown as AsyncifyExports) : null);
   const sp = () => { const g = (instance?.exports as any)?.__stack_pointer; return g instanceof WebAssembly.Global ? "0x" + (g.value >>> 0).toString(16) : "n/a"; };
@@ -220,27 +238,46 @@ const NR_WASM_GET_ARGS = 245;
 
   function create_instance(context: UserContext): WebAssembly.Instance {
     const kernel_instance = get_kernel_instance();
+    const linux_syscall = (
+      nr: number,
+      arg0: number,
+      arg1: number,
+      arg2: number,
+      arg3: number,
+      arg4: number,
+      arg5: number,
+    ) => {
+      if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
+      const original_instance = instance;
+      const ret = kernel_instance.exports.syscall(nr, arg0, arg1, arg2, arg3, arg4, arg5);
+      if (instance !== original_instance) {
+        call_entry = call_start;
+        throw HALT_USER;
+      }
+      return ret;
+    };
+    // WALI modules (Rust std on wali-musl) import wali.SYS_* and a few env.*
+    // hooks; the bridge translates them onto linux.syscall + the args exports.
+    let wali_env: Record<string, unknown> = {};
+    let wali_imports: Record<string, unknown> | undefined;
+    if (is_wali(context.module)) {
+      const w = makeWaliImports({
+        memory: context.memory,
+        kernel: { exports: {
+          get_args_length: () => kernel_instance.exports.get_args_length(),
+          get_args: (buf: number) => kernel_instance.exports.syscall(NR_WASM_GET_ARGS, buf >>> 0, 262144, 0, 0, 0, 0),
+        } },
+        syscall: (...a: number[]) => linux_syscall(a[0]!, a[1]!, a[2]!, a[3]!, a[4]!, a[5]!, a[6]!),
+        log: (m: string) => console.debug("[wali] " + m),
+      });
+      wali_env = w.envExtra ?? {};
+      wali_imports = w.wali;
+    }
     return new WebAssembly.Instance(context.module, {
-      env: { memory: context.memory },
+      env: { memory: context.memory, ...wali_env },
+      ...(wali_imports ? { wali: wali_imports } : {}),
       linux: {
-        syscall: (
-          nr: number,
-          arg0: number,
-          arg1: number,
-          arg2: number,
-          arg3: number,
-          arg4: number,
-          arg5: number,
-        ) => {
-          if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
-          const original_instance = instance;
-          const ret = kernel_instance.exports.syscall(nr, arg0, arg1, arg2, arg3, arg4, arg5);
-          if (instance !== original_instance) {
-            call_entry = call_start;
-            throw HALT_USER;
-          }
-          return ret;
-        },
+        syscall: linux_syscall,
         get_thread_area: kernel_instance.exports.get_thread_area,
         // LinuxOnTab compat for pre-7.1 binaries (every shipped package): their
         // crt1 calls get_args_length() (size only) and then get_args(buf) to
@@ -406,7 +443,7 @@ const NR_WASM_GET_ARGS = 245;
               // Real clone without CLONE_VM: the kernel copies the user memory
               // (spawn_worker COPY) and the new worker gets ForkRewind, so it
               // rewinds into fork() instead of calling a clone entry.
-              set_pending_child_fork({ bufPtr: fork.bufPtr, retPtr: fork.retPtr, sp: fork.sp });
+              set_pending_child_fork({ bufPtr: fork.bufPtr, retPtr: fork.retPtr, sp: fork.sp, entry: waliThreadEntry });
               let pid: number;
               try {
                 pid = get_kernel_instance().exports.syscall(
@@ -417,7 +454,8 @@ const NR_WASM_GET_ARGS = 245;
               new Int32Array(context.memory.buffer)[fork.retPtr >> 2] = pid;
               console.debug("[fork] " + (self.name || "?") + " clone -> " + pid + ", rewinding parent sp=" + sp());
               a.asyncify_start_rewind!(fork.bufPtr);
-              continue; // call_entry re-runs _start(), which rewinds to the sentinel
+              call_entry = waliThreadEntry ? waliThreadRun : call_start; // re-enter the same chain to rewind
+              continue;
             }
             console.error("error running user module in " + (self.name || "?") + ":", error,
               "\n" + String((error as Error)?.stack ?? "").slice(0, 3000),
@@ -448,7 +486,28 @@ const NR_WASM_GET_ARGS = 245;
             if (g && rw.sp) g.value = rw.sp;
             console.debug("[fork] " + (self.name || "?") + " child rewinding buf=0x" + rw.bufPtr.toString(16) + " sp=" + sp() + (g ? " (restored)" : " (no __stack_pointer export!)"));
             a.asyncify_start_rewind(rw.bufPtr);
+            if (waliThreadEntry) { call_entry = waliThreadRun; waliThreadRun(); return; }
             call_start();
+          };
+          return;
+        }
+
+        // WALI thread / posix_spawn child: wali-musl's __wasm_thread_spawn(fn, args)
+        // arrives as clone(fn, args) with a 2-arg entry (tid, args); its vfork
+        // child from posix_spawn has a 1-arg entry that runs natively and execs.
+        if (context && is_wali(context.module)) {
+          call_entry = () => {
+            assert(instance);
+            const f = instance.exports.__indirect_function_table.get(fn >>> 0) as Function;
+            assert(typeof f === "function", "invalid WALI clone entry");
+            if (f.length === 1) {
+              call_entry = call_start;
+              f(arg);
+              return;
+            }
+            waliThreadEntry = { fn: fn >>> 0, arg: arg >>> 0 };
+            call_entry = waliThreadRun;
+            waliThreadRun();
           };
           return;
         }

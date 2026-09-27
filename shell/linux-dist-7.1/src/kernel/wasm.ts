@@ -46,7 +46,10 @@ const supported_user_module_imports = new Set([
 /** Whether every import can be supplied when a userspace module is instantiated. */
 export function user_module_imports_supported(module: WebAssembly.Module): boolean {
   return WebAssembly.Module.imports(module).every(({ module, name, kind }) =>
-    supported_user_module_imports.has(`${module}\0${name}\0${kind}`),
+    supported_user_module_imports.has(`${module}\0${name}\0${kind}`) ||
+    // LinuxOnTab: WALI (Rust) modules import wali.SYS_* plus env.* hooks that
+    // the wali bridge supplies at instantiation (a missing one fails loudly).
+    (kind === "function" && (module === "wali" || module === "env")),
   );
 }
 

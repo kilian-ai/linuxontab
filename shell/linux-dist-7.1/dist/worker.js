@@ -304,6 +304,592 @@ function read_wasm_memories(module) {
   return memories;
 }
 
+// src/lot/wali-bridge.js
+function makeWaliImports({ memory, kernel, syscall, log }) {
+  const B = BigInt;
+  const dbg = log || (() => {
+  });
+  const n = (x) => typeof x === "bigint" ? Number(B.asIntN(64, x)) : x;
+  const i32 = (x) => n(x) | 0;
+  const big = (x) => typeof x === "bigint" ? B.asIntN(64, x) : B(x | 0);
+  const R = (r) => B(r | 0);
+  const sc = (nr, ...a) => syscall(nr, ...[0, 1, 2, 3, 4, 5].map((k) => i32(a[k] === void 0 ? 0 : a[k])));
+  const dv = () => new DataView(memory.buffer);
+  const u8 = () => new Uint8Array(memory.buffer);
+  const PAGE = 65536;
+  const SCRATCH = memory.grow(1) * PAGE;
+  let sp = 0;
+  const scratch = (size, align = 8) => {
+    sp = sp + align - 1 & ~(align - 1);
+    const p = SCRATCH + sp;
+    sp += size;
+    if (sp > PAGE) throw new Error("wali scratch overflow");
+    return p;
+  };
+  const reset = () => {
+    sp = 16;
+  };
+  const EMPTY_STR = SCRATCH;
+  const zero = (p, len) => u8().fill(0, p, p + len);
+  const AT_FDCWD = -100, AT_EMPTY_PATH = 4096, AT_SYMLINK_NOFOLLOW = 256, AT_REMOVEDIR = 512;
+  const ENOSYS = -38, EINVAL = -22, ENOMEM = -12, EBADF = -9;
+  let args = null, debugAll = false;
+  const loadArgs = () => {
+    if (args) return args;
+    args = { argv: [], envp: [] };
+    try {
+      const len = kernel.exports.get_args_length();
+      if (len <= 0) {
+        dbg("wali: get_args_length=" + len);
+        return args;
+      }
+      const pages = Math.ceil(len / PAGE);
+      const buf = memory.grow(pages) * PAGE;
+      const gr = kernel.exports.get_args(buf);
+      if (gr < 0) {
+        dbg("wali: get_args=" + gr);
+        return args;
+      }
+      const d = dv(), m = u8();
+      const envc = d.getInt32(buf + 4, true), argc = d.getInt32(buf + 8, true);
+      dbg("wali: args len=" + len + " argc=" + argc + " envc=" + envc);
+      const argv = d.getUint32(buf + 12, true), envp = d.getUint32(buf + 16, true);
+      const cstr = (p) => {
+        let e = p;
+        while (m[e]) e++;
+        return new TextDecoder().decode(m.slice(p, e));
+      };
+      for (let i = 0; i < argc; i++) args.argv.push(cstr(d.getUint32(argv + 4 * i, true)));
+      for (let i = 0; i < envc; i++) args.envp.push(cstr(d.getUint32(envp + 4 * i, true)));
+      if (args.envp.includes("WALI_DEBUG=1")) debugAll = true;
+    } catch (e) {
+      dbg("wali: get_args failed: " + e);
+    }
+    return args;
+  };
+  const putStr = (p, s, max) => {
+    const b = new TextEncoder().encode(s);
+    const k = Math.min(b.length, max - 1);
+    u8().set(b.subarray(0, k), p);
+    u8()[p + k] = 0;
+    return k;
+  };
+  const MAP_ANONYMOUS = 32, MAP_SHARED = 1, PROT_WRITE = 2;
+  const shared = /* @__PURE__ */ new Map();
+  const writeBack = (base, m, len) => {
+    let put = 0;
+    const n2 = Math.min(len, m.len);
+    while (put < n2) {
+      const r = sc(68, m.fd, base + put, n2 - put, m.off + put);
+      if (r <= 0) {
+        dbg("wali: mmap writeback failed " + r);
+        break;
+      }
+      put += r;
+    }
+  };
+  const free = [];
+  const alloc = (bytes) => {
+    const pages = Math.ceil(bytes / PAGE);
+    let best = -1;
+    for (let i = 0; i < free.length; i++) if (free[i].pages >= pages && (best < 0 || free[i].pages < free[best].pages)) best = i;
+    if (best >= 0) {
+      const run = free[best], base = run.base;
+      if (run.pages === pages) free.splice(best, 1);
+      else {
+        run.base += pages * PAGE;
+        run.pages -= pages;
+      }
+      zero(base, pages * PAGE);
+      return base;
+    }
+    try {
+      return memory.grow(pages) * PAGE;
+    } catch (_) {
+      return ENOMEM;
+    }
+  };
+  const release = (addr, bytes) => {
+    const base = addr >>> 0, pages = Math.ceil(bytes / PAGE);
+    if (base % PAGE !== 0 || pages === 0) return;
+    free.push({ base, pages });
+    free.sort((a, b) => a.base - b.base);
+    for (let i = 0; i + 1 < free.length; ) {
+      if (free[i].base + free[i].pages * PAGE === free[i + 1].base) {
+        free[i].pages += free[i + 1].pages;
+        free.splice(i + 1, 1);
+      } else i++;
+    }
+  };
+  const grow = alloc;
+  const host_mmap = (addr, length, prot, flags, fd, offset) => {
+    const len = i32(length) >>> 0, fl = i32(flags), f = i32(fd);
+    if (len === 0) return EINVAL;
+    const base = grow(len);
+    if (base < 0) return base;
+    if (fl & MAP_ANONYMOUS || f < 0) return base;
+    let off = Number(big(offset)), got = 0;
+    while (got < len) {
+      const r = sc(67, f, base + got, len - got, off + got);
+      if (r <= 0) break;
+      got += r;
+    }
+    if (fl & MAP_SHARED && i32(prot) & PROT_WRITE) {
+      const d = sc(25, f, 0, 0, 0, 0, 0);
+      shared.set(base, { fd: d >= 0 ? d : f, own: d >= 0, off, len });
+      if (debugAll) dbg("wali: shared writable file mmap fd=" + f + " len=" + len + " @" + base.toString(16));
+    }
+    return base;
+  };
+  const host_munmap = (addr, len) => {
+    const base = i32(addr) >>> 0, n2 = i32(len) >>> 0;
+    const m = shared.get(base);
+    if (m) {
+      writeBack(base, m, n2);
+      if (m.own) sc(57, m.fd, 0, 0, 0, 0, 0);
+      shared.delete(base);
+    }
+    release(base, n2);
+    return 0;
+  };
+  const host_msync = (addr, len) => {
+    const base = i32(addr) >>> 0, m = shared.get(base);
+    if (m) writeBack(base, m, i32(len) >>> 0);
+    return 0;
+  };
+  let brk = 0;
+  const host_brk = (addr) => {
+    if (!brk) brk = memory.buffer.byteLength;
+    return brk;
+  };
+  const statxToStat = (sx, st) => {
+    const d = dv();
+    const mkdev = (maj, min) => B(maj & 4294963200) << 32n | B((maj & 4095) << 8) | B((min & 4294967040) << 12) | B(min & 255);
+    zero(st, 144);
+    d.setBigUint64(st + 0, mkdev(d.getUint32(sx + 136, true), d.getUint32(sx + 140, true)), true);
+    d.setBigUint64(st + 8, d.getBigUint64(sx + 32, true), true);
+    d.setBigUint64(st + 16, B(d.getUint32(sx + 16, true)), true);
+    d.setUint32(st + 24, d.getUint16(sx + 28, true), true);
+    d.setUint32(st + 28, d.getUint32(sx + 20, true), true);
+    d.setUint32(st + 32, d.getUint32(sx + 24, true), true);
+    d.setBigUint64(st + 40, mkdev(d.getUint32(sx + 128, true), d.getUint32(sx + 132, true)), true);
+    d.setBigUint64(st + 48, d.getBigUint64(sx + 40, true), true);
+    d.setBigUint64(st + 56, B(d.getUint32(sx + 4, true)), true);
+    d.setBigUint64(st + 64, d.getBigUint64(sx + 48, true), true);
+    for (const [from, to] of [[64, 72], [112, 88], [96, 104]]) {
+      d.setBigInt64(st + to, d.getBigInt64(sx + from, true), true);
+      d.setBigInt64(st + to + 8, B(d.getUint32(sx + from + 8, true)), true);
+    }
+  };
+  const doStat = (dirfd, path, st, flags) => {
+    const sx = scratch(256);
+    const r = sc(291, dirfd, path, flags, 2047, sx);
+    if (r === 0) statxToStat(sx, st);
+    return r;
+  };
+  const sigaction = (sig, act, oact, size) => {
+    const d = dv();
+    let kact = 0, koact = 0;
+    if (act) {
+      kact = scratch(16);
+      d.setUint32(kact, d.getUint32(act, true), true);
+      d.setUint32(kact + 4, Number(d.getBigUint64(act + 4, true) & 0xfbffffffn), true);
+      d.setBigUint64(kact + 8, d.getBigUint64(act + 16, true), true);
+    }
+    if (oact) koact = scratch(16);
+    const r = sc(134, sig, kact, koact, 8);
+    if (r === 0 && oact) {
+      zero(oact, 24);
+      d.setUint32(oact, d.getUint32(koact, true), true);
+      d.setBigUint64(oact + 4, B(d.getUint32(koact + 4, true)), true);
+      d.setBigUint64(oact + 16, d.getBigUint64(koact + 8, true), true);
+    }
+    return r;
+  };
+  const lseek = (fd, off, whence) => {
+    const o = big(off), res = scratch(8);
+    const r = sc(62, fd, Number(o >> 32n & 0xffffffffn), Number(o & 0xffffffffn), res, whence);
+    return r < 0 ? B(r) : dv().getBigInt64(res, true);
+  };
+  const gettimeofday = (tv, tz) => {
+    if (!tv) return 0;
+    const ts = scratch(16), r = sc(403, 0, ts);
+    if (r !== 0) return r;
+    const d = dv();
+    d.setBigInt64(tv, d.getBigInt64(ts, true), true);
+    d.setBigInt64(tv + 8, d.getBigInt64(ts + 8, true) / 1000n, true);
+    return 0;
+  };
+  const poll = (fds, nfds, ms) => {
+    let ts = 0;
+    if (ms >= 0) {
+      ts = scratch(16);
+      const d = dv();
+      d.setBigInt64(ts, B(Math.floor(ms / 1e3)), true);
+      d.setBigInt64(ts + 8, B(ms % 1e3 * 1e6), true);
+    }
+    return sc(414, fds, nfds, ts, 0, 8);
+  };
+  const pselect6 = (nfds, rd, wr, ex, ts, sig6) => {
+    let k6 = 0;
+    if (sig6) {
+      k6 = scratch(8);
+      const d = dv();
+      d.setUint32(k6, Number(d.getBigUint64(sig6, true) & 0xffffffffn), true);
+      d.setUint32(k6 + 4, Number(d.getBigUint64(sig6 + 8, true) & 0xffffffffn), true);
+    }
+    return sc(413, nfds, rd, wr, ex, ts, k6);
+  };
+  const getrlimit = (res, rl) => sc(261, 0, res, 0, rl);
+  const setrlimit = (res, rl) => sc(261, 0, res, rl, 0);
+  const wait4 = (pid, status, options, rusage) => {
+    const r = sc(260, pid, status, options, 0);
+    if (rusage) zero(rusage, 144);
+    return r;
+  };
+  const getrusage = (who, rusage) => {
+    if (rusage) zero(rusage, 144);
+    return 0;
+  };
+  let envfile = null;
+  const writeEnvFile = () => {
+    if (envfile !== null) return envfile;
+    envfile = "";
+    const { envp } = loadArgs();
+    if (!envp.length) return envfile;
+    const name = "/tmp/.wali-env-" + (sc(172) | 0);
+    const p = scratch(256);
+    putStr(p, name, 256);
+    const fd = sc(56, AT_FDCWD, p, 577, 384);
+    if (fd < 0) {
+      dbg("wali: env file open failed " + fd);
+      return envfile;
+    }
+    const bytes = new TextEncoder().encode(envp.join("\n") + "\n");
+    const pages = Math.ceil(bytes.length / PAGE), buf = memory.grow(pages) * PAGE;
+    u8().set(bytes, buf);
+    let off = 0;
+    while (off < bytes.length) {
+      const r = sc(64, fd, buf + off, bytes.length - off);
+      if (r <= 0) break;
+      off += r;
+    }
+    sc(57, fd);
+    envfile = name;
+    return envfile;
+  };
+  const direct = {
+    read: 63,
+    write: 64,
+    close: 57,
+    ioctl: 29,
+    readv: 65,
+    writev: 66,
+    sched_yield: 124,
+    dup: 23,
+    dup3: 24,
+    getpid: 172,
+    getppid: 173,
+    getuid: 174,
+    geteuid: 175,
+    getgid: 176,
+    getegid: 177,
+    gettid: 178,
+    exit: 93,
+    exit_group: 94,
+    kill: 129,
+    tkill: 130,
+    uname: 160,
+    getcwd: 17,
+    chdir: 49,
+    fchdir: 50,
+    openat: 56,
+    mkdirat: 34,
+    unlinkat: 35,
+    symlinkat: 36,
+    linkat: 37,
+    renameat2: 276,
+    readlinkat: 78,
+    faccessat: 48,
+    faccessat2: 439,
+    fchmod: 52,
+    fchmodat: 53,
+    fchownat: 54,
+    fchown: 55,
+    fcntl: 25,
+    flock: 32,
+    fsync: 82,
+    fdatasync: 83,
+    getdents64: 61,
+    pipe2: 59,
+    set_tid_address: 96,
+    set_robust_list: 99,
+    rt_sigprocmask: 135,
+    rt_sigpending: 136,
+    rt_sigsuspend: 133,
+    rt_sigreturn: 139,
+    sigaltstack: 132,
+    getrandom: 278,
+    prlimit64: 261,
+    sched_getaffinity: 123,
+    umask: 166,
+    setsid: 157,
+    setpgid: 154,
+    getpgid: 155,
+    getsid: 156,
+    getgroups: 158,
+    setgroups: 159,
+    setuid: 146,
+    setgid: 144,
+    setreuid: 145,
+    setregid: 143,
+    setresuid: 147,
+    setresgid: 149,
+    epoll_create1: 20,
+    epoll_ctl: 21,
+    epoll_pwait: 22,
+    eventfd2: 19,
+    socket: 198,
+    socketpair: 199,
+    bind: 200,
+    listen: 201,
+    accept4: 242,
+    connect: 203,
+    getsockname: 204,
+    getpeername: 205,
+    sendto: 206,
+    recvfrom: 207,
+    setsockopt: 208,
+    getsockopt: 209,
+    shutdown: 210,
+    sendmsg: 211,
+    recvmsg: 212,
+    statfs: 43,
+    fstatfs: 44,
+    utimensat: 412,
+    prctl: 167,
+    pread64: 67,
+    pwrite64: 68,
+    ftruncate: 46,
+    clock_getres: 406,
+    clock_gettime: 403,
+    clock_nanosleep: 407,
+    futex: 422,
+    ppoll: 414,
+    execve: 221,
+    statx: 291,
+    chroot: 51,
+    sysinfo: 179,
+    setitimer: 103
+  };
+  const wali = {};
+  for (const [name, nr] of Object.entries(direct)) wali["SYS_" + name] = (...a) => R(sc(nr, ...a));
+  Object.assign(wali, {
+    // legacy -> *at()
+    SYS_open: (path, flags, mode) => R(sc(56, AT_FDCWD, path, flags, mode)),
+    SYS_access: (path, mode) => R(sc(48, AT_FDCWD, path, mode, 0)),
+    SYS_chmod: (path, mode) => R(sc(53, AT_FDCWD, path, mode, 0)),
+    SYS_chown: (path, u, g) => R(sc(54, AT_FDCWD, path, u, g, 0)),
+    SYS_mkdir: (path, mode) => R(sc(34, AT_FDCWD, path, mode)),
+    SYS_rmdir: (path) => R(sc(35, AT_FDCWD, path, AT_REMOVEDIR)),
+    SYS_unlink: (path) => R(sc(35, AT_FDCWD, path, 0)),
+    SYS_link: (a, b) => R(sc(37, AT_FDCWD, a, AT_FDCWD, b, 0)),
+    SYS_symlink: (a, b) => R(sc(36, a, AT_FDCWD, b)),
+    SYS_rename: (a, b) => R(sc(276, AT_FDCWD, a, AT_FDCWD, b, 0)),
+    SYS_readlink: (path, buf, len) => R(sc(78, AT_FDCWD, path, buf, len)),
+    SYS_dup2: (a, b) => R(i32(a) === i32(b) ? sc(25, a, 1) >= 0 ? i32(a) : EBADF : sc(24, a, b, 0)),
+    SYS_pipe: (fds) => R(sc(59, fds, 0)),
+    SYS_eventfd: (c) => R(sc(19, c, 0)),
+    SYS_epoll_create: () => R(sc(20, 0)),
+    SYS_epoll_wait: (ep, ev, max, ms) => R(sc(22, ep, ev, max, ms, 0, 8)),
+    SYS_waitid: (...a) => R(sc(95, ...a)),
+    SYS_sched_setscheduler: () => R(0),
+    SYS_arch_prctl: () => R(ENOSYS),
+    SYS_accept: (s, a, l) => R(sc(242, s, a, l, 0)),
+    SYS_select: (nfds, rd, wr, ex, tv) => {
+      let ts = 0;
+      if (tv) {
+        ts = scratch(16);
+        const d = dv();
+        d.setBigInt64(ts, d.getBigInt64(tv, true), true);
+        d.setBigInt64(ts + 8, d.getBigInt64(tv + 8, true) * 1000n, true);
+      }
+      return R(sc(413, nfds, rd, wr, ex, ts, 0));
+    },
+    SYS_nanosleep: (req, rem) => R(sc(407, 0, 0, req, rem)),
+    SYS_pause: () => R(sc(414, 0, 0, 0, 0, 8)),
+    // ppoll(NULL) until a signal
+    SYS_poll: (fds, nfds, ms) => R(poll(fds, nfds, i32(ms))),
+    SYS_pselect6: (...a) => R(pselect6(...a)),
+    SYS_gettimeofday: (tv, tz) => R(gettimeofday(i32(tv), tz)),
+    // stat family via statx
+    SYS_stat: (path, st) => R(doStat(AT_FDCWD, path, i32(st), 0)),
+    SYS_lstat: (path, st) => R(doStat(AT_FDCWD, path, i32(st), AT_SYMLINK_NOFOLLOW)),
+    SYS_fstat: (fd, st) => R(doStat(fd, EMPTY_STR, i32(st), AT_EMPTY_PATH)),
+    SYS_newfstatat: (dirfd, path, st, flags) => R(doStat(dirfd, path, i32(st), i32(flags))),
+    // signals, seeking, limits
+    SYS_rt_sigaction: (sig, act, oact, size) => R(sigaction(i32(sig), i32(act), i32(oact), i32(size))),
+    SYS_lseek: (fd, off, whence) => lseek(fd, off, whence),
+    SYS_getrlimit: (res, rl) => R(getrlimit(res, rl)),
+    SYS_setrlimit: (res, rl) => R(setrlimit(res, rl)),
+    SYS_wait4: (pid, st, opt, ru) => R(wait4(pid, st, opt, i32(ru))),
+    SYS_getrusage: (who, ru) => R(getrusage(who, i32(ru))),
+    // memory (host-side)
+    SYS_mmap: (addr, len, prot, flags, fd, off) => R(host_mmap(addr, len, prot, flags, fd, off)),
+    SYS_munmap: (addr, len) => R(host_munmap(addr, len)),
+    // Linear memory has no protection bits and no advice: std's stack guard
+    // page (mprotect) and allocator hints (madvise) just succeed.
+    SYS_mprotect: () => R(0),
+    SYS_madvise: () => R(0),
+    SYS_msync: (addr, len) => R(host_msync(addr, len)),
+    SYS_mremap: (old, oldLen, newLen, flags) => {
+      const b = grow(i32(newLen) >>> 0);
+      if (b < 0) return R(b);
+      u8().copyWithin(b, i32(old), i32(old) + Math.min(i32(oldLen) >>> 0, i32(newLen) >>> 0));
+      release(i32(old), i32(oldLen) >>> 0);
+      return R(b);
+    },
+    SYS_brk: (addr) => R(host_brk(addr)),
+    // fork(): the worker intercepts clone(SIGCHLD, 0) from asyncified modules
+    // and implements a real fork (unwind, duplicate the process, rewind the
+    // child) — the same path C programs built with wasm-stubs.c use. Rust's
+    // Command::spawn on Linux is fork + execve, so this is what rustc uses to
+    // run the linker.
+    SYS_fork: () => R(sc(220, 17, 0, 0, 0, 0, 0)),
+    SYS_vfork: () => R(sc(220, 17, 0, 0, 0, 0, 0)),
+    SYS_clone: () => R(ENOSYS),
+    SYS_clone3: () => R(ENOSYS),
+    SYS_fadvise: () => R(0),
+    // lifecycle + argv/env (see wali-musl/arch/wasm32/init_env.h)
+    __init: () => {
+      loadArgs();
+      return 0;
+    },
+    __deinit: () => 0,
+    __proc_exit: (code) => {
+      sc(94, i32(code));
+    },
+    // setjmp/longjmp are host imports in WALI (iwasm implements them natively).
+    // lld/LLVM only reach them from CrashRecoveryContext (sigsetjmp around the
+    // link, siglongjmp from a crash handler): setjmp → 0 ("direct return"),
+    // longjmp → abort, since no crash handler ever runs here.
+    setjmp: () => 0,
+    longjmp: (env, val) => {
+      dbg("wali: longjmp(" + i32(val) + ") unsupported");
+      sc(94, 134);
+    },
+    __cl_get_argc: () => loadArgs().argv.length,
+    __cl_get_argv_len: (i) => new TextEncoder().encode(loadArgs().argv[i32(i)] || "").length,
+    __cl_copy_argv: (buf, i) => {
+      const s = loadArgs().argv[i32(i)] || "";
+      const b = new TextEncoder().encode(s);
+      u8().set(b, i32(buf));
+      u8()[i32(buf) + b.length] = 0;
+      return b.length;
+    },
+    __get_init_envfile: (buf, size) => {
+      const f = writeEnvFile();
+      if (!f) return 0;
+      return putStr(i32(buf), f, i32(size));
+    },
+    // threads (wali-musl pthread_impl.h / pthread_create.c): the host must
+    // run `start_fn(tid, args)` on a new thread sharing this memory and
+    // return the tid. That is this kernel's clone(fn, arg, flags, ...) —
+    // the child worker's switch_entry sees a WALI module and calls the
+    // table entry with (tid, arg) (C clone entries take just (arg)).
+    // wali-musl allocated the stack + TLS itself (start_fn installs them),
+    // clears its own tid on exit and joins on detach_state, so no
+    // SETTLS/SETTID/CLEARTID flags are needed.
+    __wasm_thread_spawn: (fn, args2) => {
+      const CLONE_THREAD_FLAGS = 331520;
+      const r = sc(220, i32(fn), i32(args2), CLONE_THREAD_FLAGS, 0, 0, 0);
+      if (debugAll) dbg("wali: __wasm_thread_spawn fn=" + i32(fn) + " -> " + r);
+      return r;
+    },
+    // __clone(fn, stack, flags, arg, ...): wali-musl's posix_spawn does
+    // __clone(child, stack, CLONE_VM|CLONE_VFORK|SIGCHLD, &args) — the same
+    // NOMMU vfork pattern busybox uses, which the worker's clone intercept
+    // already implements (asyncify unwind; the child runs fn(arg) natively
+    // and execs). Maps to this kernel's clone(fn, arg, flags, ...).
+    __clone: (fn, stack, flags, arg) => {
+      const r = sc(220, i32(fn), i32(arg), i32(flags), 0, 0, 0);
+      if (debugAll) dbg("wali: __clone fn=" + i32(fn) + " flags=0x" + (i32(flags) >>> 0).toString(16) + " -> " + r);
+      return r;
+    },
+    __set_thread_area: () => 0,
+    __unmapself: () => {
+    }
+  });
+  for (const k of Object.keys(wali)) {
+    if (!k.startsWith("SYS_")) continue;
+    const f = wali[k];
+    wali[k] = (...a) => {
+      reset();
+      const r = f(...a);
+      if (debugAll || globalThis.__walidebug) {
+        let extra = "";
+        try {
+          if (k === "SYS_ioctl" && n(a[1]) === 21523) {
+            const d = dv(), p = n(a[2]);
+            extra = " winsize=" + [0, 2, 4, 6].map((o) => d.getUint16(p + o, true)).join("x");
+          }
+          if (k === "SYS_write" && n(a[2]) <= 200) extra = " " + JSON.stringify(new TextDecoder().decode(u8().slice(n(a[1]), n(a[1]) + n(a[2]))));
+          if (k === "SYS_epoll_ctl") {
+            const d = dv(), p = n(a[3]);
+            extra = " events=0x" + d.getUint32(p, true).toString(16) + " data=" + d.getBigUint64(p + 8, true);
+          }
+          const pathArg = { SYS_open: 0, SYS_openat: 1, SYS_access: 0, SYS_faccessat: 1, SYS_stat: 0, SYS_lstat: 0, SYS_newfstatat: 1, SYS_readlink: 0, SYS_readlinkat: 1, SYS_execve: 0, SYS_statx: 1, SYS_mkdir: 0, SYS_unlink: 0, SYS_chdir: 0 }[k];
+          if (pathArg !== void 0) {
+            const m = u8(), p = n(a[pathArg]);
+            let e = p;
+            while (m[e] && e - p < 200) e++;
+            extra += " path=" + JSON.stringify(new TextDecoder().decode(m.slice(p, e)));
+          }
+          if (k === "SYS_read" && r > 0 && r <= 80) extra += " " + JSON.stringify(new TextDecoder().decode(u8().slice(n(a[1]), n(a[1]) + r)));
+        } catch (_) {
+        }
+        dbg(k + "(" + a.map(n).join(",") + ") = " + r + extra);
+      }
+      return r;
+    };
+  }
+  const envExtra = {
+    _Unwind_Backtrace: () => 0,
+    _Unwind_GetIP: () => 0,
+    _Unwind_GetIPInfo: () => 0,
+    _Unwind_GetCFA: () => 0,
+    _Unwind_GetRegionStart: () => 0,
+    _Unwind_FindEnclosingFunction: () => 0,
+    _Unwind_GetDataRelBase: () => 0,
+    _Unwind_GetTextRelBase: () => 0,
+    _Unwind_GetLanguageSpecificData: () => 0,
+    _Unwind_SetGR: () => {
+    },
+    _Unwind_SetIP: () => {
+    },
+    _Unwind_GetGR: () => 0,
+    _Unwind_RaiseException: () => 9,
+    _Unwind_Resume: () => {
+    },
+    _Unwind_DeleteException: () => {
+    }
+  };
+  const missing = /* @__PURE__ */ new Set();
+  const proxied = new Proxy(wali, {
+    get(t, k) {
+      if (k in t || typeof k !== "string" || !k.startsWith("SYS_")) return t[k];
+      return (...a) => {
+        if (!missing.has(k)) {
+          missing.add(k);
+          dbg("wali: unbridged " + k + " -> ENOSYS");
+        }
+        return B(ENOSYS);
+      };
+    }
+  });
+  return { wali: proxied, envExtra };
+}
+
 // src/kernel/wasm.ts
 var supported_user_module_imports = /* @__PURE__ */ new Set([
   "env\0memory\0memory",
@@ -318,7 +904,9 @@ var supported_user_module_imports = /* @__PURE__ */ new Set([
 ]);
 function user_module_imports_supported(module) {
   return WebAssembly.Module.imports(module).every(
-    ({ module: module2, name, kind }) => supported_user_module_imports.has(`${module2}\0${name}\0${kind}`)
+    ({ module: module2, name, kind }) => supported_user_module_imports.has(`${module2}\0${name}\0${kind}`) || // LinuxOnTab: WALI (Rust) modules import wali.SYS_* plus env.* hooks that
+    // the wali bridge supplies at instantiation (a missing one fails loudly).
+    kind === "function" && (module2 === "wali" || module2 === "env")
   );
 }
 function allocate_shared_memory(initial_pages, preferred_maximum_pages, allocate = (descriptor) => new WebAssembly.Memory(descriptor)) {
@@ -505,6 +1093,17 @@ function user_imports({
     return g instanceof WebAssembly.Global ? g : null;
   };
   let forkRewind = fork_rewind;
+  let waliThreadEntry = fork_rewind?.entry ?? null;
+  const is_wali = (m) => WebAssembly.Module.imports(m).some((i) => i.module === "wali");
+  function waliThreadRun() {
+    assert(instance && waliThreadEntry);
+    const f = instance.exports.__indirect_function_table.get(waliThreadEntry.fn);
+    assert(typeof f === "function", "invalid WALI thread entry");
+    const tid = get_kernel_instance().exports.syscall(178, 0, 0, 0, 0, 0, 0);
+    f(tid, waliThreadEntry.arg);
+    if (asyncify()?.asyncify_get_state?.() === 1) throw new Error("wali thread: asyncify unwind");
+    console.warn("WALI thread entry returned");
+  }
   let forkScratch = null;
   const asyncify = () => instance ? instance.exports : null;
   const sp = () => {
@@ -550,19 +1149,36 @@ function user_imports({
   }
   function create_instance(context2) {
     const kernel_instance = get_kernel_instance();
+    const linux_syscall = (nr, arg0, arg1, arg2, arg3, arg4, arg5) => {
+      if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
+      const original_instance = instance;
+      const ret = kernel_instance.exports.syscall(nr, arg0, arg1, arg2, arg3, arg4, arg5);
+      if (instance !== original_instance) {
+        call_entry = call_start;
+        throw HALT_USER;
+      }
+      return ret;
+    };
+    let wali_env = {};
+    let wali_imports;
+    if (is_wali(context2.module)) {
+      const w = makeWaliImports({
+        memory: context2.memory,
+        kernel: { exports: {
+          get_args_length: () => kernel_instance.exports.get_args_length(),
+          get_args: (buf) => kernel_instance.exports.syscall(NR_WASM_GET_ARGS, buf >>> 0, 262144, 0, 0, 0, 0)
+        } },
+        syscall: (...a) => linux_syscall(a[0], a[1], a[2], a[3], a[4], a[5], a[6]),
+        log: (m) => console.debug("[wali] " + m)
+      });
+      wali_env = w.envExtra ?? {};
+      wali_imports = w.wali;
+    }
     return new WebAssembly.Instance(context2.module, {
-      env: { memory: context2.memory },
+      env: { memory: context2.memory, ...wali_env },
+      ...wali_imports ? { wali: wali_imports } : {},
       linux: {
-        syscall: (nr, arg0, arg1, arg2, arg3, arg4, arg5) => {
-          if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
-          const original_instance = instance;
-          const ret = kernel_instance.exports.syscall(nr, arg0, arg1, arg2, arg3, arg4, arg5);
-          if (instance !== original_instance) {
-            call_entry = call_start;
-            throw HALT_USER;
-          }
-          return ret;
-        },
+        syscall: linux_syscall,
         get_thread_area: kernel_instance.exports.get_thread_area,
         // LinuxOnTab compat for pre-7.1 binaries (every shipped package): their
         // crt1 calls get_args_length() (size only) and then get_args(buf) to
@@ -685,7 +1301,7 @@ function user_imports({
                 const cursor = h[fork.bufPtr >> 2], end = h[(fork.bufPtr >> 2) + 1];
                 console.debug("[fork] " + (self.name || "?") + " unwound: asyncify used=" + (cursor - (fork.bufPtr + 8)) + " capacity=" + (end - (fork.bufPtr + 8)) + " bytes, mem pages=" + (context.memory.buffer.byteLength >> 16));
               }
-              set_pending_child_fork({ bufPtr: fork.bufPtr, retPtr: fork.retPtr, sp: fork.sp });
+              set_pending_child_fork({ bufPtr: fork.bufPtr, retPtr: fork.retPtr, sp: fork.sp, entry: waliThreadEntry });
               let pid;
               try {
                 pid = get_kernel_instance().exports.syscall(
@@ -703,6 +1319,7 @@ function user_imports({
               new Int32Array(context.memory.buffer)[fork.retPtr >> 2] = pid;
               console.debug("[fork] " + (self.name || "?") + " clone -> " + pid + ", rewinding parent sp=" + sp());
               a.asyncify_start_rewind(fork.bufPtr);
+              call_entry = waliThreadEntry ? waliThreadRun : call_start;
               continue;
             }
             console.error(
@@ -730,7 +1347,28 @@ function user_imports({
             if (g && rw.sp) g.value = rw.sp;
             console.debug("[fork] " + (self.name || "?") + " child rewinding buf=0x" + rw.bufPtr.toString(16) + " sp=" + sp() + (g ? " (restored)" : " (no __stack_pointer export!)"));
             a.asyncify_start_rewind(rw.bufPtr);
+            if (waliThreadEntry) {
+              call_entry = waliThreadRun;
+              waliThreadRun();
+              return;
+            }
             call_start();
+          };
+          return;
+        }
+        if (context && is_wali(context.module)) {
+          call_entry = () => {
+            assert(instance);
+            const f = instance.exports.__indirect_function_table.get(fn >>> 0);
+            assert(typeof f === "function", "invalid WALI clone entry");
+            if (f.length === 1) {
+              call_entry = call_start;
+              f(arg);
+              return;
+            }
+            waliThreadEntry = { fn: fn >>> 0, arg: arg >>> 0 };
+            call_entry = waliThreadRun;
+            waliThreadRun();
           };
           return;
         }
