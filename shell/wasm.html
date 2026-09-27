@@ -398,7 +398,7 @@
 // @tombl/linux Machine API
 // vmlinux-DKGM2TYZ.wasm + worker-Q7XWPLKR.js must be in ./linux-dist/dist/
 // ─────────────────────────────────────────────────────────────────────────────
-import { Machine, BlockDevice, ConsoleDevice, EntropyDevice, NetworkDevice } from './linux-dist/dist/index.js';
+import { bootMachine, consoleDevice, entropyDevice, blockDevice, ethernetDevice, ethernetNetwork } from './linux-dist-7.1/dist/index.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WispSlirp — Browser-side SLIRP + WISP networking for the WASM kernel
@@ -2872,6 +2872,7 @@ function guestSend(text) {
 async function doBoat() {
   if (booted) {
     term.write('\r\n\x1b[33m[wasm-shell] resetting machine…\x1b[0m\r\n');
+    try { machine && machine.close(); } catch (_) {}
     machine = null;
     consoleInputWriter = null;
     booted = false;
@@ -2934,18 +2935,16 @@ async function doBoat() {
     }, 400);
   }
 
-  const consoleDev = new ConsoleDevice(inputTransform.readable, outputStream);
-  const entropyDev = new EntropyDevice();
+  const consoleDev = consoleDevice(inputTransform.readable, outputStream);
+  const entropyDev = entropyDevice();
+  // The guest sees terminal size changes (and gets SIGWINCH) through the
+  // virtio console config; lot_tty= on the cmdline still seeds the boot size.
+  try { term.onResize(({ cols, rows }) => { try { consoleDev.resize(cols, rows); } catch (_) {} }); } catch (_) {}
 
-  // Wake-the-guest kick for interactive network sessions (X display).
-  // The guest can park with virtio-net interrupts NAPI-masked: injected
-  // frames then sit undelivered (net vring kicks are ignored kernel-side)
-  // until ANY unmasked IRQ — e.g. console — wakes the CPU, whose softirq
-  // pass drains the net ring too. A spurious console vring IRQ is harmless
-  // (the ISR finds an empty ring) but reliably unparks the CPU.
-  window.__lotConsoleKick = () => {
-    try { consoleDev.trigger_interrupt('vring'); } catch (_) {}
-  };
+  // The 6.1 host needed a console-vring "kick" to unpark a guest whose net
+  // IRQs were NAPI-masked; the 7.1 kernel's IRQ/idle path does not. Kept as a
+  // no-op so the X-display/tunnel callers stay unchanged.
+  window.__lotConsoleKick = () => {};
   // Debug handles for wake-path experiments (harmless to keep exposed).
   window.__lotDevs = { consoleDev, entropyDev };
 
@@ -3116,8 +3115,15 @@ async function doBoat() {
   const slirp = new WispSlirp(wispUrl);
   const guestMac = crypto.getRandomValues(new Uint8Array(6));
   guestMac[0] &= 0xfe;  // clear multicast bit
-  const netDev = new NetworkDevice(guestMac, slirp.backend);
-  window.__netDev = netDev;   // diagnostics: virtqueue indices (vqs[0]=rx, vqs[1]=tx)
+  // virtio-net: one NIC on a tiny Ethernet switch whose other port is the
+  // slirp. guest→slirp frames arrive at the port's receive callback; the
+  // slirp injects guest-bound frames through port.send (it learns the guest
+  // MAC from the guest's own frames, as before).
+  const lotNet = ethernetNetwork();
+  const netDev = ethernetDevice(lotNet, { macAddress: Array.from(guestMac) });
+  const slirpPort = lotNet.addPort((frame) => { slirp.backend.send(frame); });
+  slirp.backend.receive = (frame) => { slirpPort.send(frame).catch(() => {}); };
+  window.__netDev = netDev;   // diagnostics
   window.__slirp = slirp;  // exposed for JS tunnel below
   if (window.__lotDevs) window.__lotDevs.netDev = netDev;
 
@@ -3404,14 +3410,18 @@ async function doBoat() {
   const lotDirty = new Set();
   lotLive = { rootfsBytes, lotDirty, overlayKey: bootOverlayKey, computeKey: lotOverlayKey };
   refreshStoragePanel().catch(() => {});
-  const blockDev = new BlockDevice({
+  const blockDev = blockDevice({
     capacity: rootfsBytes.byteLength,
-    read: (offset, length) => Promise.resolve(rootfsBytes.slice(offset, offset + length)),
+    read: (offset, target) => {
+      const n = Math.max(0, Math.min(target.byteLength, rootfsBytes.byteLength - offset));
+      target.set(rootfsBytes.subarray(offset, offset + n));
+      return n;
+    },
     write: (offset, data) => {
       rootfsBytes.set(data, offset);
       if (rootfsOverlay) rootfsOverlay.markDirtyRange(offset, data.byteLength);
       for (let b = offset >> 12; b <= ((offset + data.byteLength - 1) >> 12); b++) lotDirty.add(b);
-      return Promise.resolve(data.byteLength);
+      return data.byteLength;
     },
     // A virtio-blk flush is the guest's journal-commit / sync barrier: persist
     // everything pending before acknowledging it, so a `sync` in the guest
@@ -3501,15 +3511,19 @@ async function doBoat() {
       }
     })();
   };
-  const pkgDropDev = new BlockDevice({
+  const pkgDropDev = blockDevice({
     capacity: pkgDropBytes.byteLength,
-    read: (offset, length) => Promise.resolve(pkgDropBytes.slice(offset, offset + length)),
+    read: (offset, target) => {
+      const n = Math.max(0, Math.min(target.byteLength, pkgDropBytes.byteLength - offset));
+      target.set(pkgDropBytes.subarray(offset, offset + n));
+      return n;
+    },
     write: (offset, data) => {
       pkgDropBytes.set(data, offset);
       if (offset === 0) lotPkgReq();
-      return Promise.resolve(data.byteLength);
+      return data.byteLength;
     },
-    flush: () => Promise.resolve(),
+    flush: () => {},
   });
 
   // Connect xterm keyboard → guest console input (track disposable to avoid double-registration on reset).
@@ -3547,30 +3561,41 @@ async function doBoat() {
   } catch (_) { /* no BroadcastChannel — heartbeats off */ }
 
   if (window.__lotBeacon) window.__lotBeacon('machine-creating');
-  machine = new Machine({
-    devices: [consoleDev, entropyDev, blockDev, pkgDropDev, netDev],
-    // Guest RAM. iOS Safari kills+reloads the tab under memory pressure
-    // (jetsam) — a guest that thinks it has 2 GB grows its page cache into
-    // real committed memory during installs and blows the phone's tab budget.
-    // Default small on iPhone/iPad; override with ?mem=<MiB> anywhere.
-    memoryMib: (() => {
-      const p = +(lotParams.get('mem') || 0);
-      if (p >= 256 && p <= 4096) return p;
-      return /iPhone|iPad|iPod/.test(navigator.userAgent) ? 384 : 2048;
-    })(),
-    cpus: 1,
-    initcpio,
-    // Static IP: 192.168.86.100/24, gw 192.168.86.1, DNS 192.168.86.1
-    // SLIRP intercepts UDP/53 and forwards via DoH.
-    // ip=... format: ip:server:gw:netmask:hostname:interface:autoconf
-    // 'on' means bring the interface up, 'off' means don't auto-bring up
-    // lot_epoch: current host Unix time — /etc/init.d/rcS uses it to set the
-    // guest wall clock (`date -s @N`). Setting it kernel-side at an initcall
-    // breaks inbound TCP handshakes, so it must happen from userspace.
-    // rcu_cpu_stall_suppress: a CPU-bound user process (rust-lld linking 90 MB of
-    // rlibs) holds the single CPU for minutes; the RCU stall report then calls
-    // show_regs(), which this port does not implement (BUG → kernel halt).
-    cmdline: 'console=hvc0 loglevel=4 nr_cpus=1 rcupdate.rcu_cpu_stall_suppress=1 rdinit=/init ip=' + lotGuestIp + '::192.168.86.1:255.255.255.0::eth0:off lot_ip=' + lotGuestIp + (lotHosts ? ' lot_hosts=' + lotHosts : '') + (lotSvcs ? ' lot_svc=' + lotSvcs : '') + (lotRun ? ' lot_run=' + lotRun : '') + ' lot_epoch=' + Math.floor(Date.now() / 1000) + ' lot_tty=' + term.rows + 'x' + term.cols,
+  // Kernel command line (bootMachine prepends console=hvc0):
+  // Static IP: 192.168.86.100/24, gw 192.168.86.1, DNS 192.168.86.1
+  // SLIRP intercepts UDP/53 and forwards via DoH.
+  // ip=... format: ip:server:gw:netmask:hostname:interface:autoconf
+  // lot_epoch: current host Unix time — /etc/init.d/rcS uses it to set the
+  // guest wall clock (`date -s @N`). Setting it kernel-side at an initcall
+  // breaks inbound TCP handshakes, so it must happen from userspace.
+  // rcu_cpu_stall_suppress: a CPU-bound user process (rust-lld linking 90 MB of
+  // rlibs) holds the single CPU for minutes; the RCU stall report then calls
+  // show_regs(), which this port does not implement (BUG → kernel halt).
+  // NOTE (7.1): guest RAM is the runtime's memory reservation (?mem= is no
+  // longer honoured); the kernel materializes pages on demand.
+  const lotArgs = ['loglevel=4', 'nr_cpus=1', 'rcupdate.rcu_cpu_stall_suppress=1', 'rdinit=/init',
+    'ip=' + lotGuestIp + '::192.168.86.1:255.255.255.0::eth0:off', 'lot_ip=' + lotGuestIp,
+    ...(lotHosts ? ['lot_hosts=' + lotHosts] : []), ...(lotSvcs ? ['lot_svc=' + lotSvcs] : []), ...(lotRun ? ['lot_run=' + lotRun] : []),
+    'lot_epoch=' + Math.floor(Date.now() / 1000), 'lot_tty=' + term.rows + 'x' + term.cols];
+  console.log('[WASM Boot] booting Linux 7.1 with WispSlirp networking (WISP + virtio-net)…');
+  try {
+    // Plugin order = virtio device order: the rootfs must stay /dev/vda.
+    machine = await bootMachine({ cpus: 1, args: lotArgs, initcpio,
+                                  plugins: [consoleDev, entropyDev, blockDev, pkgDropDev, netDev] });
+  } catch (err) {
+    hideDlProgress();
+    setStatus('boot failed', 'err');
+    term.write('\r\n\x1b[31m[wasm-shell] boot failed: ' + err.message + '\x1b[0m\r\n');
+    $('boot').disabled = false;
+    return;
+  }
+  // A kernel panic or a dead worker rejects machine.closed.
+  machine.closed.then(() => {
+    if (booted) { setStatus('stopped', 'hint'); term.write('\r\n\x1b[33m[wasm-shell] machine stopped\x1b[0m\r\n'); }
+  }, (err) => {
+    setStatus('error', 'err');
+    term.write('\r\n\x1b[31m[wasm-shell] kernel error: ' + (err && err.message || err) + '\x1b[0m\r\n');
+    $('boot').disabled = false;
   });
 
   // Pipe the early boot console (pre-virtio kernel messages) to xterm.
@@ -3595,26 +3620,7 @@ async function doBoat() {
     } catch (_) {}
   })();
 
-  machine.on('error', ev => {
-    setStatus('error', 'err');
-    term.write('\r\n\x1b[31m[wasm-shell] kernel error: ' + ev.message + '\x1b[0m\r\n');
-    $('boot').disabled = false;
-  });
-
-  // DEBUG: Log device tree to console (stringify with replacer for BigInt)
   try {
-    if (machine.devicetree) {
-      console.log('[WASM Boot] Device tree config:', JSON.stringify(machine.devicetree, (k, v) => typeof v === 'bigint' ? v.toString() : v, 2));
-    } else {
-      console.log('[WASM Boot] No devicetree property found');
-    }
-  } catch (e) {
-    console.log('[WASM Boot] Error logging device tree:', e.message);
-  }
-  console.log('[WASM Boot] booting with WispSlirp networking (WISP + virtio-net)…');
-
-  try {
-    await machine.boot();
     booted = true;
     setStatus('running', 'ok');
     $('reset').disabled = false;
