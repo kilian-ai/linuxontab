@@ -432,6 +432,7 @@ class WispSlirp {
   #tcpConns = new Map();  // guestSrcPort → TcpConn
   #guestMac = null;
   #dnsCache = new Map();    // ipStr → hostname (from snooped DNS responses)
+  #dnsResolver = null;      // resolver IP for DNS over the WISP backend; null = DoH
   #serverConns = new Map();  // 'guestPort:remotePort' → InboundConn (injected inbound TCP)
   #injectedGuestPorts = new Set(); // guest server ports we've injected to (22, ...)
   #serverNextPort = 30000;
@@ -461,8 +462,9 @@ class WispSlirp {
     };
   }
 
-  constructor(url = 'wss://linuxontab-net.fly.dev/wisp') {
+  constructor(url = 'wss://linuxontab-net.fly.dev/wisp', dnsResolver = null) {
     this.#url = url;
+    this.#dnsResolver = dnsResolver;
     this.#connectWisp();
     this.#lanInit();
     // Half-open-socket watchdog: the WISP WS can silently stop passing data
@@ -1603,13 +1605,9 @@ class WispSlirp {
   }
 
   async #forwardDns(clientIp, clientPort, query) {
-    const resp = await fetch('https://relay.linuxontab.com/dns-query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/dns-message', 'Accept': 'application/dns-message' },
-      body: query,
-    });
-    if (!resp.ok) return;
-    const answer = new Uint8Array(await resp.arrayBuffer());
+    const answer = this.#dnsResolver ? await this.#dnsOverWisp(query)
+                                     : await this.#dnsOverHttps(query);
+    if (!answer) return;
     this.#snoopDnsResponse(answer);
     const udpResp = new Uint8Array(8 + answer.length);
     const dv = new DataView(udpResp.buffer);
@@ -1618,6 +1616,51 @@ class WispSlirp {
     dv.setUint16(4, udpResp.length, false);
     udpResp.set(answer, 8);
     this.#sendIpv4(WispSlirp.GW_IP, new Uint8Array(clientIp), 17, udpResp);
+  }
+
+  async #dnsOverHttps(query) {
+    const resp = await fetch('https://relay.linuxontab.com/dns-query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/dns-message', 'Accept': 'application/dns-message' },
+      body: query,
+    });
+    return resp.ok ? new Uint8Array(await resp.arrayBuffer()) : null;
+  }
+
+  // DNS down the WISP backend, so a lookup goes where the traffic it describes
+  // goes. One TCP stream per query, framed per RFC 1035 4.2.2: a two-byte
+  // big-endian length, unlike every length in Wisp itself. A failure resolves
+  // null and the guest retries; it never falls back to DoH, which would send
+  // the name to a third party the caller did not choose.
+  #dnsOverWisp(query) {
+    return new Promise((resolve) => {
+      const id = this.#wispConnect(this.#dnsResolver, 53);
+      const s = this.#streams.get(id);
+      let buf = new Uint8Array(0), done = false;
+      const finish = (answer, alreadyClosed) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (!alreadyClosed) this.#wispClose(id);
+        resolve(answer);
+      };
+      const timer = setTimeout(() => finish(null, false), 10000);
+      if (!s) { finish(null, true); return; }
+      s.onClose = () => finish(null, true);
+      s.onData = (chunk) => {
+        const grown = new Uint8Array(buf.length + chunk.length);
+        grown.set(buf); grown.set(chunk, buf.length);
+        buf = grown;
+        if (buf.length < 2) return;
+        const want = (buf[0] << 8) | buf[1];
+        if (buf.length >= 2 + want) finish(buf.slice(2, 2 + want), false);
+      };
+      const framed = new Uint8Array(2 + query.length);
+      framed[0] = query.length >> 8;
+      framed[1] = query.length & 0xff;
+      framed.set(query, 2);
+      this.#wispData(id, framed);
+    });
   }
 
   // ── Frame construction ────────────────────────────────────────────────────
@@ -2954,6 +2997,16 @@ async function doBoat() {
   // (e.g. a relay on a NAS so the guest can reach LAN-only SMB/Plex shares).
   const wispUrl = new URLSearchParams(location.search).get('wisp')
     || 'wss://linuxontab-net.fly.dev/wisp';
+  // A lookup should go where the traffic it describes goes. A backend named
+  // with ?wisp= therefore resolves for the guest too, over a TCP stream to
+  // ?dns= (default 1.1.1.1); otherwise relay.linuxontab.com would still see
+  // every name while the connection went somewhere else entirely. The default
+  // cloud relay keeps DoH, which is all it can do. ?dns=doh forces DoH back.
+  const dnsOpt = new URLSearchParams(location.search).get('dns');
+  const dnsResolver = dnsOpt === 'doh' ? null
+    : dnsOpt ? dnsOpt
+    : new URLSearchParams(location.search).has('wisp') ? '1.1.1.1'
+    : null;
   // Per-packet network logging (VIRTIO/ETH/HTCP/RELAYWS/INJECT). MUST stay off
   // by default: at bulk-transfer rates the logging stalls the main thread long
   // enough that WS message dispatch stops and the WISP watchdog tears down a
@@ -3112,7 +3165,7 @@ async function doBoat() {
     return rec;
   };
 
-  const slirp = new WispSlirp(wispUrl);
+  const slirp = new WispSlirp(wispUrl, dnsResolver);
   const guestMac = crypto.getRandomValues(new Uint8Array(6));
   guestMac[0] &= 0xfe;  // clear multicast bit
   // virtio-net: one NIC on a tiny Ethernet switch whose other port is the
