@@ -7,8 +7,11 @@ shipped binary is public:
 - **Repository:** https://github.com/kilian-ai/linux — a fork of
   [tombl/linux](https://github.com/tombl/linux) (Thomas Stokes' `arch/wasm`
   port; all credit for the port itself goes there)
-- **Branch:** `wasm-linuxontab`
-- **Commit behind the shipped binary:** see [`vmlinux.source`](vmlinux.source).
+- **Branches:** `wasm-linuxontab-7.1` (Linux 7.1 — what the site boots,
+  `shell/linux-dist-7.1/vmlinux.wasm`) and `wasm-linuxontab` (Linux 6.1, the
+  previous runtime, `shell/linux-dist/vmlinux.wasm`)
+- **Commit behind each shipped binary:** [`vmlinux-7.1.source`](vmlinux-7.1.source)
+  and [`vmlinux.source`](vmlinux.source).
   The same text is embedded in the `.wasm` as a custom section, so a binary
   can always be traced back to its source:
 
@@ -21,18 +24,22 @@ shipped binary is public:
 full kernel tree. Clone it next to this file:
 
 ```bash
+git clone -b wasm-linuxontab-7.1 https://github.com/kilian-ai/linux kernels/linux-7.1
+git -C kernels/linux-7.1 remote rename origin linuxontab   # the deploy script expects this name
+# the 6.1 tree, only if you need to rebuild the previous runtime:
 git clone -b wasm-linuxontab https://github.com/kilian-ai/linux kernels/linux
-git -C kernels/linux remote rename origin linuxontab   # the deploy script expects this name
 ```
 
 ## Build
 
 Needs LLVM **19** (`brew install llvm@19` — plain `llvm` is too new: `wasm-ld`
-isn't found and `syncconfig` wipes `autoconf.h`) and `node`:
+isn't found and `syncconfig` wipes `autoconf.h`), `node`, and for 7.1 GNU Make
+**4+** (`brew install make` → `gmake`; Xcode's make is 3.81) plus `wabt`:
 
 ```bash
-export PATH="/opt/homebrew/opt/llvm@19/bin:$PATH"
-make -C kernels/linux tools/wasm/vmlinux.wasm -j8      # incremental: 1–2 min
+export PATH="/opt/homebrew/opt/llvm@19/bin:/opt/homebrew/opt/make/bin:$PATH"
+gmake -C kernels/linux-7.1 linuxontab_defconfig
+gmake -C kernels/linux-7.1 vmlinux.wasm -j8            # 6.1: make -C kernels/linux tools/wasm/vmlinux.wasm
 ```
 
 That produces `kernels/linux/tools/wasm/vmlinux.wasm` with a 1 MB initramfs
@@ -42,8 +49,8 @@ with a 512-byte stub (the page fetches `initramfs.cpio` separately).
 ## Ship it
 
 ```bash
-kernels/deploy-vmlinux.sh
-git add shell/linux-dist/vmlinux.wasm kernels/vmlinux.source && git commit
+kernels/deploy-vmlinux.sh            # 7.1 (default); `kernels/deploy-vmlinux.sh 6.1` for the old tree
+git add shell/linux-dist-7.1/vmlinux.wasm kernels/vmlinux-7.1.source && git commit
 ```
 
 The script builds, swaps the initramfs stub, embeds the source pointer and
@@ -52,9 +59,10 @@ changes or if `HEAD` isn't on the public fork branch — the binary must always
 correspond to a commit anyone can fetch. `LOT_ALLOW_DIRTY=1` overrides for a
 local-only experiment (never for a deploy).
 
-The page runtime under `shell/linux-dist/dist/` (`index.js`, `worker.js`,
-`virtio.js`, …) is built from `kernels/linux/tools/wasm/src/*.ts` in the same
-tree; it is edited in place in this repo as well.
+The 7.1 page runtime is built from `shell/linux-dist-7.1/src/` (tombl/distro's
+`@lowland/kernel` plus LinuxOnTab changes) by `shell/linux-dist-7.1/build.sh`.
+The 6.1 runtime under `shell/linux-dist/dist/` came from `tools/wasm/src/*.ts`
+in the 6.1 tree.
 
 ## macOS note
 

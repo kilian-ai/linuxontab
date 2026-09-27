@@ -128,15 +128,22 @@ After a regular clone, run `git lfs pull` to fetch them.
 ## License
 
 Components carry their upstream licenses:
-- Linux kernel (`GPL-2.0 WITH Linux-syscall-note`) — the WebAssembly build
-  shipped as `shell/linux-dist/vmlinux.wasm`. Corresponding source:
-  https://github.com/kilian-ai/linux, branch `wasm-linuxontab` (a fork of
-  [tombl/linux](https://github.com/tombl/linux)); the exact commit is in
-  [`kernels/vmlinux.source`](kernels/vmlinux.source) and embedded in the
-  binary's `.linuxontab.source` section. See [`kernels/README.md`](kernels/README.md).
-- Page runtime (`shell/linux-dist/dist/` — `index.js`, `worker.js`, `virtio.js`,
-  `wali-bridge.js`, …; `GPL-2.0-only WITH Linux-syscall-note`) — built from
-  `tools/wasm/` in the same kernel fork; same source pointer, same license.
+- Linux kernel (`GPL-2.0 WITH Linux-syscall-note`), compiled to WebAssembly.
+  Corresponding source: https://github.com/kilian-ai/linux (a fork of
+  [tombl/linux](https://github.com/tombl/linux)); every shipped binary embeds
+  its exact commit in a `.linuxontab.source` custom section, mirrored in a
+  `kernels/*.source` file. See [`kernels/README.md`](kernels/README.md).
+  - Linux 7.1 (booted by the site): `shell/linux-dist-7.1/vmlinux.wasm`,
+    branch `wasm-linuxontab-7.1` — [`kernels/vmlinux-7.1.source`](kernels/vmlinux-7.1.source)
+  - Linux 6.1 (previous runtime, still shipped): `shell/linux-dist/vmlinux.wasm`,
+    branch `wasm-linuxontab` — [`kernels/vmlinux.source`](kernels/vmlinux.source)
+- Page runtime for Linux 7.1 (`shell/linux-dist-7.1/`; bundled into `dist/`) —
+  derived from tombl/distro's `@lowland/kernel` (MIT, see
+  [`LICENSE.lowland-kernel`](shell/linux-dist-7.1/LICENSE.lowland-kernel) and
+  `UPSTREAM`), with LinuxOnTab's additions in the same sources (`src/`).
+- Page runtime for Linux 6.1 (`shell/linux-dist/dist/` — `index.js`, `worker.js`,
+  `virtio.js`, `wali-bridge.js`, …; `GPL-2.0-only WITH Linux-syscall-note`) —
+  built from `tools/wasm/` in the `wasm-linuxontab` kernel branch.
 - v86 (BSD 2-Clause) — copy.sh
 - xterm.js (MIT) — Microsoft / xterm contributors
 - Alpine Linux ISOs — Alpine Linux project

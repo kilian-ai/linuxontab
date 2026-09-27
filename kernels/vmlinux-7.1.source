@@ -1,0 +1,5 @@
+source=https://github.com/kilian-ai/linux
+branch=wasm-linuxontab-7.1
+commit=c0281b3c84b636d7d22fa7e702045003dfc229f8
+license=GPL-2.0 WITH Linux-syscall-note
+build=make linuxontab_defconfig vmlinux.wasm (llvm@19); .linux.initramfs replaced by the 512-byte stub, initramfs.cpio is fetched separately
