@@ -1,6 +1,6 @@
 NAME="LinuxOnTab"
 ID=linuxontab
-VERSION_ID=6.1.0
-PRETTY_NAME="LinuxOnTab (Linux 6.1, WebAssembly)"
+VERSION_ID=7.1.0
+PRETTY_NAME="LinuxOnTab (Linux 7.1, WebAssembly)"
 HOME_URL="https://linuxontab.com/"
 BUG_REPORT_URL="https://github.com/kilian-ai/linuxontab/issues"

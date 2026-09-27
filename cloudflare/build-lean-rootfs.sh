@@ -53,6 +53,9 @@ cp -p "$ROOTFS/bin/wget" "$STAGE/bin/wget"
 # /etc wholesale (motd, profile, ssl certs, ssh config+keys, passwd, hosts...)
 # — 300 KB and saves chasing individual dependencies. rc is overwritten below.
 cp -Rp "$ROOTFS/etc" "$STAGE/etc"
+# SSL_CERT_DIR (/etc/profile) points here; git can't track the empty dir, so a
+# clean checkout would otherwise build an image without it.
+mkdir -p "$STAGE/etc/ssl/certs"
 
 cp -p "$ROOTFS/usr/bin/apk" "$STAGE/usr/bin/apk"
 chmod +x "$STAGE/usr/bin/apk"
@@ -287,7 +290,7 @@ EOF
 # ── Lean motd ────────────────────────────────────────────────────────────────
 cat > "$STAGE/etc/motd" << 'EOF'
 
-  LinuxOnTab 2.0 — real Linux 6.1, compiled to WebAssembly   [lean boot]
+  LinuxOnTab 2.0 — real Linux 7.1, compiled to WebAssembly   [lean boot]
 
   This tab booted from a few MB. Software installs itself on first use:
       python3            # downloads + installs python, then runs it

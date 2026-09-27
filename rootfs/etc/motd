@@ -7,7 +7,7 @@
 
  Welcome to LinuxOnTab 2.0 (wasm32)
 
- Kernel:  Linux 6.1.0-linuxontab (WebAssembly, no x86 emulation)
+ Kernel:  Linux 7.1 (WebAssembly, no x86 emulation)
  Arch:    wasm32 · Userland: BusyBox + musl libc
  Docs:    https://linuxontab.com/
  Bugs:    https://github.com/kilian-ai/linuxontab/issues
