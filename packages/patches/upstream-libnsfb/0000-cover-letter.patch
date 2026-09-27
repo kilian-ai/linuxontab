@@ -1,0 +1,47 @@
+From 8ccf25cc54b42549c80a0aadeb90b0182ba68550 Mon Sep 17 00:00:00 2001
+From: kilian-ai <kilian@voneu.co>
+Date: Sun, 27 Sep 2026 14:45:53 -0700
+Subject: [PATCH libnsfb 0/2] x surface: work on X servers without MIT-SHM
+
+Hi,
+
+These two patches fix the xcb surface on X servers that lack the
+MIT-SHM extension, such as a server started with -extension MIT-SHM.
+Today the framebuffer exits almost immediately on such a server, even
+though the non-shm path in update_pixmap() exists for exactly this
+case. It never gets reached because of two xcb behaviours that differ
+from Xlib:
+
+1. xcb closes the connection when a request is issued for an extension
+   the server does not have, so create_shm_image()'s NULL-reply check
+   comes too late. Patch 1 asks xcb_get_extension_data() first.
+
+2. xcb_put_image() does not split images larger than the maximum
+   request length the way XPutImage does. Without BIG-REQUESTS that is
+   256 KiB, and a full redraw of a 760x500 32bpp window is about
+   1.5 MB, so the next full update closes the connection. Patch 2 sends
+   the update in full-width bands that fit.
+
+Servers with MIT-SHM are unaffected: patch 1 takes the same path as
+before, and patch 2 only touches the non-shm branch.
+
+I found these running NetSurf's framebuffer frontend with the x surface
+against a small core-protocol X server (no extensions) inside
+LinuxOnTab, a Linux-in-the-browser project. Both patches were built
+against current libnsfb master (b701cdc) and tested there. Browsing
+works, including full-window redraws. With patch 1 the surface prints
+"Server has no shm support." and continues on the put-image path.
+
+Thanks,
+Kilian
+
+kilian-ai (2):
+  x surface: check for MIT-SHM before querying it
+  x surface: split non-shm image updates to fit the request length
+
+ src/surface/x.c | 59 ++++++++++++++++++++++++++++++++++++++-----------
+ 1 file changed, 46 insertions(+), 13 deletions(-)
+
+-- 
+2.50.1 (Apple Git-155)
+

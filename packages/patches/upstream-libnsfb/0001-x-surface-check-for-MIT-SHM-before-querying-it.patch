@@ -1,0 +1,50 @@
+From 81c5010438f69e4b8067a76b051c3be7fcbbbd2c Mon Sep 17 00:00:00 2001
+From: kilian-ai <kilian@voneu.co>
+Date: Sun, 27 Sep 2026 14:42:41 -0700
+Subject: [PATCH libnsfb 1/2] x surface: check for MIT-SHM before querying it
+
+create_shm_image() sends an MIT-SHM QueryVersion request and treats a
+NULL reply as "no shm support", falling back to plain PutImage. With
+xcb that fallback is never reached: when the server lacks the
+extension, xcb closes the connection with XCB_CONN_CLOSED_EXT_NOTSUPPORTED
+as soon as the extension request is issued, and the framebuffer exits
+on its first event read.
+
+Check xcb_get_extension_data() first and return NULL when MIT-SHM is
+absent, so the existing non-shm path is used. Servers that support the
+extension take the same path as before.
+
+Seen with a minimal X server that implements the core protocol only;
+the same applies to any server running with the extension disabled
+(for example Xvfb or Xorg started with -extension MIT-SHM).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/surface/x.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/src/surface/x.c b/src/surface/x.c
+index dfbae56..d2c7668 100644
+--- a/src/surface/x.c
++++ b/src/surface/x.c
+@@ -623,6 +623,17 @@ create_shm_image(xstate_t *xstate, int width, int height, int bpp)
+     xcb_shm_query_version_cookie_t ck;
+     xcb_void_cookie_t shm_attach_cookie;
+     xcb_generic_error_t *generic_error;
++    const xcb_query_extension_reply_t *shm_ext;
++
++    /* A request for an extension the server does not have makes xcb
++     * shut the connection down (XCB_CONN_CLOSED_EXT_NOTSUPPORTED), so the
++     * reply check below never gets the chance to fall back. Ask first.
++     */
++    shm_ext = xcb_get_extension_data(xstate->connection, &xcb_shm_id);
++    if (shm_ext == NULL || !shm_ext->present) {
++        fprintf (stderr, "Server has no shm support.\n");
++        return NULL;
++    }
+ 
+     ck = xcb_shm_query_version(xstate->connection);
+     rep = xcb_shm_query_version_reply(xstate->connection, ck , NULL);
+-- 
+2.50.1 (Apple Git-155)
+

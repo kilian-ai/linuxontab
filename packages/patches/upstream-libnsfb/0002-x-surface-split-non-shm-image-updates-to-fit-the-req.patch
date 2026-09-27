@@ -1,0 +1,85 @@
+From 8ccf25cc54b42549c80a0aadeb90b0182ba68550 Mon Sep 17 00:00:00 2001
+From: kilian-ai <kilian@voneu.co>
+Date: Sun, 27 Sep 2026 14:42:41 -0700
+Subject: [PATCH libnsfb 2/2] x surface: split non-shm image updates to fit the
+ request length
+
+Without MIT-SHM, update_pixmap() uploads the damaged rows with a single
+xcb_put_image() call. Xlib's XPutImage splits images that exceed the
+server's maximum request length, but xcb does not: an oversized request
+makes xcb close the connection (XCB_CONN_CLOSED_REQ_LEN_EXCEED). A
+server without BIG-REQUESTS allows 256 KiB per request, while a full
+760x500 update at 32bpp is about 1.5 MB, so the first full redraw ends
+the session.
+
+Send the rows in full-width bands sized from
+xcb_get_maximum_request_length(), leaving room for the PutImage header.
+When the whole update fits, a single request is sent as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/surface/x.c | 48 +++++++++++++++++++++++++++++++++++-------------
+ 1 file changed, 35 insertions(+), 13 deletions(-)
+
+diff --git a/src/surface/x.c b/src/surface/x.c
+index d2c7668..1731a4e 100644
+--- a/src/surface/x.c
++++ b/src/surface/x.c
+@@ -430,19 +430,41 @@ static int
+ update_pixmap(xstate_t *xstate, int x, int y, int width, int height)
+ {
+     if (xstate->shminfo.shmseg == 0) {
+-        /* not using shared memory */
+-        xcb_put_image(xstate->connection,
+-                      xstate->image->format,
+-                      xstate->pmap,
+-                      xstate->gc,
+-                      xstate->image->width,
+-                      height,
+-                      0,
+-                      y,
+-                      0,
+-                      xstate->image->depth,
+-                      (height) * xstate->image->stride,
+-                      xstate->image->data + (y * xstate->image->stride));
++        /* not using shared memory
++         *
++         * Unlike Xlib's XPutImage, xcb_put_image() does not split an
++         * image that exceeds the server's maximum request length, and an
++         * oversized request closes the connection. Send full-width bands
++         * of rows that each fit, leaving room for the request header.
++         */
++        uint32_t max_bytes;
++        int stride = xstate->image->stride;
++        int band;
++        int row;
++
++        max_bytes = xcb_get_maximum_request_length(xstate->connection) * 4;
++        if (max_bytes > (uint32_t)stride + 64)
++            band = (max_bytes - 64) / stride;
++        else
++            band = 1;
++
++        for (row = y; row < y + height; row += band) {
++            int rows = y + height - row;
++            if (rows > band)
++                rows = band;
++            xcb_put_image(xstate->connection,
++                          xstate->image->format,
++                          xstate->pmap,
++                          xstate->gc,
++                          xstate->image->width,
++                          rows,
++                          0,
++                          row,
++                          0,
++                          xstate->image->depth,
++                          rows * stride,
++                          xstate->image->data + (row * stride));
++        }
+     } else {
+         /* shared memory */
+         xcb_image_shm_put(xstate->connection, 
+-- 
+2.50.1 (Apple Git-155)
+
