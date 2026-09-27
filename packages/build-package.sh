@@ -177,6 +177,11 @@ rm -rf "$BUILD_ROOT"
 mkdir -p "$SRC" "$STAGE/bin"
 
 # ── Fetch + extract source ───────────────────────────────────────────────────
+# SOURCE_URL="local:" = the sources are in this repo (xtiny, the librfb
+# demos): nothing to fetch, build() reads them from $REPO_ROOT.
+if [ "$SOURCE_URL" = "local:" ]; then
+    echo "==> Source is local to the repo ($REPO_ROOT)"
+else
 # keyed by version too: a VERSION bump must not silently reuse the old tarball
 ARCHIVE="/tmp/lot-src-$NAME-$VERSION.tar.gz"
 if [ ! -f "$ARCHIVE" ]; then
@@ -197,6 +202,7 @@ fi
 
 echo "==> Extracting source"
 tar xzf "$ARCHIVE" -C "$SRC" --strip-components=1
+fi
 
 # ── Run build ────────────────────────────────────────────────────────────────
 echo "==> Running build() from recipe"

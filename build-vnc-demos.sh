@@ -29,8 +29,11 @@ for app in $APPS; do
     echo "==> $app"
     # xtiny's taskbar launches apps, so it needs fork() — which musl omits
     # for wasm32; the kernel provides it via asyncify.
-    EXTRA_SRC=""
-    [ "$app" = "xtiny" ] && EXTRA_SRC="sysroot/wasm_fork.c"
+    # dlmalloc: librfb's frame buffers and RRE encodes pass 128 KB, where
+    # musl mallocng needs mmap and traps on free/realloc (wolf3d's 3D view
+    # killed xtiny with SIGSEGV this way).
+    EXTRA_SRC="sysroot/wasm_dlmalloc.c"
+    [ "$app" = "xtiny" ] && EXTRA_SRC="$EXTRA_SRC sysroot/wasm_fork.c"
     PATH="$DIR_LD:$PATH" "$CLANG" -target wasm32 --sysroot="$SYSROOT" \
         -fuse-ld=lld -static -O2 \
         -Wl,--import-memory -Wl,--export-memory -Wl,--export-table \

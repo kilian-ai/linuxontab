@@ -251,6 +251,9 @@ void rfb_draw_text(rfb_server *s, int x, int y, const char *txt,
                    uint8_t b, uint8_t g, uint8_t r) {
     for (; *txt; txt++, x += 12) {
         unsigned ci = (unsigned char)*txt;
+        /* the chrome font is lowercase-only: capitals would draw blank
+         * ("Wolfenstein 3D Shareware" came out "olfenstein 3 hareware") */
+        if (ci >= 'A' && ci <= 'Z') ci += 'a' - 'A';
         const uint8_t *gl = FONT[ci < 128 ? ci : 0];
         for (int row=0; row<5; row++)
             for (int col=0; col<5; col++)
@@ -367,6 +370,10 @@ static size_t encode_rre(rfb_server *s, int x, int y, int w, int h,
                 run++;
             }
             if (px != bg) {
+                /* Past raw size RRE has already lost (textured content: a
+                 * game frame is mostly 1-pixel runs) — stop now instead of
+                 * growing a buffer we will throw away. */
+                if (len + 12 >= (size_t)w*h*FB_BPP) { free(buf); return 0; }
                 if (len + 12 > cap) {
                     cap *= 2;
                     uint8_t *nb = realloc(buf, cap);

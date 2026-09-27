@@ -1,0 +1,7 @@
+#!/bin/sh
+# Wolfenstein 3D (shareware). Needs an X server: run `xtiny &` first.
+# The engine reads its .wl1 data and writes config/saves in its cwd.
+: "${DISPLAY:=:1}"; export DISPLAY
+cd /usr/local/share/wolf3d || exit 1
+# stdin from /dev/null: an X client left holding the console busy-reads it.
+exec /usr/local/libexec/xwolf3d "$@" </dev/null

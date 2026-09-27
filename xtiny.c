@@ -48,6 +48,12 @@ pid_t fork(void);
 #define WORK_H    (FB_H - TASKBAR_H)
 
 #define MAX_XCLIENTS 8
+/* The largest request the setup reply advertises (max request length is
+ * 0xffff words). A client may legally send one that big — Xlib does for a
+ * full-window XPutImage, e.g. 320x200 at 32 bpp = 256 KB — so each client's
+ * input buffer must hold it, or the request is rejected as malformed and the
+ * client dropped. */
+#define MAX_REQ_BYTES (0xffff * 4)
 #define MAX_WINDOWS  64
 #define MAX_PIXMAPS  64
 #define MAX_GCS      64
@@ -114,7 +120,7 @@ typedef struct {
 typedef struct {
     int fd;                     /* -1 = free */
     int state;                  /* 1 handshake, 2 running */
-    uint8_t inbuf[65536];
+    uint8_t inbuf[MAX_REQ_BYTES];
     int inlen;
     uint16_t seq;
     uint32_t root_evmask;
@@ -1851,7 +1857,7 @@ static void send_setup_reply(XClient *c) {
     p32(buf, 16, 0x1fffff);                       /* rid mask */
     p32(buf, 20, 256);                            /* motion buffer */
     p16(buf, 24, (uint16_t)vlen);
-    p16(buf, 26, 0xffff);                         /* max request len */
+    p16(buf, 26, MAX_REQ_BYTES / 4);              /* max request len */
     buf[28] = 1;                                  /* screens */
     buf[29] = (uint8_t)nformats;
     buf[30] = 0;                                  /* LSB first */

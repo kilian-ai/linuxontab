@@ -26,11 +26,14 @@
               httpd-demo — Apache httpd 2.4 (prefork) on :8081 → top bar: web view
    DB GUI     sqlite-web -p 8080 /root/demo.db   → top bar: web view
    Games      tetris — color Tetris (vitetris) · vnc-snake on the X display
+              wolf3d — Wolfenstein 3D shareware, on xtiny (see X11 below)
    X11        xtiny &     a real X server + desktop on :5900. Then open
                           the X display panel (top bar) and hit connect.
               Launch apps from its taskbar, or by hand:
                 DISPLAY=:1 xterm -fn fixed -e /bin/sh </dev/null &
                 DISPLAY=:1 xeyes </dev/null &
+                wolf3d &    Wolfenstein 3D: arrows move, Ctrl fires,
+                            Space opens doors, Esc for the menu
               Keep the </dev/null — an X client left on the console
               busy-reads it and pegs the CPU.
    VNC demos  vnc-server  eyes whose pupils track your mouse
