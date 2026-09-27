@@ -790,6 +790,13 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
             slot->frame.y = 40 + (X.ntoplevel % 5) * 30;
             slot->frame.w = slot->w;
             slot->frame.h = slot->h;
+            /* keep the cascade on screen: a big window (a 760x500 browser)
+             * placed at the cascade offset ran off the right edge */
+            {
+                int fw = slot->w + 2*RFB_BORDER, fh = RFB_TITLE_H + slot->h + RFB_BORDER;
+                if (slot->frame.x + fw > FB_W)   slot->frame.x = FB_W - fw > 0 ? FB_W - fw : 0;
+                if (slot->frame.y + fh > WORK_H) slot->frame.y = WORK_H - fh > 0 ? WORK_H - fh : 0;
+            }
             snprintf(slot->title, sizeof slot->title, "x11");
             slot->frame.title = slot->title;
             X.ntoplevel++;

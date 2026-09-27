@@ -34,6 +34,9 @@
                 DISPLAY=:1 xeyes </dev/null &
                 wolf3d &    Wolfenstein 3D: arrows move, Ctrl fires,
                             Space opens doors, Esc for the menu
+                apk add netsurf, then: netsurf &
+                            a web browser (no JavaScript); try
+                            netsurf https://news.ycombinator.com/ &
               Keep the </dev/null — an X client left on the console
               busy-reads it and pegs the CPU.
    VNC demos  vnc-server  eyes whose pupils track your mouse

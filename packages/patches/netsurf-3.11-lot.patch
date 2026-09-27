@@ -1,0 +1,112 @@
+--- a/libnsfb/src/surface/x.c
++++ b/libnsfb/src/surface/x.c
+@@ -430,19 +430,30 @@
+ update_pixmap(xstate_t *xstate, int x, int y, int width, int height)
+ {
+     if (xstate->shminfo.shmseg == 0) {
+-        /* not using shared memory */
+-        xcb_put_image(xstate->connection,
+-                      xstate->image->format,
+-                      xstate->pmap,
+-                      xstate->gc,
+-                      xstate->image->width,
+-                      height,
+-                      0,
+-                      y,
+-                      0,
+-                      xstate->image->depth,
+-                      (height) * xstate->image->stride,
+-                      xstate->image->data + (y * xstate->image->stride));
++        /* not using shared memory. xcb does not split images the way
++         * Xlib's XPutImage does, and a request over the server's maximum
++         * request length kills the connection (a server without
++         * BIG-REQUESTS caps it at 256 KB; a 760x500 window is 1.5 MB), so
++         * send full-width bands that each fit. */
++        uint32_t maxbytes = xcb_get_maximum_request_length(xstate->connection) * 4;
++        int stride = xstate->image->stride;
++        int band = (maxbytes > (uint32_t)stride + 64) ? (int)((maxbytes - 64) / stride) : 1;
++        int row;
++        for (row = y; row < y + height; row += band) {
++            int h = (y + height - row < band) ? (y + height - row) : band;
++            xcb_put_image(xstate->connection,
++                          xstate->image->format,
++                          xstate->pmap,
++                          xstate->gc,
++                          xstate->image->width,
++                          h,
++                          0,
++                          row,
++                          0,
++                          xstate->image->depth,
++                          h * stride,
++                          xstate->image->data + (row * stride));
++        }
+     } else {
+         /* shared memory */
+         xcb_image_shm_put(xstate->connection, 
+@@ -624,6 +635,16 @@
+     xcb_void_cookie_t shm_attach_cookie;
+     xcb_generic_error_t *generic_error;
+ 
++    /* Issuing a request for an extension the server lacks makes xcb close
++     * the connection (XCB_CONN_CLOSED_EXT_NOTSUPPORTED), so check first;
++     * the non-shm put path works on any server. */
++    const xcb_query_extension_reply_t *shm_ext =
++        xcb_get_extension_data(xstate->connection, &xcb_shm_id);
++    if (shm_ext == NULL || !shm_ext->present) {
++        fprintf (stderr, "Server has no shm support.\n");
++        return NULL;
++    }
++
+     ck = xcb_shm_query_version(xstate->connection);
+     rep = xcb_shm_query_version_reply(xstate->connection, ck , NULL);
+     if (!rep) {
+@@ -881,6 +902,11 @@
+ 
+ 
+     /* show the window */
++    /* name the window: with no WM_NAME, window managers show a generic
++     * placeholder (xtiny titled it "x11") */
++    xcb_icccm_set_wm_name(xstate->connection, xstate->window,
++                          XCB_ATOM_STRING, 8, strlen("NetSurf"), "NetSurf");
++
+     xcb_map_window (xstate->connection, xstate->window);
+     xcb_flush(xstate->connection);
+ 
+--- a/netsurf/utils/config.h
++++ b/netsurf/utils/config.h
+@@ -136,7 +136,7 @@
+ #endif
+ 
+ #define HAVE_MMAP
+-#if (defined(_WIN32) || defined(__riscos__) || defined(__HAIKU__) || defined(__BEOS__) || defined(__amigaos4__) || defined(__AMIGA__) || defined(__MINT__))
++#if (defined(_WIN32) || defined(__riscos__) || defined(__HAIKU__) || defined(__BEOS__) || defined(__amigaos4__) || defined(__AMIGA__) || defined(__MINT__) || defined(__wasm__))
+ #undef HAVE_MMAP
+ #endif
+ 
+--- a/netsurf/desktop/searchweb.c
++++ b/netsurf/desktop/searchweb.c
+@@ -53,7 +53,7 @@
+ } search_web_ctx;
+ 
+ 
+-static const char *default_providers = "Google|www.google.com|https://www.google.com/search?q=%s|https://www.google.com/favicon.ico|\n";
++static const char *default_providers = "DuckDuckGo|lite.duckduckgo.com|https://lite.duckduckgo.com/lite/?q=%s|https://lite.duckduckgo.com/favicon.ico|\n";
+ 
+ static const char *default_search_icon_url = "resource:icons/search.png";
+ 
+--- a/netsurf/resources/en/welcome.html
++++ b/netsurf/resources/en/welcome.html
+@@ -20,10 +20,10 @@
+ 
+ <p class="intro">NetSurf is a small, fast open source web browser. We are always keen to improve our browser, so get in touch if you run into any problems. Thanks for choosing NetSurf!</p>
+ 
+-<form method="get" action="https://www.google.co.uk/search">
++<form method="get" action="https://lite.duckduckgo.com/lite/">
+ <div class="websearch">
+ <input type="text" name="q" size="42" maxlength="255">
+-<input type="submit" value="Google Search" name="btnG">
++<input type="submit" value="DuckDuckGo Search">
+ </div>
+ </form>
+ 

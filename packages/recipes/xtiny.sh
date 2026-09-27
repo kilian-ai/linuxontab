@@ -5,7 +5,7 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.0.1"
+VERSION="1.0.2"
 DESCRIPTION="Tiny X11 server + desktop on :5900 for real X clients (xterm, xeyes, wolf3d); open the X display panel"
 SOURCE_URL="local:"
 DEPENDS="xterm xeyes"

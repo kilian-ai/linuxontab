@@ -303,6 +303,7 @@ cat > "$STAGE/etc/motd" << 'EOF'
   Spiel:        spiel-demo — the Spiel media server + web UI on :8080 (web view)
   X display:    vnc-server · vnc-snake · xtiny (X11 desktop)  → top bar: X display
   Games:        wolf3d — Wolfenstein 3D on the X desktop (run `xtiny &` first)
+  Browser:      netsurf — web browser on the X desktop (run `xtiny &` first)
   Everything runs in this tab. Nothing is sent to a server.
 
 EOF
