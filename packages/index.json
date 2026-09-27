@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated": "2026-09-10",
+  "generated": "2026-09-26",
   "packages": {
     "busybox": {
       "version": "1.37.0",
@@ -792,6 +792,20 @@
       ],
       "depends": [
         "rustc"
+      ],
+      "status": "available"
+    },
+    "iredis": {
+      "version": "1.15.2",
+      "description": "iredis \u2014 interactive Redis client with completion and syntax highlighting (needs redis-server)",
+      "url": "https://linuxontab.com/packages/iredis-1.15.2.tar.gz",
+      "size": 5979349,
+      "sha256": "d3416b606e26590edb2b6c2bbc552c91fe8c4a5188ba67c677edc8491b8b830d",
+      "bins": [
+        "iredis"
+      ],
+      "depends": [
+        "python3"
       ],
       "status": "available"
     }
