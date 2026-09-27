@@ -1041,6 +1041,7 @@ var WASM_FORK_MAGIC = 1179603531;
 var NR_CLONE = 220;
 var SIGCHLD = 17;
 var CLONE_VFORK = 16384;
+var CLONE_VM = 256;
 var FORK_SCRATCH_BYTES = 4 * 1024 * 1024;
 function user_imports({
   kernel_memory,
@@ -1151,6 +1152,9 @@ function user_imports({
     const kernel_instance = get_kernel_instance();
     const linux_syscall = (nr, arg0, arg1, arg2, arg3, arg4, arg5) => {
       if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
+      if (nr === NR_CLONE && arg2 & CLONE_VFORK && arg2 & CLONE_VM && asyncify()?.asyncify_get_state) {
+        arg2 &= ~CLONE_VM;
+      }
       const original_instance = instance;
       const ret = kernel_instance.exports.syscall(nr, arg0, arg1, arg2, arg3, arg4, arg5);
       if (instance !== original_instance) {

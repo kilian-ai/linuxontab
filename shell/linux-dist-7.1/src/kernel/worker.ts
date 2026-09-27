@@ -76,6 +76,7 @@ const WASM_FORK_MAGIC = 0x464f524b; // 'FORK': arg0 is a caller-sized buffer
 const NR_CLONE = 220;
 const SIGCHLD = 17;
 const CLONE_VFORK = 0x4000;
+const CLONE_VM = 0x100;
 const FORK_SCRATCH_BYTES = 4 * 1024 * 1024; // legacy binaries without their own buffer
 
 export interface ForkRewind {
@@ -248,6 +249,18 @@ const NR_WASM_GET_ARGS = 245;
       arg5: number,
     ) => {
       if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
+      // NOMMU vfork from our asyncify-built C binaries (busybox hush runs every
+      // external command as clone(fn, CLONE_VM|CLONE_VFORK|SIGCHLD)). With a
+      // shared memory the child starts at the module's default __stack_pointer
+      // — the top of the SUSPENDED parent's shadow stack — and clobbers the
+      // parent's outermost frames on its way to execve; the parent then faults
+      // when it unwinds into them (apk exited 139 right after "installed", so
+      // /etc/rc skipped starting ?image= services). These binaries export no
+      // __stack_pointer to relocate the child, so give it its own copy of the
+      // memory, as the 6.1 host did: drop CLONE_VM, keep the vfork wait.
+      if (nr === NR_CLONE && (arg2 & CLONE_VFORK) && (arg2 & CLONE_VM) && asyncify()?.asyncify_get_state) {
+        arg2 &= ~CLONE_VM;
+      }
       const original_instance = instance;
       const ret = kernel_instance.exports.syscall(nr, arg0, arg1, arg2, arg3, arg4, arg5);
       if (instance !== original_instance) {
