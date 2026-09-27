@@ -827,11 +827,11 @@
       "status": "available"
     },
     "xtiny": {
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "Tiny X11 server + desktop on :5900 for real X clients (xterm, xeyes, wolf3d); open the X display panel",
-      "url": "https://linuxontab.com/packages/xtiny-1.0.1.tar.gz",
-      "size": 62318,
-      "sha256": "9096cfee967b95e06e24922ca82abc8bc742b5305dc72a70196819dc5f69b0d0",
+      "url": "https://linuxontab.com/packages/xtiny-1.0.2.tar.gz",
+      "size": 62359,
+      "sha256": "4bdbe9abd4dd722f4d75453e3c807f6a47dfa0de4c42105bc692f21f5cf6a70f",
       "bins": [
         "xtiny"
       ],
@@ -849,6 +849,20 @@
       "sha256": "d60066e2805f1d88a53edf4a591c6a269c1b3ebd5ef78b2cc6251314d71a2606",
       "bins": [
         "wolf3d"
+      ],
+      "depends": [
+        "xtiny"
+      ],
+      "status": "available"
+    },
+    "netsurf": {
+      "version": "3.11",
+      "description": "NetSurf 3.11 web browser on the X desktop \u2014 HTML/CSS, HTTPS, PNG/JPEG/GIF/SVG, no JavaScript (run xtiny first)",
+      "url": "https://linuxontab.com/packages/netsurf-3.11.tar.gz",
+      "size": 2999094,
+      "sha256": "44cf1b6d0772501665f2265bfb57ffc395e1040c746ba746b689fdd9030faf7b",
+      "bins": [
+        "netsurf"
       ],
       "depends": [
         "xtiny"
