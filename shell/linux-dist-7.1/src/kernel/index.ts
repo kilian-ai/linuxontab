@@ -68,6 +68,12 @@ export interface BootMachineOptions {
   plugins?: readonly MachinePluginInput[];
   /** Initial ramdisk loaded into memory and passed to the kernel. */
   initcpio?: MaybePromise<ArrayBufferView>;
+  /**
+   * LinuxOnTab: guest RAM in MiB. Defaults to the whole 4 GiB wasm32 space.
+   * The kernel may materialize all of it (page cache), so hosts with a tight
+   * per-tab memory budget (iOS Safari) should cap it.
+   */
+  memoryMiB?: number;
 }
 
 /**
@@ -233,9 +239,10 @@ export async function bootMachine(options: BootMachineOptions): Promise<Machine>
     const module_pages = Number(memory_type.minimum);
     const initcpio_addr = module_pages * PAGE_SIZE;
     const pages = kernel_initial_pages(memory_type, initcpio?.byteLength ?? 0);
+    const requested_pages = options.memoryMiB ? Math.floor(options.memoryMiB * 16) : KERNEL_MEMORY_MAXIMUM_PAGES;
     const { memory: wasm_memory, maximum_pages } = allocate_shared_memory(
       pages,
-      KERNEL_MEMORY_MAXIMUM_PAGES,
+      Math.max(pages, Math.min(KERNEL_MEMORY_MAXIMUM_PAGES, requested_pages)),
     );
     assert(wasm_memory.buffer.byteLength === pages * PAGE_SIZE);
 

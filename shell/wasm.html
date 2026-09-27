@@ -3571,8 +3571,15 @@ async function doBoat() {
   // rcu_cpu_stall_suppress: a CPU-bound user process (rust-lld linking 90 MB of
   // rlibs) holds the single CPU for minutes; the RCU stall report then calls
   // show_regs(), which this port does not implement (BUG → kernel halt).
-  // NOTE (7.1): guest RAM is the runtime's memory reservation (?mem= is no
-  // longer honoured); the kernel materializes pages on demand.
+  // Guest RAM. iOS Safari kills+reloads the tab under memory pressure
+  // (jetsam) — a guest that thinks it has GBs grows its page cache into real
+  // committed memory during installs and blows the phone's tab budget.
+  // Default small on iPhone/iPad; override with ?mem=<MiB> anywhere.
+  const lotMemMiB = (() => {
+    const p = +(lotParams.get('mem') || 0);
+    if (p >= 256 && p <= 4095) return p;
+    return /iPhone|iPad|iPod/.test(navigator.userAgent) ? 384 : 2048;
+  })();
   const lotArgs = ['loglevel=4', 'nr_cpus=1', 'rcupdate.rcu_cpu_stall_suppress=1', 'rdinit=/init',
     'ip=' + lotGuestIp + '::192.168.86.1:255.255.255.0::eth0:off', 'lot_ip=' + lotGuestIp,
     ...(lotHosts ? ['lot_hosts=' + lotHosts] : []), ...(lotSvcs ? ['lot_svc=' + lotSvcs] : []), ...(lotRun ? ['lot_run=' + lotRun] : []),
@@ -3580,7 +3587,7 @@ async function doBoat() {
   console.log('[WASM Boot] booting Linux 7.1 with WispSlirp networking (WISP + virtio-net)…');
   try {
     // Plugin order = virtio device order: the rootfs must stay /dev/vda.
-    machine = await bootMachine({ cpus: 1, args: lotArgs, initcpio,
+    machine = await bootMachine({ cpus: 1, args: lotArgs, initcpio, memoryMiB: lotMemMiB,
                                   plugins: [consoleDev, entropyDev, blockDev, pkgDropDev, netDev] });
   } catch (err) {
     hideDlProgress();
