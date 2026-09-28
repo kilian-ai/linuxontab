@@ -44,7 +44,67 @@
      } else {
          /* shared memory */
          xcb_image_shm_put(xstate->connection, 
-@@ -624,6 +635,16 @@
+@@ -573,13 +584,57 @@
+     return true;
+ 
+ }
++
++
++static xcb_image_t *create_shm_image(xstate_t *xstate, int width, int height, int bpp);
++static xcb_image_t *create_image(xcb_connection_t *c, int width, int height, int bpp);
++
++/* Replace the image and backing pixmap with ones of a new size, keeping the
++ * window, gc and connection: the window was resized (e.g. maximised by the
++ * window manager) and the frontend asked for a matching framebuffer.
++ */
++static int
++x_resize(nsfb_t *nsfb, int width, int height)
++{
++    xstate_t *xstate = nsfb->surface_priv;
++    xcb_image_t *old = xstate->image;
++    xcb_image_t *image = NULL;
++
++    if (xstate->shminfo.shmseg != 0) {
++        xcb_shm_detach(xstate->connection, xstate->shminfo.shmseg);
++        shmdt(xstate->shminfo.shmaddr);
++        xstate->shminfo.shmseg = 0;
++        old->base = NULL; /* shared memory, not malloc'd: don't free() it */
++        image = create_shm_image(xstate, width, height, nsfb->bpp);
++    }
++    if (image == NULL)
++        image = create_image(xstate->connection, width, height, nsfb->bpp);
++    if (image == NULL)
++        return -1;
++    xcb_image_destroy(old);
++    xstate->image = image;
+ 
++    xcb_free_pixmap(xstate->connection, xstate->pmap);
++    xstate->pmap = xcb_generate_id(xstate->connection);
++    xcb_create_pixmap(xstate->connection, 24, xstate->pmap, xstate->window,
++                      image->width, image->height);
+ 
++    nsfb->ptr = image->data;
++    nsfb->linelen = image->stride;
++    return 0;
++}
++
+ static int 
+ x_set_geometry(nsfb_t *nsfb, int width, int height, enum nsfb_format_e format)
+ {
+-    if (nsfb->surface_priv != NULL)
+-        return -1; /* if were already initialised fail */
++    if (nsfb->surface_priv != NULL) {
++        /* already initialised: only a size change is supported */
++        if (format != nsfb->format)
++            return -1;
++        if ((width != nsfb->width || height != nsfb->height) &&
++            x_resize(nsfb, width, height) != 0)
++            return -1;
++    }
+ 
+     nsfb->width = width;
+     nsfb->height = height;
+@@ -624,6 +679,16 @@
      xcb_void_cookie_t shm_attach_cookie;
      xcb_generic_error_t *generic_error;
  
@@ -61,7 +121,32 @@
      ck = xcb_shm_query_version(xstate->connection);
      rep = xcb_shm_query_version_reply(xstate->connection, ck , NULL);
      if (!rep) {
-@@ -881,6 +902,11 @@
+@@ -832,7 +897,8 @@
+ 		XCB_EVENT_MASK_KEY_RELEASE |
+ 		XCB_EVENT_MASK_BUTTON_PRESS |
+                 XCB_EVENT_MASK_BUTTON_RELEASE |
+-                XCB_EVENT_MASK_POINTER_MOTION;
++                XCB_EVENT_MASK_POINTER_MOTION |
++                XCB_EVENT_MASK_STRUCTURE_NOTIFY;
+     values[2] = blank_cursor;
+ 
+     xstate->window = xcb_generate_id(xstate->connection);
+@@ -844,12 +910,10 @@
+                        XCB_WINDOW_CLASS_INPUT_OUTPUT,
+                        xstate->screen->root_visual,
+                        mask, values);
+-    /* set size hits on window */
++    /* set size hints on window: the surface follows resizes (see
++     * XCB_CONFIGURE_NOTIFY below), so only the minimum is fixed */
+     hints = xcb_alloc_size_hints();
+     if (hints != NULL) {
+-        xcb_size_hints_set_max_size(hints,
+-                                    xstate->image->width,
+-                                    xstate->image->height);
+         xcb_size_hints_set_min_size(hints,
+                                     xstate->image->width,
+                                     xstate->image->height);
+@@ -881,6 +945,11 @@
  
  
      /* show the window */
@@ -73,6 +158,24 @@
      xcb_map_window (xstate->connection, xstate->window);
      xcb_flush(xstate->connection);
  
+@@ -961,6 +1030,17 @@
+     event->type = NSFB_EVENT_NONE;
+ 
+     switch (e->response_type) {
++    case XCB_CONFIGURE_NOTIFY: {
++        xcb_configure_notify_event_t *ec = (xcb_configure_notify_event_t *)e;
++        if (ec->window == xstate->window &&
++            (ec->width != nsfb->width || ec->height != nsfb->height)) {
++            event->type = NSFB_EVENT_RESIZE;
++            event->value.resize.w = ec->width;
++            event->value.resize.h = ec->height;
++        }
++        break;
++    }
++
+     case XCB_EXPOSE:
+         ee = (xcb_expose_event_t *)e;
+         xcb_copy_area(xstate->connection,
 --- a/netsurf/utils/config.h
 +++ b/netsurf/utils/config.h
 @@ -136,7 +136,7 @@

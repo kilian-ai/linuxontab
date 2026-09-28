@@ -1,0 +1,124 @@
+--- a/vi_xlib.c
++++ b/vi_xlib.c
+@@ -41,6 +41,11 @@
+ 
+ int MyDepth;
+ 
++/* Current window size: the window manager may resize (maximise) it. */
++static int win_w = 320, win_h = 200;
++static XImage *simg;		/* the frame scaled up, see PutScaled */
++static int simg_scale;
++
+ void GetVisual()
+ {
+ 	XVisualInfo vitemp;
+@@ -193,7 +198,9 @@
+ 	attr.colormap = cmap;		   
+ 	attr.event_mask = KeyPressMask | KeyReleaseMask | ExposureMask 
+ 		| FocusChangeMask | StructureNotifyMask;
+-	attrmask = CWColormap | CWEventMask;
++	/* black around the frame when the window is larger than it */
++	attr.background_pixel = BlackPixel(dpy, screen);
++	attrmask = CWColormap | CWEventMask | CWBackPixel;
+ 	
+ 	win = XCreateWindow(dpy, root, 0, 0, 320, 200, 0, CopyFromParent, 
+ 			    InputOutput, vi->visual, attrmask, &attr);
+@@ -209,11 +216,9 @@
+ 	
+ 	sizehints.min_width = 320;
+ 	sizehints.min_height = 200;
+-	sizehints.max_width = 320;
+-	sizehints.max_height = 200;
+ 	sizehints.base_width = 320;
+ 	sizehints.base_height = 200;
+-	sizehints.flags = PMinSize | PMaxSize | PBaseSize;
++	sizehints.flags = PMinSize | PBaseSize;
+ 	
+ 	XSetWMProperties(dpy, win, NULL, NULL, _argv, _argc, &sizehints, None, None); 
+ 	
+@@ -323,6 +328,41 @@
+ 	/* hack - but it works for me */
+ 	long last = get_TimeCount() + vbls;
+ 	while (last > get_TimeCount()) ;
++}
++
++/* Put the 32bpp frame (disbuf) enlarged by a whole factor s at (ox, oy).
++ * Xlib splits the PutImage to fit the server's maximum request length. */
++static void PutScaled(int s, int ox, int oy)
++{
++	int x, y, k, w = 320 * s;
++	dword *src = (dword *)disbuf, *row;
++
++	if (simg == NULL || simg_scale != s) {
++		char *data;
++		if (simg != NULL) {
++			XDestroyImage(simg);	/* frees its data too */
++			simg = NULL;
++		}
++		data = malloc((size_t)w * 200 * s * 4);
++		if (data == NULL)
++			return;
++		simg = XCreateImage(dpy, vi->visual, vi->depth, ZPixmap, 0,
++				    data, w, 200 * s, 32, w * 4);
++		if (simg == NULL) {
++			free(data);
++			return;
++		}
++		simg_scale = s;
++	}
++	for (y = 0; y < 200; y++) {
++		row = (dword *)simg->data + (size_t)y * s * w;
++		for (x = 0; x < 320; x++)
++			for (k = 0; k < s; k++)
++				row[x * s + k] = src[y * 320 + x];
++		for (k = 1; k < s; k++)
++			memcpy(row + (size_t)k * w, row, (size_t)w * 4);
++	}
++	XPutImage(dpy, win, gc, simg, 0, 0, ox, oy, w, 200 * s);
+ }
+ 
+ void VW_UpdateScreen()
+@@ -366,10 +406,25 @@
+ 		}
+ 	}
+ 
+-	if (shmmode)
+-		XShmPutImage(dpy, win, gc, img, 0, 0, 0, 0, 320, 200, False);
+-	else
+-		XPutImage(dpy, win, gc, img, 0, 0, 0, 0, 320, 200);
++	{
++		/* Largest whole scale that fits the window, centred. Scaling
++		 * needs the 32bpp non-shm path; anything else stays 1x. */
++		int s = win_w / 320 < win_h / 200 ? win_w / 320 : win_h / 200;
++		int ox, oy;
++
++		if (s < 1 || shmmode || indexmode || MyDepth != 32)
++			s = 1;
++		ox = (win_w - 320 * s) / 2;
++		oy = (win_h - 200 * s) / 2;
++		if (ox < 0) ox = 0;
++		if (oy < 0) oy = 0;
++		if (s > 1)
++			PutScaled(s, ox, oy);
++		else if (shmmode)
++			XShmPutImage(dpy, win, gc, img, 0, 0, ox, oy, 320, 200, False);
++		else
++			XPutImage(dpy, win, gc, img, 0, 0, ox, oy, 320, 200);
++	}
+ }
+ 
+ void keyboard_handler(int code, int press);
+@@ -397,6 +452,13 @@
+ 						Quit(NULL);
+ 					break;
+ 				case ConfigureNotify:
++					if (event.xconfigure.width != win_w ||
++					    event.xconfigure.height != win_h) {
++						win_w = event.xconfigure.width;
++						win_h = event.xconfigure.height;
++						XClearWindow(dpy, win);
++						VW_UpdateScreen();
++					}
+ 					break;
+ 				case FocusIn:
+ 					break;

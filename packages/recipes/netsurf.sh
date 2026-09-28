@@ -23,13 +23,16 @@
 #   - libnsfb X surface: check MIT-SHM is present before querying it (xcb
 #     closes the connection on a request for a missing extension); send
 #     image puts in bands under the server's max request length (xcb does
-#     not split, a full 760x500 frame is 1.5 MB); name the window NetSurf
+#     not split, a full 760x500 frame is 1.5 MB); name the window NetSurf;
+#     follow window resizes (ConfigureNotify -> NSFB_EVENT_RESIZE, and
+#     x_set_geometry reallocates the image and pixmap after start-up), so
+#     maximising the window in xtiny re-lays out the browser
 #   - utils/config.h: no mmap on wasm (NetSurf's read() path)
 #   - default search provider and start-page form: DuckDuckGo lite
 # Build-level fixes are commented where they happen below.
 
 NAME="netsurf"
-VERSION="3.11"
+VERSION="3.11-r1"   # r1: follows window resizes (maximise)
 DESCRIPTION="NetSurf 3.11 web browser on the X desktop — HTML/CSS, HTTPS, PNG/JPEG/GIF/SVG, no JavaScript (run xtiny first)"
 SOURCE_URL="https://download.netsurf-browser.org/netsurf/releases/source-full/netsurf-all-3.11.tar.gz"
 SOURCE_SHA256="4dea880ff3c2f698bfd62c982b259340f9abcd7f67e6c8eb2b32c61f71644b7b"

@@ -11,7 +11,7 @@
 #   wolf3d &         # the game, DISPLAY defaults to :1
 
 NAME="wolf3d"
-VERSION="1.4-20011028"
+VERSION="1.4-20011028-r1"   # r1: scales to the window (maximise)
 DESCRIPTION="Wolfenstein 3D shareware (episode 1) — id's raycaster on the X server (run xtiny first)"
 # icculus.org dropped the tarball; FreeBSD's ports distfile cache keeps it.
 SOURCE_URL="http://distcache.freebsd.org/ports-distfiles/wolf3d-20011028.tar.gz"
@@ -128,6 +128,13 @@ MFC
     perl -pi -e 's/\(MenuFunc\)\s*([A-Za-z_]+)/$1_mf/g' wl_menu.c wl_game.c
     for f in wl_menu.c wl_game.c; do perl -0777 -pi -e 's/^/#include "lot_menufunc.h"\n/' "$f"; done
     ! /usr/bin/grep -q "(MenuFunc)" wl_menu.c wl_game.c || { echo "MenuFunc thunk patch failed" >&2; exit 1; }
+
+    # Follow window resizes: vi_xlib.c drew a fixed 320x200 image at the
+    # window origin and pinned the size hints, so maximising the window
+    # (xtiny's green button) left the game in a corner. Now the frame is
+    # drawn at the largest whole scale that fits, centred on black.
+    patch -p1 < "$REPO_ROOT/packages/patches/wolf3d-scale-to-window.patch" \
+        || { echo "vi_xlib.c scale patch failed" >&2; exit 1; }
 
     # ── compile + link ────────────────────────────────────────────────────
     SHIMS=""

@@ -16,14 +16,19 @@
 #   - Terminfo for xterm/xterm-256color is already baked into the rootfs.
 
 NAME="xterm"
-VERSION="379"
+XTERM_UPSTREAM="379"
+VERSION="${XTERM_UPSTREAM}-r1"   # r1: dlmalloc, so resizing no longer traps
 DESCRIPTION="X terminal emulator"
-DEPENDS="libX11 libXt libXaw"
-SOURCE_URL="https://invisible-mirror.net/archives/xterm/xterm-${VERSION}.tgz"
-SOURCE_SHA256=""
+# Statically linked (the X libraries are built into the binary below), so
+# no runtime package dependencies.
+DEPENDS=""
+SOURCE_URL="https://invisible-mirror.net/archives/xterm/xterm-${XTERM_UPSTREAM}.tgz"
+SOURCE_SHA256="a7ddf274ee84b97fb1283675009d53ca2d02a0ffd5ce5a5118dafc3623ebb310"
 
 NCURSES_VER="6.5"
-NCURSES_URL="https://ftp.gnu.org/gnu/ncurses/ncurses-${NCURSES_VER}.tar.gz"
+# The ncurses maintainer's own mirror (ftp.gnu.org is often unreachable).
+NCURSES_URL="https://invisible-mirror.net/archives/ncurses/ncurses-${NCURSES_VER}.tar.gz"
+NCURSES_SHA256="136d91bc269a9a5785e5f9e980bc76ab57428f604ce3e5a5a90cebc767971cc6"
 XORGPROTO_VER="2024.1"
 XORGPROTO_URL="https://gitlab.freedesktop.org/xorg/proto/xorgproto/-/archive/xorgproto-${XORGPROTO_VER}/xorgproto-xorgproto-${XORGPROTO_VER}.tar.gz"
 
@@ -96,6 +101,8 @@ build() {
         if [ ! -f "$NCURSES_STAGE/usr/lib/libncursesw.a" ]; then
             [ -f "$NCURSES_ARCHIVE" ] || \
                 curl -L --fail -o "$NCURSES_ARCHIVE" "$NCURSES_URL"
+            [ "$(shasum -a 256 "$NCURSES_ARCHIVE" | cut -d' ' -f1)" = "$NCURSES_SHA256" ] || \
+                { echo "ncurses checksum mismatch" >&2; rm -f "$NCURSES_ARCHIVE"; exit 1; }
             rm -rf "$NCURSES_SRC"; mkdir -p "$NCURSES_SRC"
             tar xzf "$NCURSES_ARCHIVE" -C "$NCURSES_SRC" --strip-components=1
             cd "$NCURSES_SRC"
@@ -321,8 +328,14 @@ COMPATEOF
     # fork()/vfork() via the kernel's asyncify syscall (musl wasm32 omits
     # them); same object the nodejs recipe uses.
     $CC $CFLAGS -c "$REPO_ROOT/sysroot/wasm_fork.c" -o "$SRC/wasm_fork.o"
+    # sbrk-only dlmalloc: musl mallocng traps on free/realloc of blocks over
+    # 128 KB (its large-block path needs mmap). Resizing the window (e.g.
+    # maximising it in xtiny) reallocates xterm's screen and scrollback
+    # buffers well past that, and xterm died with "unreachable". The archive
+    # comes before -lc, so malloc/realloc/free resolve here.
+    $CC $CFLAGS -w -c "$REPO_ROOT/sysroot/wasm_dlmalloc.c" -o "$SRC/wasm_dlmalloc.o"
     "$AR" rcs "$DEPS_PREFIX/lib/libxtermcompat.a" \
-        "$SRC/xterm_compat.o" "$SRC/wasm_fork.o"
+        "$SRC/xterm_compat.o" "$SRC/wasm_fork.o" "$SRC/wasm_dlmalloc.o"
 
     printf '%s\n' \
         '#!/bin/sh' \
@@ -340,7 +353,14 @@ COMPATEOF
     # IS Linux. Without these, xterm's platform detection falls through to
     # the 1980s sgtty branch (fatal: sgtty.h not found) and picks wrong pty
     # and signal paths. Define them so xterm takes its normal Linux route.
-    LINUXDEF="-Dlinux=1 -D__linux__=1 -D_GNU_SOURCE=1 -DNO_XPOLL_H=1 -DLOT_USE_OPENPTY=1 -DLOT_USE_SETSID=1"
+    #
+    # But xorgproto's Xfuncproto.h turns __linux__ into NARROWPROTO, i.e.
+    # "narrow" prototypes (float args stay float), while our X libraries
+    # were built without __linux__ and so with wide ones (float -> double).
+    # XawScrollbarSetThumb(Widget, float, float) then links as a signature
+    # mismatch and traps as soon as the scrollbar thumb is recomputed, which
+    # a resize (maximising the window in xtiny) does. Pin the libraries' ABI.
+    LINUXDEF="-Dlinux=1 -D__linux__=1 -DNeedWidePrototypes=1 -D_GNU_SOURCE=1 -DNO_XPOLL_H=1 -DLOT_USE_OPENPTY=1 -DLOT_USE_SETSID=1"
 
     # Cross-compile answers configure cannot probe by running code.
     export cf_cv_type_fd_mask=yes
