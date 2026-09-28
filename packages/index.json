@@ -608,11 +608,11 @@
       "status": "available"
     },
     "xterm": {
-      "version": "379",
+      "version": "379-r1",
       "description": "X terminal emulator",
-      "url": "https://linuxontab.com/packages/xterm-379.tar.gz",
-      "size": 753808,
-      "sha256": "855bce0fda1de636ef2521613a6dbee626537e4cbc8e46b3f5132801415e1298",
+      "url": "https://linuxontab.com/packages/xterm-379-r1.tar.gz",
+      "size": 766579,
+      "sha256": "ff3a469dae58bbb39d7a911228f8210ec2f04e92a37609cb2647f37eaec8904b",
       "bins": [
         "xterm"
       ],
@@ -842,11 +842,11 @@
       "status": "available"
     },
     "wolf3d": {
-      "version": "1.4-20011028",
+      "version": "1.4-20011028-r1",
       "description": "Wolfenstein 3D shareware (episode 1) \u2014 id's raycaster on the X server (run xtiny first)",
-      "url": "https://linuxontab.com/packages/wolf3d-1.4-20011028.tar.gz",
-      "size": 782389,
-      "sha256": "d60066e2805f1d88a53edf4a591c6a269c1b3ebd5ef78b2cc6251314d71a2606",
+      "url": "https://linuxontab.com/packages/wolf3d-1.4-20011028-r1.tar.gz",
+      "size": 783189,
+      "sha256": "0145aac4e4b83869e9848fed27057ad5318230ae920d8310286fac32d96018ea",
       "bins": [
         "wolf3d"
       ],
@@ -856,11 +856,11 @@
       "status": "available"
     },
     "netsurf": {
-      "version": "3.11",
+      "version": "3.11-r1",
       "description": "NetSurf 3.11 web browser on the X desktop \u2014 HTML/CSS, HTTPS, PNG/JPEG/GIF/SVG, no JavaScript (run xtiny first)",
-      "url": "https://linuxontab.com/packages/netsurf-3.11.tar.gz",
-      "size": 2999094,
-      "sha256": "44cf1b6d0772501665f2265bfb57ffc395e1040c746ba746b689fdd9030faf7b",
+      "url": "https://linuxontab.com/packages/netsurf-3.11-r1.tar.gz",
+      "size": 2999412,
+      "sha256": "19816bf96cf564df9af60e3cc179c07430e14452f83b95875290b87f7ebf8974",
       "bins": [
         "netsurf"
       ],
