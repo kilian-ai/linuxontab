@@ -33,15 +33,23 @@ _dl() {
 # control exchange — no TCP anywhere (even the tiny HTTP control request
 # wedged on iOS). Protocol: write "LOTREQ <nonce> <file>" into block 0
 # (page's write-callback sees it, fetches, writes data at offset 8192 and
-# "LOTRSP <nonce> ok <size>" into block 1), then poll block 1.
+# "LOTRSP <nonce> ok <file> <size>" into block 1), then poll block 1.
 # NB: dd conv=fsync pushes the request through the page cache to virtio;
 # drop_caches before each poll/data read or we re-read stale cached blocks.
+# The nonce MUST be unique per request: it used to be "$$-<epoch seconds>",
+# and a dependency installed <1 s before its dependent (xtiny → netsurf)
+# reused it — the page ignored the repeat and the guest read the previous
+# package's response and bytes. Now it is 80 random bits (no fork: the
+# kernel's uuid sysctl), and the response must also name the file we asked for.
 _fetch_pkgdrop() {
-    local rel="$1" out="$2" _n _size _l _a _b _err
+    local rel="$1" out="$2" _n _u _size _l _a _b _err
     [ -b /dev/vdb ] || return 1
-    date +%s > /tmp/.lot-now 2>/dev/null
-    _n=""; read -r _n < /tmp/.lot-now 2>/dev/null; rm -f /tmp/.lot-now
-    _n="$$-$_n"
+    _u=""; read -r _u < /proc/sys/kernel/random/uuid 2>/dev/null
+    if [ -z "$_u" ]; then
+        date +%s > /tmp/.lot-now 2>/dev/null
+        read -r _u < /tmp/.lot-now 2>/dev/null; rm -f /tmp/.lot-now
+    fi
+    _n="$$-${_u%%-*}${_u##*-}"
     printf 'LOTREQ %s %s\n' "$_n" "$rel" > /tmp/.lot-req
     # conv=fsync pushes the request through the page cache to virtio. The
     # fsync syscall then often SEGFAULTS dd — but only AFTER the flush (the
@@ -59,7 +67,7 @@ _fetch_pkgdrop() {
             echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
             dd if=/dev/vdb bs=512 skip=1 count=1 2>/dev/null > /tmp/.lot-rsp
             _l=""; read -r _l < /tmp/.lot-rsp 2>/dev/null
-            if [ "${_l#LOTRSP $_n ok }" != "$_l" ]; then
+            if [ "${_l#LOTRSP $_n ok $rel }" != "$_l" ]; then
                 _size="${_l##* }"
                 break
             fi

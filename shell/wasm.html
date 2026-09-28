@@ -1131,6 +1131,9 @@ class WispSlirp {
       const enc = new TextEncoder();
       try { await this.#tcpToGuest(conn, enc.encode('HTTP/1.0 200 OK\r\n')); } catch (_) {}
       let reply;
+      // Only the newest request may write the drop disk: an abandoned handler
+      // whose fetch lands late must not overwrite a newer package's bytes.
+      const gen = (window.__pkgDropGen = (window.__pkgDropGen || 0) + 1);
       try {
         if (!/^[A-Za-z0-9._+-]+$/.test(rel)) throw new Error('bad name');
         const jobs = (window.__pkgDropJobs = window.__pkgDropJobs || new Map());
@@ -1156,6 +1159,7 @@ class WispSlirp {
         }
         if (err) { jobs.delete(rel); throw err; }
         if (!bytes) throw new Error('fetch interrupted');
+        if (gen !== window.__pkgDropGen) throw new Error('superseded');
         const drop = window.__pkgDropBytes;
         if (!drop) throw new Error('drop disk not initialized');
         if (bytes.length > drop.length) throw new Error('too large for drop disk (' + bytes.length + ')');
@@ -3480,17 +3484,35 @@ async function doBoat() {
   // block 1, which the guest polls by re-reading. Even the tiny HTTP control
   // exchange wedged on iOS (guest-TCP lost-wakeup is worse under iOS timer
   // throttling); virtio-blk is reliable on every platform.
-  let lotPkgLastNonce = '';
+  //
+  // STALE-DELIVERY TRAP (2026-09-27): this used to dedupe on the nonce alone
+  // and leave the previous LOTRSP in block 1 until the new fetch finished.
+  // Old apk nonces were "$$-<epoch seconds>", so two packages requested by one
+  // apk inside the same second (xtiny → netsurf is ~0.7 s apart) collided:
+  // the second request was ignored, the guest polled block 1, found the
+  // PREVIOUS package's "LOTRSP <same nonce> ok <size>" and read its bytes
+  // ("Checksum mismatch for netsurf ... got <sha of xtiny>"). Now:
+  //  - dedupe on the whole request line (nonce + file), not the nonce;
+  //  - clear block 1 synchronously the moment a new request is accepted, so
+  //    no earlier response can be read as the answer to this one;
+  //  - a generation counter: a superseded fetch (guest timed out and moved
+  //    on) never writes its bytes or its response after a newer request;
+  //  - the response names the file: "LOTRSP <nonce> ok <file> <size>". The
+  //    size stays the LAST field, so older apk builds still parse it.
+  let lotPkgLastReq = '';
+  let lotPkgGen = 0;
   const lotPkgRsp = (text) => {
     pkgDropBytes.fill(0, 512, 1024);
-    pkgDropBytes.set(new TextEncoder().encode(text + '\n'), 512);
+    if (text) pkgDropBytes.set(new TextEncoder().encode(text + '\n'), 512);
   };
   const lotPkgReq = () => {
     const hdr = new TextDecoder().decode(pkgDropBytes.subarray(0, 512));
     const m = /^LOTREQ (\S{1,32}) ([A-Za-z0-9._+-]{1,80})\n/.exec(hdr);
-    if (!m || m[1] === lotPkgLastNonce) return;
+    if (!m || m[0] === lotPkgLastReq) return;
     const nonce = m[1], rel = m[2];
-    lotPkgLastNonce = nonce;
+    lotPkgLastReq = m[0];
+    const gen = ++lotPkgGen;
+    lotPkgRsp('');
     (async () => {
       try {
         const base = window.location.hostname === 'localhost'
@@ -3500,12 +3522,14 @@ async function doBoat() {
         const resp = await fetch(base + '/packages/' + rel, { cache: 'no-store' });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const bytes = new Uint8Array(await resp.arrayBuffer());
+        if (gen !== lotPkgGen) { console.log('[PKGDROP/blk]', rel, 'superseded, dropped'); return; }
         if (8192 + bytes.length > pkgDropBytes.length) throw new Error('too large');
         pkgDropBytes.set(bytes, 8192);
-        lotPkgRsp('LOTRSP ' + nonce + ' ok ' + bytes.length);
+        lotPkgRsp('LOTRSP ' + nonce + ' ok ' + rel + ' ' + bytes.length);
         console.log('[PKGDROP/blk]', rel, bytes.length, 'bytes ready');
         if (window.__lotBeacon) window.__lotBeacon('pkg-ready', { rel, n: bytes.length });
       } catch (e) {
+        if (gen !== lotPkgGen) return;
         lotPkgRsp('LOTRSP ' + nonce + ' err ' + String(e && e.message || e).slice(0, 100));
         console.log('[PKGDROP/blk] failed', rel, String(e));
       }
