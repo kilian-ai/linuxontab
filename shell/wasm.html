@@ -59,7 +59,12 @@
   #x-toolbar button:hover:not(:disabled) { background:#2d343d; }
   #x-toolbar button:disabled { opacity:0.4; cursor:not-allowed; }
   #x-status { color:#7a8392; flex:1; }
-  #x-canvas-wrap { flex:1; overflow:auto; display:flex; align-items:center; justify-content:center; }
+  /* The canvas is scaled to fit (xFitCanvas): centring an oversized child
+     in an overflow:auto flex box put its top/left edge out of reach, which
+     cut off window title bars in short or narrow windows. */
+  #x-canvas-wrap { flex:1; min-width:0; min-height:0; overflow:hidden; display:flex; align-items:center; justify-content:center; }
+  #x-view:fullscreen { background:#000; }
+  #x-view:-webkit-full-screen { background:#000; }
   /* cursor is set by the server via rfb_set_cursor (ServerCutText marker);
      "default" is just the starting shape, not a fixed one */
   #x-canvas { display:block; image-rendering:pixelated; cursor:default; }
@@ -258,6 +263,7 @@
       <span id="x-status">disconnected — boot guest, run: vnc-server</span>
       <button id="x-connect">connect :5900</button>
       <button id="x-disconnect" disabled>disconnect</button>
+      <button id="x-fullscreen" title="fill the screen with the X display (Esc or this button to leave)">fullscreen</button>
     </div>
     <div id="x-canvas-wrap">
       <canvas id="x-canvas" width="640" height="480"></canvas>
@@ -5558,6 +5564,58 @@ document.addEventListener('mouseup', (e) => {
   xRfbClient.sendPointer(0, x, y);
 });
 $('x-canvas').addEventListener('contextmenu', (e) => e.preventDefault());
+
+// Scale the canvas to fit its panel, keeping the aspect ratio. In the
+// panel it only shrinks (so the whole desktop stays reachable); in
+// fullscreen it also grows to fill the screen. xPointerXY maps through the
+// displayed size, so pointer coordinates stay exact at any scale.
+function xFullscreenElement() {
+  return document.fullscreenElement || document.webkitFullscreenElement || null;
+}
+function xFitCanvas() {
+  const c = $('x-canvas'), wrap = $('x-canvas-wrap');
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  if (!W || !H || !c.width || !c.height) return;
+  let scale = Math.min(W / c.width, H / c.height);
+  if (xFullscreenElement() !== $('x-view')) scale = Math.min(scale, 1);
+  c.style.width  = Math.floor(c.width  * scale) + 'px';
+  c.style.height = Math.floor(c.height * scale) + 'px';
+  // Sharp pixels when enlarging; smooth when shrinking, where nearest-
+  // neighbour drops whole rows of small text.
+  c.style.imageRendering = scale >= 1 ? 'pixelated' : 'auto';
+}
+new ResizeObserver(xFitCanvas).observe($('x-canvas-wrap'));
+// The RFB server resizes the framebuffer (640x480 placeholder -> 800x600).
+new MutationObserver(xFitCanvas).observe($('x-canvas'), { attributes: true, attributeFilter: ['width', 'height'] });
+
+(function xFullscreenSetup() {
+  const btn = $('x-fullscreen'), view = $('x-view');
+  const enter = view.requestFullscreen || view.webkitRequestFullscreen;
+  const exit = document.exitFullscreen || document.webkitExitFullscreen;
+  if (!enter || !(document.fullscreenEnabled || document.webkitFullscreenEnabled)) {
+    btn.hidden = true;   // e.g. iPhone Safari: element fullscreen unsupported
+    return;
+  }
+  btn.onclick = () => {
+    if (xFullscreenElement()) exit.call(document);
+    else Promise.resolve(enter.call(view)).catch(() => {});
+  };
+  const changed = () => {
+    const on = xFullscreenElement() === view;
+    btn.textContent = on ? 'exit fullscreen' : 'fullscreen';
+    if (on) {
+      $('x-canvas').focus();
+      // Keep Esc for the guest (menus in wolf3d, xterm) where the Keyboard
+      // Lock API exists; the browser then exits on a long Esc press.
+      navigator.keyboard?.lock?.(['Escape']).catch(() => {});
+    } else {
+      navigator.keyboard?.unlock?.();
+    }
+    xFitCanvas();
+  };
+  document.addEventListener('fullscreenchange', changed);
+  document.addEventListener('webkitfullscreenchange', changed);
+})();
 
 // Minimal X11 keysym mapping for common keys
 function domKeyToKeysym(key) {
