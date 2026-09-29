@@ -362,6 +362,10 @@ _install_pkg() {
 
     pkgroot="$workdir/pkg-$pkg"
     [ -d "$pkgroot" ] || _err "Malformed tarball: pkg-$pkg/ not found"
+    # pkg-<name>/info is the package's metadata, not a filesystem entry: drop
+    # it before the manifest/install, else every install wrote /info (and
+    # listed it, so `apk del <any>` removed it). One depth-2 fork, like rm above.
+    rm -f "$pkgroot/info"
 
     # Build manifest and remove conflicting symlinks (e.g. busybox applet stubs)
     # before installing — cp -rp would otherwise follow the symlink and overwrite
@@ -414,6 +418,8 @@ cmd_del() {
         if [ -f "$manifest" ]; then
             while read -r f; do
                 [ -z "$f" ] && continue
+                # Manifests written before the metadata fix list /info.
+                [ "$f" = /info ] && continue
                 rm -f "$f" && _ok "Removed: $f"
             done < "$manifest"
             rm -f "$manifest"
