@@ -90,7 +90,7 @@ index 34cc01c..fddb31c 100644
 + * drops all its pins before execve/exit (the arguments are already copied
 + * out) and wakes page-lock waiters in the PARENT's System too (its own
 + * System is a copy with its own condition variable). Thread-local: the child
-+ * has its own TLS block (lot_clone.c) but shares every global with the parent.
++ * has its own TLS block (sysroot/wasm_clone.c) but shares every global with the parent.
 + */
 +static _Thread_local struct System *g_lot_vfork_parent;
 +
