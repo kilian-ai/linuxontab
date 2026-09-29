@@ -104,9 +104,9 @@ table), sharing only the guest page tables, and its own `Machine`. Details:
 **Needs the worker to keep `CLONE_VM`:** worker.ts turns `CLONE_VM|CLONE_VFORK`
 into a copy for every asyncify module (old musl __clone left the child on
 the parent's stack). It now skips that for modules exporting
-`__lot_clone_sets_sp`, which lot_clone.c does. That worker.ts change was made
-by the parallel SA_SIGINFO-compat session and was NOT yet committed when this
-was verified (2026-09-29).
+`__lot_clone_sets_sp`, which lot_clone.c does (worker.ts change committed in
+6e583e7 together with the SA_SIGINFO compat, which also makes lot_sigaction.c
+unnecessary on that runtime; it is kept so older runtimes still work).
 
 Verified (threaded build, `spawntest.c`, `forkthreads.c`): libuv's vfork
 probe sees the child's write; posix_spawn with a dup2 into a pipe of a WASM

@@ -23,7 +23,9 @@ export LOT_CLANG_BIN="$CLANG" LOT_SYSROOT_DIR="$SYSROOT" LOT_CRT1="$SYSROOT/lib/
        LOT_BUILTINS="$SYSROOT/lib/clang/19/lib/wasm32-unknown-linux-musl/libclang_rt.builtins.a"
 export LOT_LDFLAGS="-nostdlib -static -Wl,--import-memory -Wl,--export-memory -Wl,--export-table \
  -Wl,--export=__heap_base -Wl,--export=__data_end -Wl,--shared-memory -Wl,--max-memory=268435456 \
- -Wl,-z,stack-size=8388608"
+ -Wl,-z,stack-size=8388608 -Wl,--table-base=2"
+# --table-base=2: a signal handler at function-table index 1 is SIG_IGN to the
+# kernel (a SIGCHLD handler there makes children auto-reap: waitpid -> ECHILD)
 printf '#!/bin/sh\nexec %s --format=gnu "$@"\n' "$LLVM_AR" > "$W/bin/ar"; chmod +x "$W/bin/ar"
 export CC="$REPO/sysroot/lot-cc.sh" AR="$W/bin/ar"
 
