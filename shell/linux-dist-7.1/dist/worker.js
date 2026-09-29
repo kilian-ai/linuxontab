@@ -303,6 +303,107 @@ function read_wasm_memories(module) {
   }
   return memories;
 }
+function skip_imports(bytes) {
+  let globals = 0;
+  const count = bytes.u32();
+  for (let i = 0; i < count; i++) {
+    bytes.span();
+    bytes.span();
+    switch (bytes.byte()) {
+      case 0:
+        bytes.u32();
+        break;
+      case 1:
+        skip_reference_type(bytes);
+        skip_limits(bytes);
+        break;
+      case 2:
+        read_memory_type(bytes);
+        break;
+      case 3:
+        globals++;
+        skip_value_type(bytes);
+        bytes.byte();
+        break;
+      case 4:
+        bytes.byte();
+        bytes.u32();
+        break;
+      default:
+        bytes.fail("unknown import type");
+    }
+  }
+  return globals;
+}
+function leb_u32(value) {
+  const out = [];
+  do {
+    let byte = value & 127;
+    value >>>= 7;
+    if (value) byte |= 128;
+    out.push(byte);
+  } while (value);
+  return out;
+}
+function export_stack_pointer(module, name) {
+  const bytes = new Cursor(module);
+  for (let i = 0; i < 8; i++) bytes.byte();
+  let imported_globals = 0;
+  let stack_pointer_ok = false;
+  let exports = null;
+  while (!bytes.done) {
+    const start2 = bytes.offset;
+    const id = bytes.byte();
+    const section = bytes.span();
+    if (id === 2) {
+      imported_globals = skip_imports(section);
+    } else if (id === 6) {
+      if (section.u32() === 0) return null;
+      if (section.byte() !== 127 || section.byte() !== 1 || section.byte() !== 65) return null;
+      let value = 0;
+      let shift = 0;
+      let byte;
+      do {
+        byte = section.byte();
+        value |= (byte & 127) << shift;
+        shift += 7;
+      } while (byte & 128 && shift < 35);
+      if (section.byte() !== 11) return null;
+      stack_pointer_ok = value > 0 && (value & 15) === 0;
+    } else if (id === 7) {
+      exports = { start: start2, end: bytes.offset, body: section };
+    }
+  }
+  if (imported_globals !== 0 || !stack_pointer_ok || !exports) return null;
+  const body = exports.body;
+  const count = body.u32();
+  const entries_start = body.offset;
+  for (let i = 0; i < count; i++) {
+    if (body.span().text() === name) return null;
+    body.byte();
+    body.u32();
+  }
+  const encoder = new TextEncoder();
+  const encoded_name = encoder.encode(name);
+  const old_entries = module.subarray(entries_start, body.offset);
+  const new_body = [
+    ...leb_u32(count + 1),
+    ...old_entries,
+    ...leb_u32(encoded_name.length),
+    ...encoded_name,
+    3,
+    // global
+    0
+    // index 0: __stack_pointer
+  ];
+  const header = [7, ...leb_u32(new_body.length)];
+  const out = new Uint8Array(module.length - (exports.end - exports.start) + header.length + new_body.length);
+  out.set(module.subarray(0, exports.start), 0);
+  out.set(header, exports.start);
+  out.set(new_body, exports.start + header.length);
+  out.set(module.subarray(exports.end), exports.start + header.length + new_body.length);
+  return out;
+}
 
 // src/lot/wali-bridge.js
 function makeWaliImports({ memory, kernel, syscall, log }) {
@@ -1043,6 +1144,10 @@ var SIGCHLD = 17;
 var CLONE_VFORK = 16384;
 var CLONE_VM = 256;
 var FORK_SCRATCH_BYTES = 4 * 1024 * 1024;
+var COMPAT_SP_EXPORT = "__lot_compat_stack_pointer";
+var SIGINFO_BYTES = 128;
+var UCONTEXT_BYTES = 176;
+var has_siginfo_trampoline_abi = (module) => WebAssembly.Module.imports(module).some((i) => i.module === "linux" && i.name === "copy_siginfo");
 function user_imports({
   kernel_memory,
   get_kernel_instance,
@@ -1152,7 +1257,7 @@ function user_imports({
     const kernel_instance = get_kernel_instance();
     const linux_syscall = (nr, arg0, arg1, arg2, arg3, arg4, arg5) => {
       if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
-      if (nr === NR_CLONE && arg2 & CLONE_VFORK && arg2 & CLONE_VM && asyncify()?.asyncify_get_state) {
+      if (nr === NR_CLONE && arg2 & CLONE_VFORK && arg2 & CLONE_VM && asyncify()?.asyncify_get_state && !instance?.exports?.__lot_clone_sets_sp) {
         arg2 &= ~CLONE_VM;
       }
       const original_instance = instance;
@@ -1258,6 +1363,14 @@ function user_imports({
           module = new WebAssembly.Module(bytes);
           if (!user_module_imports_supported(module)) {
             return -8;
+          }
+          if (!has_siginfo_trampoline_abi(module)) {
+            let patched = null;
+            try {
+              patched = export_stack_pointer(bytes, COMPAT_SP_EXPORT);
+            } catch {
+            }
+            if (patched) module = new WebAssembly.Module(patched);
           }
           minimum = Number(memory_import.type.minimum);
           declared_max = Number(memory_import.type.maximum);
@@ -1396,9 +1509,41 @@ function user_imports({
         f(sig);
       },
       call_siginfo_handler(trampoline, fn, sig) {
-        assert(instance);
+        assert(instance && context);
         const { __indirect_function_table } = instance.exports;
         assert(__indirect_function_table instanceof WebAssembly.Table, "Invalid function table");
+        if (!has_siginfo_trampoline_abi(context.module)) {
+          const handler = __indirect_function_table.get(fn >>> 0);
+          assert(typeof handler === "function" && handler.length === 3, "Invalid siginfo handler");
+          const kernel = get_kernel_instance().exports;
+          const stack_pointer = instance.exports[COMPAT_SP_EXPORT];
+          if (!(stack_pointer instanceof WebAssembly.Global)) {
+            try {
+              handler(sig, 0, 0);
+            } finally {
+              kernel.clear_siginfo();
+            }
+            return 0;
+          }
+          const saved = stack_pointer.value >>> 0;
+          if (saved < SIGINFO_BYTES + UCONTEXT_BYTES + 16) return -14;
+          const frame = saved - SIGINFO_BYTES - UCONTEXT_BYTES & ~15;
+          const info = frame;
+          const ucontext = frame + SIGINFO_BYTES;
+          const zero = memory_bytes(context.memory, ucontext, UCONTEXT_BYTES);
+          if (!zero) return -14;
+          zero.fill(0);
+          stack_pointer.value = frame;
+          try {
+            const result = kernel.copy_siginfo(info);
+            if (result !== 0) return result;
+            handler(sig, info, ucontext);
+            return 0;
+          } finally {
+            stack_pointer.value = saved;
+            kernel.clear_siginfo();
+          }
+        }
         const f = __indirect_function_table.get(trampoline >>> 0);
         assert(typeof f === "function" && f.length === 2, "Invalid siginfo trampoline");
         siginfo_copy_results.push(null);

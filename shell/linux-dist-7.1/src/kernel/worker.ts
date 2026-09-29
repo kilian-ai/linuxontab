@@ -3,7 +3,7 @@
 import { listen_endpoint, post_endpoint } from "./endpoint.ts";
 import { platform } from "./platform.ts";
 import { assert } from "./util.ts";
-import { read_wasm_memories } from "./wasm_binary.ts";
+import { export_stack_pointer, read_wasm_memories } from "./wasm_binary.ts";
 // LinuxOnTab: WALI (Rust) host imports — see src/lot/wali-bridge.js.
 // @ts-ignore plain JS module
 import { makeWaliImports } from "../lot/wali-bridge.js";
@@ -78,6 +78,22 @@ const SIGCHLD = 17;
 const CLONE_VFORK = 0x4000;
 const CLONE_VM = 0x100;
 const FORK_SCRATCH_BYTES = 4 * 1024 * 1024; // legacy binaries without their own buffer
+
+// Pre-7.1 SA_SIGINFO compat. 7.1's musl installs its __siginfo_trampoline as
+// sa_restorer, and the kernel delivers SA_SIGINFO signals by calling
+// trampoline(fn, sig), which fetches the siginfo through linux.copy_siginfo.
+// The old LinuxOnTab sysroot (every shipped package) predates that ABI: it
+// never imports copy_siginfo and its sa_restorer is 0 or __restore_rt, so the
+// delivery was rejected and the process died on e.g. its first SIGCHLD. For
+// those modules the host plays the trampoline itself: it pushes a frame onto
+// the interrupted thread's shadow stack, copies the siginfo there and calls
+// the three-argument handler from JS (a call_indirect through a mismatched
+// type would trap; a JS call binds the real (i32, i32, i32) signature).
+const COMPAT_SP_EXPORT = "__lot_compat_stack_pointer";
+const SIGINFO_BYTES = 128;
+const UCONTEXT_BYTES = 176; // old sysroot sizeof(ucontext_t) = 168, 16-byte rounded
+const has_siginfo_trampoline_abi = (module: WebAssembly.Module) =>
+  WebAssembly.Module.imports(module).some((i) => i.module === "linux" && i.name === "copy_siginfo");
 
 export interface ForkRewind {
   bufPtr: number;
@@ -258,7 +274,10 @@ const NR_WASM_GET_ARGS = 245;
       // /etc/rc skipped starting ?image= services). These binaries export no
       // __stack_pointer to relocate the child, so give it its own copy of the
       // memory, as the 6.1 host did: drop CLONE_VM, keep the vfork wait.
-      if (nr === NR_CLONE && (arg2 & CLONE_VFORK) && (arg2 & CLONE_VM) && asyncify()?.asyncify_get_state) {
+      // Binaries whose __clone moves the child onto its own stack export
+      // __lot_clone_sets_sp and keep the real shared-memory vfork (the kernel
+      // refuses a copying clone while other threads share the mm).
+      if (nr === NR_CLONE && (arg2 & CLONE_VFORK) && (arg2 & CLONE_VM) && asyncify()?.asyncify_get_state && !(instance?.exports as any)?.__lot_clone_sets_sp) {
         arg2 &= ~CLONE_VM;
       }
       const original_instance = instance;
@@ -385,6 +404,15 @@ const NR_WASM_GET_ARGS = 245;
           module = new WebAssembly.Module(bytes);
           if (!user_module_imports_supported(module)) {
             return -8; // exec format error
+          }
+          // Pre-7.1 binaries have no siginfo trampoline; expose their stack
+          // pointer so call_siginfo_handler can build the siginfo frame.
+          if (!has_siginfo_trampoline_abi(module)) {
+            let patched: Uint8Array | null = null;
+            try {
+              patched = export_stack_pointer(bytes, COMPAT_SP_EXPORT);
+            } catch {}
+            if (patched) module = new WebAssembly.Module(patched);
           }
 
           minimum = Number(memory_import.type.minimum);
@@ -554,10 +582,47 @@ const NR_WASM_GET_ARGS = 245;
         f(sig);
       },
       call_siginfo_handler(trampoline, fn, sig) {
-        assert(instance);
+        assert(instance && context);
 
         const { __indirect_function_table } = instance.exports;
         assert(__indirect_function_table instanceof WebAssembly.Table, "Invalid function table");
+
+        if (!has_siginfo_trampoline_abi(context.module)) {
+          const handler = __indirect_function_table.get(fn >>> 0);
+          assert(typeof handler === "function" && handler.length === 3, "Invalid siginfo handler");
+          const kernel = get_kernel_instance().exports;
+          const stack_pointer = (instance.exports as Record<string, unknown>)[COMPAT_SP_EXPORT];
+          if (!(stack_pointer instanceof WebAssembly.Global)) {
+            // Not a wasm-ld layout we recognise: no frame to build, so the
+            // handler gets what the 6.1 host would have given it.
+            try {
+              handler(sig, 0, 0);
+            } finally {
+              kernel.clear_siginfo();
+            }
+            return 0;
+          }
+          const saved = stack_pointer.value >>> 0;
+          if (saved < SIGINFO_BYTES + UCONTEXT_BYTES + 16) return -14; // EFAULT
+          const frame = (saved - SIGINFO_BYTES - UCONTEXT_BYTES) & ~15;
+          const info = frame;
+          const ucontext = frame + SIGINFO_BYTES;
+          const zero = memory_bytes(context.memory, ucontext, UCONTEXT_BYTES);
+          if (!zero) return -14; // EFAULT
+          zero.fill(0);
+          stack_pointer.value = frame;
+          try {
+            const result = kernel.copy_siginfo(info);
+            if (result !== 0) return result;
+            handler(sig, info, ucontext);
+            return 0;
+          } finally {
+            // Also on a non-local exit: the frame that catches it restores
+            // its own SP, and every frame above the interrupted one is gone.
+            stack_pointer.value = saved;
+            kernel.clear_siginfo();
+          }
+        }
 
         const f = __indirect_function_table.get(trampoline >>> 0);
         assert(typeof f === "function" && f.length === 2, "Invalid siginfo trampoline");

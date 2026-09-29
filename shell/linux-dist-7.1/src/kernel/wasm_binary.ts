@@ -246,3 +246,118 @@ export function read_wasm_memories(module: Uint8Array): WasmMemories {
 
   return memories;
 }
+
+// LinuxOnTab: pre-7.1 userland compat. Binaries built against the old
+// LinuxOnTab musl sysroot export neither __stack_pointer nor a siginfo
+// trampoline, yet the host must carve a siginfo_t out of the interrupted
+// thread's stack to call their SA_SIGINFO handlers (see worker.ts). wasm-ld
+// always defines __stack_pointer as the first global of a non-PIC module, so
+// re-export that global under `name`. Returns null (leave the module alone)
+// unless the layout is exactly that: no imported globals, a first global of
+// type `mut i32` initialised by a 16-byte aligned i32.const, and an existing
+// export section that does not already use `name`.
+
+function skip_imports(bytes: Cursor): number {
+  let globals = 0;
+  const count = bytes.u32();
+  for (let i = 0; i < count; i++) {
+    bytes.span();
+    bytes.span();
+    switch (bytes.byte()) {
+      case 0x00:
+        bytes.u32();
+        break;
+      case 0x01:
+        skip_reference_type(bytes);
+        skip_limits(bytes);
+        break;
+      case 0x02:
+        read_memory_type(bytes);
+        break;
+      case 0x03:
+        globals++;
+        skip_value_type(bytes);
+        bytes.byte();
+        break;
+      case 0x04:
+        bytes.byte();
+        bytes.u32();
+        break;
+      default:
+        bytes.fail("unknown import type");
+    }
+  }
+  return globals;
+}
+
+function leb_u32(value: number): number[] {
+  const out: number[] = [];
+  do {
+    let byte = value & 0x7f;
+    value >>>= 7;
+    if (value) byte |= 0x80;
+    out.push(byte);
+  } while (value);
+  return out;
+}
+
+export function export_stack_pointer(module: Uint8Array, name: string): Uint8Array | null {
+  const bytes = new Cursor(module);
+  for (let i = 0; i < 8; i++) bytes.byte();
+
+  let imported_globals = 0;
+  let stack_pointer_ok = false;
+  let exports: { start: number; end: number; body: Cursor } | null = null;
+  while (!bytes.done) {
+    const start = bytes.offset;
+    const id = bytes.byte();
+    const section = bytes.span();
+    if (id === 2) {
+      imported_globals = skip_imports(section);
+    } else if (id === 6) {
+      if (section.u32() === 0) return null;
+      // globaltype (i32, var) then a constant expression `i32.const n; end`.
+      if (section.byte() !== 0x7f || section.byte() !== 0x01 || section.byte() !== 0x41) return null;
+      let value = 0;
+      let shift = 0;
+      let byte: number;
+      do {
+        byte = section.byte();
+        value |= (byte & 0x7f) << shift;
+        shift += 7;
+      } while (byte & 0x80 && shift < 35);
+      if (section.byte() !== 0x0b) return null;
+      stack_pointer_ok = value > 0 && (value & 15) === 0;
+    } else if (id === 7) {
+      exports = { start, end: bytes.offset, body: section };
+    }
+  }
+  if (imported_globals !== 0 || !stack_pointer_ok || !exports) return null;
+
+  const body = exports.body;
+  const count = body.u32();
+  const entries_start = body.offset;
+  for (let i = 0; i < count; i++) {
+    if (body.span().text() === name) return null;
+    body.byte();
+    body.u32();
+  }
+  const encoder = new TextEncoder();
+  const encoded_name = encoder.encode(name);
+  const old_entries = module.subarray(entries_start, body.offset);
+  const new_body = [
+    ...leb_u32(count + 1),
+    ...old_entries,
+    ...leb_u32(encoded_name.length),
+    ...encoded_name,
+    0x03, // global
+    0x00, // index 0: __stack_pointer
+  ];
+  const header = [0x07, ...leb_u32(new_body.length)];
+  const out = new Uint8Array(module.length - (exports.end - exports.start) + header.length + new_body.length);
+  out.set(module.subarray(0, exports.start), 0);
+  out.set(header, exports.start);
+  out.set(new_body, exports.start + header.length);
+  out.set(module.subarray(exports.end), exports.start + header.length + new_body.length);
+  return out;
+}
