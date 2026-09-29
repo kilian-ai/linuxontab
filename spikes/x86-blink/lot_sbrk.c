@@ -4,8 +4,9 @@
  * passes that count to memory.grow (64 KiB pages): linear memory grows 4x
  * faster than the heap, hits the 256 MiB maximum, and every dlmalloc port
  * tops out at ~54 MiB of heap. toolchain/patches/musl-brk-wasm-page-units.patch
- * fixes it but never made it into toolchain/musl-sysroot-fixed. Linked before
- * -lc, this replaces musl's sbrk for dlmalloc (the only caller). */
+ * fixes it; toolchain/musl-sysroot-fixed includes it since 2026-09-29, so this
+ * is only needed against an older sysroot. Linked before -lc, it replaces
+ * musl's sbrk for dlmalloc (the only caller). */
 #include <errno.h>
 #include <stdint.h>
 #include <unistd.h>

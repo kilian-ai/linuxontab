@@ -11,6 +11,12 @@
 # binary linked against it, and eventually malloc's own earlier meta areas.
 # See toolchain/patches/musl-mallocng-alloc-meta-sbrk.patch for the fix.
 #
+# Also applies toolchain/patches/musl-brk-wasm-page-units.patch: the port's
+# _brk computed its increment in 16 KiB musl pages but passed that count to
+# memory.grow (64 KiB wasm pages), so linear memory grew 4x faster than the
+# heap and hit the 256 MiB maximum with only ~54 MiB of brk heap in use
+# (every sbrk-only dlmalloc port — ffmpeg, netsurf, … — was capped there).
+#
 # This script replays the original Nix derivations (musl.drv + musl-sysroot
 # .drv) outside Nix, using the exact same toolchain store paths, with the
 # patch applied. Output: toolchain/musl-sysroot-fixed/ — byte-identical to
@@ -46,6 +52,9 @@ chmod -R u+w "$WORK/src"
 echo "==> Applying alloc_meta patch"
 patch -p1 -d "$WORK/src" < "$REPO_ROOT/toolchain/patches/musl-mallocng-alloc-meta-sbrk.patch"
 
+echo "==> Applying brk wasm-page-units patch"
+patch -p1 -d "$WORK/src" < "$REPO_ROOT/toolchain/patches/musl-brk-wasm-page-units.patch"
+
 echo "==> Building musl (wasm32)"
 MUSL_OUT="$WORK/out"
 mkdir -p "$MUSL_OUT"
@@ -78,6 +87,18 @@ bad = bytes.fromhex('417f460d0341808002210 2'.replace(' ', ''))
 if data.count(bad):
     sys.exit("ERROR: buggy alloc_meta pattern still present in libc.a")
 print("OK: libc.a is free of the hardcoded-0x8000 alloc_meta bug")
+# memory.size ; i32.const 14 ; i32.shl — the old _brk's `memory_size * PAGE_SIZE`
+if data.count(bytes.fromhex('3f00410e74')):
+    sys.exit("ERROR: 16 KiB-page _brk pattern still present in libc.a")
+print("OK: libc.a _brk grows memory in 64 KiB wasm pages")
 PY
+
+# toolchain/cpp-sysroot-fixed carries its own copy of libc.a (plus libc++);
+# keep it in step when rebuilding the default sysroot.
+CPP_SYSROOT="$REPO_ROOT/toolchain/cpp-sysroot-fixed"
+if [ -z "${LOT_SYSROOT_OUT:-}" ] && [ -f "$CPP_SYSROOT/lib/libc.a" ]; then
+    cp "$OUT/lib/libc.a" "$CPP_SYSROOT/lib/libc.a"
+    echo "==> Updated $CPP_SYSROOT/lib/libc.a"
+fi
 
 echo "Done: $OUT"

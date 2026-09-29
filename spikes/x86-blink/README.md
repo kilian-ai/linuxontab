@@ -38,8 +38,8 @@ Register (after mounting binfmt_misc):
 - `lot_sbrk.c`: **platform bug** — the sysroot musl `_brk` grows wasm memory
   4x faster than the heap (16 KiB vs 64 KiB page units), so every dlmalloc port
   tops out at ~54 MB. `toolchain/patches/musl-brk-wasm-page-units.patch` fixes
-  it but was never built into `toolchain/musl-sysroot-fixed` (only python3
-  byte-patches it). With this shim: 243 MB.
+  it; `toolchain/musl-sysroot-fixed` includes it since 2026-09-29 (memprobe:
+  250 MB), so the shim is redundant with a current sysroot. With it: 243 MB.
 - `lot_sigaction.c`: **platform bug** — on the 7.1 kernel, SA_SIGINFO handlers
   in pre-7.1-musl binaries kill the process ("Invalid siginfo trampoline": the
   kernel calls sa_restorer as a 2-arg trampoline, old musl never sets one).
