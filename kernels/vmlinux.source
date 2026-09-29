@@ -1,5 +1,5 @@
 source=https://github.com/kilian-ai/linux
 branch=wasm-linuxontab
-commit=de5f5636b28322fd5b10a3b18b8053384e7122d2
+commit=e4b3cd632a76cc8b1e5ec71b8ce9917249f58cf9
 license=GPL-2.0 WITH Linux-syscall-note
-build=make tools/wasm/vmlinux.wasm (llvm@19), .linux.initramfs replaced by the 512-byte stub; initramfs.cpio is fetched separately
+build=make tools/wasm/vmlinux.wasm (llvm@19); .linux.initramfs replaced by the 512-byte stub, initramfs.cpio is fetched separately
