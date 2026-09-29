@@ -856,11 +856,11 @@
       "status": "available"
     },
     "netsurf": {
-      "version": "3.11-r1",
-      "description": "NetSurf 3.11 web browser on the X desktop \u2014 HTML/CSS, HTTPS, PNG/JPEG/GIF/SVG, no JavaScript (run xtiny first)",
-      "url": "https://linuxontab.com/packages/netsurf-3.11-r1.tar.gz",
-      "size": 2999412,
-      "sha256": "19816bf96cf564df9af60e3cc179c07430e14452f83b95875290b87f7ebf8974",
+      "version": "3.11-r3",
+      "description": "NetSurf 3.11 web browser on the X desktop \u2014 HTML/CSS, HTTPS, PNG/JPEG/GIF/SVG, basic JavaScript (run xtiny first)",
+      "url": "https://linuxontab.com/packages/netsurf-3.11-r3.tar.gz",
+      "size": 4113778,
+      "sha256": "8344290cd217ca23ff24c37bb543b2b8502f0325d2dad280cc074120f1acd656",
       "bins": [
         "netsurf"
       ],
