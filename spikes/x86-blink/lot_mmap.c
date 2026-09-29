@@ -51,7 +51,17 @@ void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off) {
   (void)prot;
   if (!len || (flags & MAP_FIXED)) { errno = EINVAL; return MAP_FAILED; }
   if (addr && (flags & MAP_FIXED_NOREPLACE)) { errno = EEXIST; return MAP_FAILED; }
-  if (posix_memalign(&p, 4096, len)) { errno = ENOMEM; return MAP_FAILED; }
+  if (posix_memalign(&p, 4096, len)) {
+    /* say so: Blink turns a failed page allocation into a guest SIGSEGV at a
+     * random place, which otherwise looks like memory corruption */
+    static int warned;
+    if (!warned++) {
+      static const char m[] = "blink: host out of memory (wasm32 heap full)\n";
+      write(2, m, sizeof(m) - 1);
+    }
+    errno = ENOMEM;
+    return MAP_FAILED;
+  }
   if (flags & MAP_ANON) {
     memset(p, 0, len);
     track(p);
@@ -82,3 +92,7 @@ int madvise(void *a, size_t n, int f) { (void)a; (void)n; (void)f; return 0; }
 int posix_madvise(void *a, size_t n, int f) { (void)a; (void)n; (void)f; return 0; }
 int mlock(const void *a, size_t n) { (void)a; (void)n; return 0; }
 int munlock(const void *a, size_t n) { (void)a; (void)n; return 0; }
+
+/* Marker for the worker: keep this module's declared memory maximum (1 GiB,
+ * see build.sh) instead of clamping it to 256 MiB like other C programs. */
+__attribute__((export_name("__lot_big_memory"))) void __lot_big_memory(void) {}

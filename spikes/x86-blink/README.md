@@ -141,19 +141,34 @@ What it took (all in blink-lot.patch, behind `LOT_SYSCALLS`):
   was clobbered by vfork children resetting their handlers before exec, so
   the parent lost SIGCHLD. Needs a runtime with 6e583e7.
 
-**Open:** the fork-in-a-threaded-guest path (LOT_VFORK with the stack-window
-snapshot) is the prime suspect for the remaining async child_process hang /
-garbage-pointer SIGSEGV: native Blink (real fork) passes. Likely cause: other
-Node threads write into the main thread's stack during the child's run and
-the restore overwrites them. Proper fix: give the fork child copy-on-write
-pages for the stack window in its own page-table path, instead of snapshot +
-restore. Node 22 (Alpine 3.21) fails earlier in ld-musl ("unsupported
-relocation type 1025"), possibly another emulation bug.
+Later fixes (2026-09-29):
+- **copy-on-write stack window for fork in a threaded guest**: the child gets
+  its own page-table root and private copies of the committed pages in
+  [rsp-128, +256 KiB), copying each intermediate table once; everything else
+  stays shared (vfork). Replaces the snapshot + restore, which also discarded
+  writes the parent's other threads made to that window.
+- **g_hostpages race**: nolinear Blink appended to its host-page index array
+  without a lock, so two threads could get the same index (two guest pages on
+  one host page). Serialized now; the array starts at 1M entries so realloc
+  (which readers still race with) almost never moves it.
+- **memory cap**: Node under Blink needs more than the worker's 256 MiB per
+  process ("blink: host out of memory (wasm32 heap full)" is now printed; a
+  failed page allocation otherwise shows up as a random guest SIGSEGV). Blink
+  declares 1 GiB and exports `__lot_big_memory`; worker.ts keeps the declared
+  maximum for modules with that export (other C programs stay at 256 MiB).
+
+Result: `nodetest.js` passes **11/11 in the guest** (release: 3.7 s of JS
+time, async child_process included; the debug build too). Still open: an
+intermittent crash at the TCP step in the release build (1 of 2 runs): a guest
+access to unmapped memory, after which Blink hits `unassert(m->canhalt)` in
+HaltMachine (release builds turn that into a wasm `unreachable`). The debug
+build hasn't shown it, so it looks timing-dependent. Separately, the guest's
+hush does not reap a background job whose Blink process died (stays Z).
 
 ## Not done / next
 
-- Node: copy-on-write stack window for fork-in-threaded (above), then a
-  `node` wrapper/package (always `--jitless`, BLINK_OVERLAYS, binfmt)
+- Node: the intermittent release-build crash (above), then a `node`
+  wrapper/package (always `--jitless`, BLINK_OVERLAYS, binfmt)
 - speed: a wasm32 "offset-linear" memory mode, asyncify only the syscall path,
   then a block JIT that compiles hot x86 code to wasm modules
 - packaging: blink as an apk package + binfmt registration in /etc/rc + an

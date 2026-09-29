@@ -23,7 +23,7 @@ CC1="$CLANG -target wasm32 --sysroot=$SYSROOT"
 export LOT_CLANG_BIN="$CLANG" LOT_SYSROOT_DIR="$SYSROOT" LOT_CRT1="$SYSROOT/lib/crt1.o" \
        LOT_BUILTINS="$SYSROOT/lib/clang/19/lib/wasm32-unknown-linux-musl/libclang_rt.builtins.a"
 export LOT_LDFLAGS="-nostdlib -static -Wl,--import-memory -Wl,--export-memory -Wl,--export-table \
- -Wl,--export=__heap_base -Wl,--export=__data_end -Wl,--shared-memory -Wl,--max-memory=268435456 \
+ -Wl,--export=__heap_base -Wl,--export=__data_end -Wl,--shared-memory -Wl,--max-memory=1073741824 \
  -Wl,-z,stack-size=8388608 -Wl,--table-base=2"
 # --table-base=2: a signal handler at function-table index 1 is SIG_IGN to the
 # kernel (a SIGCHLD handler there makes children auto-reap: waitpid -> ECHILD)

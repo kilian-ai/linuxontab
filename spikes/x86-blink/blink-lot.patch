@@ -1,3 +1,35 @@
+diff --git a/blink/memorymalloc.c b/blink/memorymalloc.c
+index 7d5cc93..464beef 100644
+--- a/blink/memorymalloc.c
++++ b/blink/memorymalloc.c
+@@ -74,14 +74,25 @@ static u64 TrackHostPage(u8 *ptr) {
+   if (HasLinearMapping()) {
+     return (uintptr_t)ptr;
+   } else {
++    // LinuxOnTab: nolinear mode (every 32-bit host) appended here without a
++    // lock, so two threads allocating at once could get the same index: two
++    // guest pages aliasing one host page (threaded guests like Node crashed
++    // on garbage pointers). Appends are serialized now. Readers (FindHostPage)
++    // still index the array without a lock, so a realloc that moves it can
++    // race with them: start big (1M entries) so that almost never happens.
++    // (Growing by copy without ever freeing the old array broke page lookups
++    // on the wasm build for reasons not yet understood; realloc is kept.)
++    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
++    pthread_mutex_lock(&lock);
+     if (g_hostpages.n == g_hostpages.c) {
+-      g_hostpages.c += 1;
+-      g_hostpages.c += g_hostpages.c >> 1;
++      g_hostpages.c = g_hostpages.c ? g_hostpages.c * 2 : 1 << 20;
+       g_hostpages.p =
+           realloc(g_hostpages.p, g_hostpages.c * sizeof(*g_hostpages.p));
++      unassert(g_hostpages.p);
+     }
+     entry = g_hostpages.n++;
+     g_hostpages.p[entry] = ptr;
++    pthread_mutex_unlock(&lock);
+     return entry << 12;
+   }
+ }
 diff --git a/blink/signal.c b/blink/signal.c
 index 4fe7ab3..b9ca37e 100644
 --- a/blink/signal.c
@@ -57,7 +89,7 @@ index 19bde1b..b6c04b3 100644
 +  WriteMemWord(GetModrmRegisterWordPointerWrite(A, osz), rde, osz, x);
  }
 diff --git a/blink/syscall.c b/blink/syscall.c
-index 34cc01c..845b890 100644
+index 34cc01c..7ccfa52 100644
 --- a/blink/syscall.c
 +++ b/blink/syscall.c
 @@ -349,10 +349,17 @@ static void ClearChildTid(struct Machine *m) {
@@ -78,7 +110,7 @@ index 34cc01c..845b890 100644
  #ifndef NDEBUG
      if (FLAG_statistics) {
        PrintStats();
-@@ -399,10 +406,225 @@ _Noreturn void SysExit(struct Machine *m, int rc) {
+@@ -399,10 +406,315 @@ _Noreturn void SysExit(struct Machine *m, int rc) {
  #endif
  }
  
@@ -98,14 +130,18 @@ index 34cc01c..845b890 100644
 + * cloned from the caller. Guest vfork() / clone(CLONE_VM|CLONE_VFORK)
 + * (posix_spawn) are exactly this. A plain guest fork() in a threaded process
 + * takes the same path, but its child resumes on the parent's x86 stack and
-+ * would overwrite the parent's fork()/_Fork() frames on its way to exec, so
-+ * that stack window is snapshotted first and restored before the parent
-+ * resumes: the parent never sees the child's writes there, as with fork().
++ * would overwrite the parent's fork()/_Fork() frames on its way to exec. So
++ * the child gets private copies of that stack window through its own page
++ * table path (LotCowStack): copy-on-fork for the pages it will write, shared
++ * memory for everything else. An earlier snapshot + restore of the window
++ * also threw away writes the parent's OTHER threads made there meanwhile
++ * (Node hung or crashed in async child_process).
 + */
 +int __clone(int (*)(void *), void *, int, void *, ...);
 +
 +#define LOT_VFORK_HOST_STACK (1 << 20)
-+#define LOT_VFORK_SAVE_MAX (256 * 1024)
++#define LOT_VFORK_COW_MAX (256 * 1024)  // stack window above rsp
++#define LOT_VFORK_COW_PAGES 512           // tables + leaves allocated for it
 +
 +struct LotVforkArg {
 +  struct System *parent;
@@ -190,29 +226,93 @@ index 34cc01c..845b890 100644
 +  }
 +}
 +
++struct LotCow {
++  int n;
++  u8 *page[LOT_VFORK_COW_PAGES];
++  bool table[LOT_VFORK_COW_PAGES];
++};
++
++static u8 *LotCowAlloc(struct System *s, struct LotCow *c, bool table,
++                       u64 *entry) {
++  u64 e;
++  u8 *p;
++  if (c->n == LOT_VFORK_COW_PAGES) return 0;
++  e = table ? AllocatePageTable(s) : AllocateAnonymousPage(s);
++  if (e == (u64)-1) return 0;
++  p = GetPageAddress(s, e, false);
++  c->page[c->n] = p;
++  c->table[c->n++] = table;
++  *entry = e;
++  return p;
++}
++
++static bool LotCowOwns(struct LotCow *c, u8 *p) {
++  for (int i = 0; i < c->n; ++i) {
++    if (c->page[i] == p) return true;
++  }
++  return false;
++}
++
++static void LotCowFree(struct System *s, struct LotCow *c) {
++  for (int i = 0; i < c->n; ++i) {
++    FreeAnonymousPage(s, c->page[i]);
++    s->rss -= 1;
++    if (c->table[i]) s->memstat.tables -= 1;
++  }
++  c->n = 0;
++}
++
++// Point s2 at its own page-table root and give it private copies of every
++// committed page in [lo, hi), copying each intermediate table on the way the
++// first time the walk goes through it. Pages outside the window, and pages in
++// it that are only reserved, stay shared (a reserved page the child commits
++// lands in its private table; that page is not reclaimed afterwards).
++static bool LotCowStack(struct System *s, struct System *s2, u64 lo, u64 hi,
++                        struct LotCow *c) {
++  u64 root, page, e, ne;
++  u8 *tbl, *slot, *np;
++  unsigned level;
++  if (!(tbl = LotCowAlloc(s, c, true, &root))) return false;
++  memcpy(tbl, GetPageAddress(s, s->cr3, true), 4096);
++  s2->cr3 = root;
++  for (page = lo; page < hi; page += 4096) {
++    tbl = GetPageAddress(s, root, true);
++    for (level = 39;; level -= 9) {
++      slot = tbl + ((page >> level) & 511) * 8;
++      e = LoadPte(slot);
++      if (!(e & PAGE_V) || (e & PAGE_RSRV)) break;  // unmapped / uncommitted
++      if (level > 12 && (e & PAGE_PS)) break;        // huge page: stays shared
++      if (!(e & PAGE_HOST)) break;                   // real-mode memory
++      if (level == 12) {
++        if (!(np = LotCowAlloc(s, c, false, &ne))) return false;
++        memcpy(np, GetPageAddress(s, e, false), 4096);
++        StorePte(slot, (ne & PAGE_TA) | PAGE_HOST |
++                           (e & ~(PAGE_TA | PAGE_LOCKS | PAGE_MAP | PAGE_MUG |
++                                  PAGE_FILE)));
++        break;
++      }
++      if (!LotCowOwns(c, GetPageAddress(s, e, false))) {
++        if (!(np = LotCowAlloc(s, c, true, &ne))) return false;
++        memcpy(np, GetPageAddress(s, e, false), 4096);
++        StorePte(slot, (ne & PAGE_TA) | (e & ~PAGE_TA));
++        e = LoadPte(slot);
++      }
++      tbl = GetPageAddress(s, e, false);
++    }
++  }
++  return true;
++}
++
 +static int LotVfork(struct Machine *m, u64 flags, u64 stack, u64 ctid,
 +                    bool savestack) {
 +  int pid;
-+  u8 *save = 0;
-+  i64 save_at = 0;
-+  u64 save_len = 0;
 +  struct Dll *e;
 +  struct System *s = m->system, *s2;
 +  struct Machine *m2;
 +  struct LotVforkArg arg;
++  struct LotCow *cow = 0;
 +  char *hstack;
-+  if (savestack) {
-+    save_at = (Get64(m->sp) - 128) & -4096;
-+    while (save_len < LOT_VFORK_SAVE_MAX &&
-+           IsValidMemory(m, save_at + save_len, 4096, PROT_READ | PROT_WRITE)) {
-+      save_len += 4096;
-+    }
-+    if (save_len && (save = (u8 *)malloc(save_len))) {
-+      CopyFromUser(m, save, save_at, save_len);
-+    }
-+  }
 +  if (!(s2 = (struct System *)malloc(sizeof(*s2)))) {
-+    free(save);
 +    return enomem();
 +  }
 +  LOCK(&s->sig_lock);
@@ -248,10 +348,29 @@ index 34cc01c..845b890 100644
 +    }
 +    s2->exec = LotHostExec;
 +  }
++  if (savestack) {
++    u64 lo = (Get64(m->sp) - 128) & -4096;
++    bool ok;
++    if (!(cow = (struct LotCow *)calloc(1, sizeof(*cow)))) {
++      LotFreeFdsCopy(&s2->fds);
++      free(s2);
++      return enomem();
++    }
++    LOCK(&s->mmap_lock);
++    ok = LotCowStack(s, s2, lo, lo + LOT_VFORK_COW_MAX, cow);
++    UNLOCK(&s->mmap_lock);
++    if (!ok) {
++      LotCowFree(s, cow);
++      free(cow);
++      LotFreeFdsCopy(&s2->fds);
++      free(s2);
++      return enomem();
++    }
++  }
 +  if (!(m2 = NewMachine(s, m))) {
++    if (cow) LotCowFree(s, cow), free(cow);
 +    LotFreeFdsCopy(&s2->fds);
 +    free(s2);
-+    free(save);
 +    return eagain();
 +  }
 +  LOCK(&s->machines_lock);
@@ -259,6 +378,7 @@ index 34cc01c..845b890 100644
 +  UNLOCK(&s->machines_lock);
 +  m2->system = s2;
 +  dll_make_first(&s2->machines, &m2->elem);
++  ResetTlb(m2);  // NewMachine copied the parent's TLB: stale with a new cr3
 +  Put64(m2->ax, 0);
 +  if (stack) Put64(m2->sp, stack);
 +  m2->ctid = (flags & CLONE_CHILD_CLEARTID_LINUX) ? ctid : 0;
@@ -273,9 +393,11 @@ index 34cc01c..845b890 100644
 +                  CLONE_VM | CLONE_VFORK | SIGCHLD, &arg);
 +    free(hstack);  // the child has exec'd or exited: its stack is ours again
 +  }
-+  if (save) {
-+    CopyToUser(m, save_at, save, save_len);
-+    free(save);
++  if (cow) {
++    LOCK(&s->mmap_lock);
++    LotCowFree(s, cow);
++    UNLOCK(&s->mmap_lock);
++    free(cow);
 +  }
 +  LotFreeFdsCopy(&s2->fds);
 +  free(s2);
@@ -304,7 +426,7 @@ index 34cc01c..845b890 100644
    // NOTES ON THE LOCKING TOPOLOGY
    // exec_lock must come before sig_lock (see dup3)
    // exec_lock must come before fds.lock (see dup3)
-@@ -480,8 +702,12 @@ static int SysFork(struct Machine *m) {
+@@ -480,8 +792,12 @@ static int SysFork(struct Machine *m) {
  }
  
  static int SysVfork(struct Machine *m) {
@@ -317,7 +439,7 @@ index 34cc01c..845b890 100644
  }
  
  static void *OnSpawn(void *arg) {
-@@ -569,6 +795,7 @@ static int SysSpawn(struct Machine *m, u64 flags, u64 stack, u64 ptid, u64 ctid,
+@@ -569,6 +885,7 @@ static int SysSpawn(struct Machine *m, u64 flags, u64 stack, u64 ptid, u64 ctid,
    m2->spawn_sigmask = oldss;
    unassert(!pthread_attr_init(&attr));
    unassert(!pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED));
@@ -325,7 +447,7 @@ index 34cc01c..845b890 100644
    err = pthread_create(&thread, &attr, OnSpawn, m2);
    unassert(!pthread_attr_destroy(&attr));
    if (err) {
-@@ -1255,8 +1482,43 @@ static i64 SysMmap(struct Machine *m, i64 virt, u64 size, int prot, int flags,
+@@ -1255,8 +1572,43 @@ static i64 SysMmap(struct Machine *m, i64 virt, u64 size, int prot, int flags,
    return res;
  }
  
@@ -369,7 +491,7 @@ index 34cc01c..845b890 100644
    // would be nice to have
    // avoid being noisy in the logs
    // hope program has fallback for failure
-@@ -3558,6 +3820,9 @@ static int SysExecve(struct Machine *m, i64 pa, i64 aa, i64 ea) {
+@@ -3558,6 +3910,9 @@ static int SysExecve(struct Machine *m, i64 pa, i64 aa, i64 ea) {
    if (!(prog = CopyStr(m, pa))) return -1;
    if (!(argv = CopyStrList(m, aa))) return -1;
    if (!(envp = CopyStrList(m, ea))) return -1;
@@ -379,7 +501,7 @@ index 34cc01c..845b890 100644
    LOCK(&m->system->exec_lock);
    ExecveBlink(m, prog, argv, envp);
    SYS_LOGF("execve(%s)", prog);
-@@ -5304,6 +5569,45 @@ static i32 SysEpollCreate1(struct Machine *m, i32 flags) {
+@@ -5304,6 +5659,45 @@ static i32 SysEpollCreate1(struct Machine *m, i32 flags) {
    return fildes;
  }
  
@@ -425,7 +547,7 @@ index 34cc01c..845b890 100644
  static i32 SysEpollCreate(struct Machine *m, i32 size) {
    if (size <= 0) return einval();
    return SysEpollCreate1(m, 0);
-@@ -5688,6 +5992,10 @@ void OpSyscall(P) {
+@@ -5688,6 +6082,10 @@ void OpSyscall(P) {
  #ifdef HAVE_EPOLL_PWAIT1
      SYSCALL(1, 0x0D5, "epoll_create", SysEpollCreate, STRACE_1);
      SYSCALL(1, 0x123, "epoll_create1", SysEpollCreate1, STRACE_1);
