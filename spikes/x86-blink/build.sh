@@ -2,6 +2,7 @@
 # Spike: build Blink (jart/blink, x86-64 Linux user-mode emulator, ISC) as a
 # wasm32 guest binary. Output: $OUT/blink (asyncified, fork enabled).
 #   sh spikes/x86-blink/build.sh [outdir]
+#   THREADS=1 sh spikes/x86-blink/build.sh [outdir]   # guest clone()/pthreads
 # Needs the same toolchain as packages/build-package.sh (Nix clang/lld 19,
 # toolchain/musl-sysroot-fixed, binaryen wasm-opt, gmake).
 set -eu
@@ -30,21 +31,32 @@ export CC="$REPO/sysroot/lot-cc.sh" AR="$W/bin/ar"
 for f in wasm_dlmalloc wasm_ld128 wasm_clone wasm_fork; do
   $CC1 $CFLAGS0 -w -c "$REPO/sysroot/$f.c" -o "$W/objs/$f.o"
 done
-for f in lot_sbrk lot_mmap lot_sigaction; do
-  $CC1 $CFLAGS0 -c "$HERE/$f.c" -o "$W/objs/$f.o"
+for f in lot_sbrk lot_mmap lot_sigaction lot_dlmalloc_mt lot_fork lot_clone; do
+  $CC1 $CFLAGS0 -w -c "$HERE/$f.c" -o "$W/objs/$f.o"
 done
 O="$W/objs"
-export LOT_LINK_OBJS="$O/lot_sbrk.o $O/wasm_dlmalloc.o $O/wasm_ld128.o $O/wasm_clone.o $O/wasm_fork.o $O/lot_mmap.o $O/lot_sigaction.o"
+if [ "${THREADS:-0}" = 1 ]; then
+  MALLOC="$O/lot_dlmalloc_mt.o"; THREADFLAG=""
+else
+  MALLOC="$O/wasm_dlmalloc.o"; THREADFLAG="--disable-threads"
+fi
+export LOT_LINK_OBJS="$O/lot_sbrk.o $MALLOC $O/wasm_ld128.o $O/lot_clone.o $O/lot_fork.o $O/lot_mmap.o $O/lot_sigaction.o"
 
 [ -d "$W/blink" ] || git clone -q https://github.com/jart/blink.git "$W/blink"
 cd "$W/blink"
-git checkout -q "$BLINK_REV" && git checkout -q -- configure
+git checkout -q "$BLINK_REV" && git checkout -q -- configure blink/syscall.c
+# guest threads run on host pthreads: musl's 128 KB default stack is tight for
+# the asyncified interpreter, give each one 1 MB (from dlmalloc, see
+# lot_dlmalloc_mt.c for why that matters)
+perl -0pi -e 's|(  unassert\(!pthread_attr_setdetachstate\(&attr, PTHREAD_CREATE_DETACHED\)\);\n)|$1  pthread_attr_setstacksize(&attr, 1 << 20);  /* LinuxOnTab */\n|' blink/syscall.c
+grep -q "LinuxOnTab" blink/syscall.c
 # configure RUNS its probes; cross-compiling, "it linked" is the answer
 sed -i '' 's|     run "o/tool/config/${RUNPROGRAM}"; then|     test -f "o/tool/config/${RUNPROGRAM}"; then|' configure
 rm -rf o && mkdir -p o/tool && cc -o o/tool/flock tool/flock.c   # host tool
-./configure CC="$CC" AR="$AR" CFLAGS="$CFLAGS0 -g0" --disable-jit --disable-threads --static >/dev/null 2>&1
+./configure CC="$CC" AR="$AR" CFLAGS="$CFLAGS0 -g0" --disable-jit $THREADFLAG --static >/dev/null 2>&1
 sed -i '' 's|^// #define HAVE_FORK|#define HAVE_FORK|' config.h   # probe can't see our fork decl
 sed -i '' "s|^CPPFLAGS = |CPPFLAGS = -include $HERE/lot_mman.h |; s|^LDFLAGS = .*|LDFLAGS = -static -Wl,--wrap=sigaction|; s|^LDLIBS = .*|LDLIBS = -lm|" config.mk
+rm -rf o/rel/blink
 gmake -j10 MODE=rel o/rel/blink/blink
 wasm-opt --enable-exception-handling --asyncify -O3 o/rel/blink/blink -o "$OUT/blink"
 chmod +x "$OUT/blink"

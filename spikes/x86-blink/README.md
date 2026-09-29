@@ -55,9 +55,40 @@ Register (after mounting binfmt_misc):
 Asyncify (needed for fork) costs ~40-50 %. The rest is nolinear mode: every
 guest memory access walks a software TLB/page table.
 
+## Threads (`THREADS=1 sh build.sh`)
+
+Guest `clone(CLONE_THREAD)` runs each guest thread on a host pthread.
+Verified: 4 threads x 20000 atomic + mutex increments exact, condvar
+ping-pong 2000 rounds (~46 us/handoff), per-thread guest TLS (%fs), a
+sleeping thread's join value; fork + pipes + `$(...)` still work.
+Test programs: `threads.c`, `forkthreads.c`.
+
+Three more platform problems, each fixed spike-locally:
+- `lot_dlmalloc_mt.c`: musl's *internal* allocations (`__libc_malloc`:
+  pthread_create's stack + TLS) go to mallocng, whose large-block path needs
+  mmap and traps; every guest clone() died. Routed to a locked dlmalloc.
+- `lot_fork.c`: the fork child is a fresh instance rewound into fork();
+  asyncify restores locals, not globals, so it came back with
+  `__stack_pointer` at the stack top (the worker restores it only when the
+  module exports it — none do) and `__tls_base` = 0. The child now writes
+  both back from locals right after the fork syscall.
+- `lot_clone.c`: no one calls `__wasm_init_tls` for new threads, so all
+  threads of every threaded wasm program share one TLS block (native probe
+  `tlsprobe`: 3 of 4 threads saw another thread's value). `__clone` now
+  gives each thread its own block.
+
+**Open: fork in a process that already has threads.** The 7.1 kernel
+refuses a memory-copying clone while another thread shares the mm
+(`-EOPNOTSUPP`, arch/wasm/kernel/fork.c: the copy can't be made coherent
+while other workers run). Blink maps guest fork, vfork and
+`clone(CLONE_VM|CLONE_VFORK)` all to a host copying fork, and the worker
+turns CLONE_VM|CLONE_VFORK into a copy for every asyncify module, so a
+threaded guest cannot spawn children (`forkthreads.c` fails). This is what
+Node's child_process needs (libuv: posix_spawn via CLONE_VM vfork, else fork).
+
 ## Not done / next
 
-- threads (`--disable-threads`): Node needs them (V8 platform + libuv pool)
+- fork/spawn from a threaded guest (above)
 - speed: a wasm32 "offset-linear" memory mode, asyncify only the syscall path,
   then a block JIT that compiles hot x86 code to wasm modules
 - packaging: blink as an apk package + binfmt registration in /etc/rc + an

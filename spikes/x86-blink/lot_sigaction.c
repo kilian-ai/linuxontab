@@ -27,7 +27,10 @@ int __wrap_sigaction(int sig, const struct sigaction *act, struct sigaction *old
   struct sigaction a;
   sa3_t prev = (sig > 0 && sig < _NSIG) ? g_act[sig] : 0;
   int rc;
-  if (act && (act->sa_flags & SA_SIGINFO) && sig > 0 && sig < _NSIG) {
+  /* SIG_DFL/SIG_IGN with SA_SIGINFO (Blink sets the flag unconditionally)
+   * are never called, so they pass through untouched */
+  if (act && (act->sa_flags & SA_SIGINFO) && sig > 0 && sig < _NSIG &&
+      act->sa_handler != SIG_DFL && act->sa_handler != SIG_IGN) {
     a = *act;
     a.sa_flags &= ~SA_SIGINFO;
     a.sa_handler = thunk;

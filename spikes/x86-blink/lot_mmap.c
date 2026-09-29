@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sched.h>
 #include <unistd.h>
 #include "lot_mman.h"
 
@@ -17,21 +18,32 @@
  * unmap sub-ranges or pointers it computed; those are ignored (leaked). */
 static void **g_maps;
 static size_t g_nmaps, g_cmaps;
+static volatile int g_lock;   /* threaded Blink maps from several threads */
+
+static void lock(void) {
+  while (__atomic_exchange_n(&g_lock, 1, __ATOMIC_ACQUIRE)) sched_yield();
+}
+static void unlock(void) { __atomic_store_n(&g_lock, 0, __ATOMIC_RELEASE); }
 
 static void track(void *p) {
+  lock();
   if (g_nmaps == g_cmaps) {
     size_t c = g_cmaps ? g_cmaps * 2 : 256;
     void **n = realloc(g_maps, c * sizeof(*n));
-    if (!n) return;   /* untracked: never freed, never wrongly freed */
+    if (!n) { unlock(); return; }   /* untracked: never freed, never wrongly freed */
     g_maps = n; g_cmaps = c;
   }
   g_maps[g_nmaps++] = p;
+  unlock();
 }
 
 static int untrack(void *p) {
+  int found = 0;
+  lock();
   for (size_t i = g_nmaps; i-- > 0;)
-    if (g_maps[i] == p) { g_maps[i] = g_maps[--g_nmaps]; return 1; }
-  return 0;
+    if (g_maps[i] == p) { g_maps[i] = g_maps[--g_nmaps]; found = 1; break; }
+  unlock();
+  return found;
 }
 
 void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off) {
