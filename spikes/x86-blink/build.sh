@@ -45,17 +45,16 @@ export LOT_LINK_OBJS="$O/lot_sbrk.o $MALLOC $O/wasm_ld128.o $O/lot_clone.o $O/lo
 [ -d "$W/blink" ] || git clone -q https://github.com/jart/blink.git "$W/blink"
 cd "$W/blink"
 git checkout -q "$BLINK_REV" && git checkout -q -- configure blink/syscall.c
-# guest threads run on host pthreads: musl's 128 KB default stack is tight for
-# the asyncified interpreter, give each one 1 MB (from dlmalloc, see
-# lot_dlmalloc_mt.c for why that matters)
-perl -0pi -e 's|(  unassert\(!pthread_attr_setdetachstate\(&attr, PTHREAD_CREATE_DETACHED\)\);\n)|$1  pthread_attr_setstacksize(&attr, 1 << 20);  /* LinuxOnTab */\n|' blink/syscall.c
-grep -q "LinuxOnTab" blink/syscall.c
+# blink-lot.patch: 1 MB host stacks for guest threads (musl's 128 KB default is
+# tight for the asyncified interpreter) and LOT_VFORK, guest vfork/fork as a
+# shared-memory host clone(CLONE_VM|CLONE_VFORK) (see the patch comment)
+git apply "$HERE/blink-lot.patch"
 # configure RUNS its probes; cross-compiling, "it linked" is the answer
 sed -i '' 's|     run "o/tool/config/${RUNPROGRAM}"; then|     test -f "o/tool/config/${RUNPROGRAM}"; then|' configure
 rm -rf o && mkdir -p o/tool && cc -o o/tool/flock tool/flock.c   # host tool
 ./configure CC="$CC" AR="$AR" CFLAGS="$CFLAGS0 -g0" --disable-jit $THREADFLAG --static >/dev/null 2>&1
 sed -i '' 's|^// #define HAVE_FORK|#define HAVE_FORK|' config.h   # probe can't see our fork decl
-sed -i '' "s|^CPPFLAGS = |CPPFLAGS = -include $HERE/lot_mman.h |; s|^LDFLAGS = .*|LDFLAGS = -static -Wl,--wrap=sigaction|; s|^LDLIBS = .*|LDLIBS = -lm|" config.mk
+sed -i '' "s|^CPPFLAGS = |CPPFLAGS = -DLOT_VFORK -include $HERE/lot_mman.h |; s|^LDFLAGS = .*|LDFLAGS = -static -Wl,--wrap=sigaction|; s|^LDLIBS = .*|LDLIBS = -lm|" config.mk
 rm -rf o/rel/blink
 gmake -j10 MODE=rel o/rel/blink/blink
 wasm-opt --enable-exception-handling --asyncify -O3 o/rel/blink/blink -o "$OUT/blink"

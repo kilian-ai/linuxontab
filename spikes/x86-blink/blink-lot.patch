@@ -1,0 +1,279 @@
+diff --git a/blink/syscall.c b/blink/syscall.c
+index 34cc01c..fddb31c 100644
+--- a/blink/syscall.c
++++ b/blink/syscall.c
+@@ -349,10 +349,17 @@ static void ClearChildTid(struct Machine *m) {
+ #endif
+ }
+ 
++#ifdef LOT_VFORK
++static void LotVforkUnpin(struct Machine *);
++#endif
++
+ _Noreturn void SysExitGroup(struct Machine *m, int rc) {
+   THR_LOGF("pid=%d tid=%d SysExitGroup", m->system->pid, m->tid);
+   ClearChildTid(m);
+   if (m->system->isfork) {
++#ifdef LOT_VFORK
++    LotVforkUnpin(m);
++#endif
+ #ifndef NDEBUG
+     if (FLAG_statistics) {
+       PrintStats();
+@@ -399,10 +406,225 @@ _Noreturn void SysExit(struct Machine *m, int rc) {
+ #endif
+ }
+ 
++#ifdef LOT_VFORK
++/*
++ * LinuxOnTab: vfork with shared memory.
++ *
++ * The wasm kernel refuses a memory-copying clone while another thread shares
++ * the address space (arch/wasm/kernel/fork.c: the snapshot can't be made
++ * coherent), so a threaded guest could not start children. Instead the guest
++ * child runs in a host clone(CLONE_VM|CLONE_VFORK): a real separate process
++ * (own pid, own host fd table) that shares memory, while the calling host
++ * thread waits in the kernel until the child execs or exits.
++ *
++ * The child gets its own copy of Blink's System (guest fd table, pid, signal
++ * handler table), sharing only the guest page tables, and its own Machine
++ * cloned from the caller. Guest vfork() / clone(CLONE_VM|CLONE_VFORK)
++ * (posix_spawn) are exactly this. A plain guest fork() in a threaded process
++ * takes the same path, but its child resumes on the parent's x86 stack and
++ * would overwrite the parent's fork()/_Fork() frames on its way to exec, so
++ * that stack window is snapshotted first and restored before the parent
++ * resumes: the parent never sees the child's writes there, as with fork().
++ */
++int __clone(int (*)(void *), void *, int, void *, ...);
++
++#define LOT_VFORK_HOST_STACK (1 << 20)
++#define LOT_VFORK_SAVE_MAX (256 * 1024)
++
++struct LotVforkArg {
++  struct System *parent;
++  struct Machine *m2;
++  u64 flags;
++  u64 ctid;
++};
++
++/*
++ * Blink normally runs an x86 execve() in-process: it wipes the guest address
++ * space and loads the new program into it. A vfork child shares that address
++ * space with its parent, so it must get a new process image instead: host
++ * execve() of Blink itself with the x86 program (-0 keeps the guest argv[0]).
++ */
++static char g_lot_self[PATH_MAX];
++
++static int LotHostExec(char *execfn, char *prog, char **argv, char **envp) {
++  int n, k = 0;
++  char **nv;
++  (void)execfn;
++  for (n = 0; argv[n]; ++n) {
++  }
++  if (!(nv = (char **)malloc((n + 5) * sizeof(*nv)))) return 127;
++  nv[k++] = g_lot_self;
++  nv[k++] = (char *)"-0";  // blink -0 PROG ARGV0 ARGS...
++  nv[k++] = prog;
++  nv[k++] = argv[0] ? argv[0] : prog;
++  for (int i = 1; i < n; ++i) nv[k++] = argv[i];
++  nv[k] = 0;
++  execve(g_lot_self, nv, envp);
++  return 127;
++}
++
++/*
++ * Blink pins guest pages while a syscall reads them (PAGE_LOCKS counts in the
++ * page-table entries) and unpins them when the syscall returns. A vfork child
++ * that execs or exits never returns from that syscall, and its page tables
++ * are the parent's: the pins would stay forever and the parent would hang in
++ * FreePage() when it tears down its address space at exit. So a vfork child
++ * drops all its pins before execve/exit (the arguments are already copied
++ * out) and wakes page-lock waiters in the PARENT's System too (its own
++ * System is a copy with its own condition variable). Thread-local: the child
++ * has its own TLS block (lot_clone.c) but shares every global with the parent.
++ */
++static _Thread_local struct System *g_lot_vfork_parent;
++
++static void LotVforkUnpin(struct Machine *m) {
++  int depth;
++  if (!g_lot_vfork_parent) return;
++  depth = m->sysdepth;
++  m->sysdepth = 0;
++  CollectPageLocks(m);
++  m->sysdepth = depth;
++  LOCK(&g_lot_vfork_parent->pagelocks_lock);
++  pthread_cond_broadcast(&g_lot_vfork_parent->pagelocks_cond);
++  UNLOCK(&g_lot_vfork_parent->pagelocks_lock);
++}
++
++static int LotVforkChild(void *arg) {
++  struct LotVforkArg *a = (struct LotVforkArg *)arg;
++  struct Machine *m2 = a->m2;
++  _Atomic(int) *ctid_ptr;
++  int pid = getpid();
++  g_lot_vfork_parent = a->parent;
++  m2->system->pid = pid;
++  m2->tid = pid;
++  m2->thread = pthread_self();
++  if ((a->flags & CLONE_CHILD_SETTID_LINUX) && !(a->ctid & 3) &&
++      (ctid_ptr = (_Atomic(int) *)LookupAddress(m2, a->ctid))) {
++    atomic_store_explicit(ctid_ptr, Little32(pid), memory_order_release);
++  }
++  Blink(m2);  // ends in a host execve() or _exit()
++}
++
++static void LotFreeFdsCopy(struct Fds *fds) {
++  struct Dll *e;
++  while ((e = dll_first(fds->list))) {  // bookkeeping only: never close()
++    struct Fd *fd = FD_CONTAINER(e);
++    dll_remove(&fds->list, e);
++    free(fd->path);
++    free(fd);
++  }
++}
++
++static int LotVfork(struct Machine *m, u64 flags, u64 stack, u64 ctid,
++                    bool savestack) {
++  int pid;
++  u8 *save = 0;
++  i64 save_at = 0;
++  u64 save_len = 0;
++  struct Dll *e;
++  struct System *s = m->system, *s2;
++  struct Machine *m2;
++  struct LotVforkArg arg;
++  char *hstack;
++  if (savestack) {
++    save_at = (Get64(m->sp) - 128) & -4096;
++    while (save_len < LOT_VFORK_SAVE_MAX &&
++           IsValidMemory(m, save_at + save_len, 4096, PROT_READ | PROT_WRITE)) {
++      save_len += 4096;
++    }
++    if (save_len && (save = (u8 *)malloc(save_len))) {
++      CopyFromUser(m, save, save_at, save_len);
++    }
++  }
++  if (!(s2 = (struct System *)malloc(sizeof(*s2)))) {
++    free(save);
++    return enomem();
++  }
++  LOCK(&s->sig_lock);
++  LOCK(&s->fds.lock);
++  memcpy(s2, s, sizeof(*s2));
++  InitFds(&s2->fds);
++  for (e = dll_last(s->fds.list); e; e = dll_prev(s->fds.list, e)) {
++    struct Fd *fd = FD_CONTAINER(e);
++    ForkFd(&s2->fds, fd, fd->fildes, fd->oflags);
++  }
++  UNLOCK(&s->fds.lock);
++  UNLOCK(&s->sig_lock);
++#ifdef HAVE_THREADS
++  unassert(!pthread_cond_init(&s2->machines_cond, 0));
++  unassert(!pthread_mutex_init(&s2->machines_lock, 0));
++  unassert(!pthread_cond_init(&s2->pagelocks_cond, 0));
++  unassert(!pthread_mutex_init(&s2->pagelocks_lock, 0));
++  unassert(!pthread_mutex_init(&s2->exec_lock, 0));
++  unassert(!pthread_mutex_init(&s2->sig_lock, 0));
++  unassert(!pthread_mutex_init(&s2->mmap_lock, 0));
++#endif
++  s2->machines = 0;
++  s2->filemaps = 0;
++  s2->isfork = true;
++  if (s2->exec) {
++    if (!g_lot_self[0]) {
++      ssize_t r = readlink("/proc/self/exe", g_lot_self, sizeof(g_lot_self) - 1);
++      if (r > 0) {
++        g_lot_self[r] = 0;
++      } else if (g_blink_path) {
++        snprintf(g_lot_self, sizeof(g_lot_self), "%s", g_blink_path);
++      }
++    }
++    s2->exec = LotHostExec;
++  }
++  if (!(m2 = NewMachine(s, m))) {
++    LotFreeFdsCopy(&s2->fds);
++    free(s2);
++    free(save);
++    return eagain();
++  }
++  LOCK(&s->machines_lock);
++  dll_remove(&s->machines, &m2->elem);
++  UNLOCK(&s->machines_lock);
++  m2->system = s2;
++  dll_make_first(&s2->machines, &m2->elem);
++  Put64(m2->ax, 0);
++  if (stack) Put64(m2->sp, stack);
++  m2->ctid = (flags & CLONE_CHILD_CLEARTID_LINUX) ? ctid : 0;
++  arg.parent = s;
++  arg.m2 = m2;
++  arg.flags = flags;
++  arg.ctid = ctid;
++  if (!(hstack = (char *)malloc(LOT_VFORK_HOST_STACK))) {
++    pid = -ENOMEM;
++  } else {
++    pid = __clone(LotVforkChild, hstack + LOT_VFORK_HOST_STACK - 16,
++                  CLONE_VM | CLONE_VFORK | SIGCHLD, &arg);
++    free(hstack);  // the child has exec'd or exited: its stack is ours again
++  }
++  if (save) {
++    CopyToUser(m, save_at, save, save_len);
++    free(save);
++  }
++  LotFreeFdsCopy(&s2->fds);
++  free(s2);
++  free(m2);
++  if (pid < 0) {
++    errno = -pid;
++    return -1;
++  }
++  THR_LOGF("pid=%d tid=%d LotVfork -> pid=%d", s->pid, m->tid, pid);
++  return pid;
++}
++#endif /* LOT_VFORK */
++
+ static int Fork(struct Machine *m, u64 flags, u64 stack, u64 ctid) {
+   int pid, newpid = 0;
+   _Atomic(int) *ctid_ptr;
+   unassert(!m->path.jb);
++#ifdef LOT_VFORK
++  if (flags & CLONE_VM_LINUX) {  // vfork() / posix_spawn(): shares memory
++    return LotVfork(m, flags, stack, ctid, false);
++  }
++  if (m->threaded) {  // the kernel can't copy a threaded address space
++    return LotVfork(m, flags, stack, ctid, true);
++  }
++#endif
+   // NOTES ON THE LOCKING TOPOLOGY
+   // exec_lock must come before sig_lock (see dup3)
+   // exec_lock must come before fds.lock (see dup3)
+@@ -480,8 +702,12 @@ static int SysFork(struct Machine *m) {
+ }
+ 
+ static int SysVfork(struct Machine *m) {
++#ifdef LOT_VFORK
++  return Fork(m, CLONE_VM_LINUX | CLONE_VFORK_LINUX, 0, 0);
++#else
+   // TODO: Parent should be stopped while child is running.
+   return SysFork(m);
++#endif
+ }
+ 
+ static void *OnSpawn(void *arg) {
+@@ -569,6 +795,7 @@ static int SysSpawn(struct Machine *m, u64 flags, u64 stack, u64 ptid, u64 ctid,
+   m2->spawn_sigmask = oldss;
+   unassert(!pthread_attr_init(&attr));
+   unassert(!pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED));
++  pthread_attr_setstacksize(&attr, 1 << 20);  /* LinuxOnTab */
+   err = pthread_create(&thread, &attr, OnSpawn, m2);
+   unassert(!pthread_attr_destroy(&attr));
+   if (err) {
+@@ -3558,6 +3785,9 @@ static int SysExecve(struct Machine *m, i64 pa, i64 aa, i64 ea) {
+   if (!(prog = CopyStr(m, pa))) return -1;
+   if (!(argv = CopyStrList(m, aa))) return -1;
+   if (!(envp = CopyStrList(m, ea))) return -1;
++#ifdef LOT_VFORK
++  LotVforkUnpin(m);
++#endif
+   LOCK(&m->system->exec_lock);
+   ExecveBlink(m, prog, argv, envp);
+   SYS_LOGF("execve(%s)", prog);

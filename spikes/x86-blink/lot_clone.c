@@ -89,3 +89,9 @@ int __clone(int (*func)(void *), void *stack, int flags, void *arg, ...)
     return __wasm_syscall(LOT_SYS_clone, (long)clone_entry, (long)a, flags,
                           (long)parent_tid, (long)child_tid, (long)tls);
 }
+
+/* Marker for the worker: this module's __clone gives the child its own stack
+ * pointer (and TLS), so a CLONE_VM|CLONE_VFORK clone can really share memory.
+ * Without it the worker turns such clones into a memory copy, which the 7.1
+ * kernel refuses in a threaded process. */
+__attribute__((export_name("__lot_clone_sets_sp"))) void __lot_clone_sets_sp(void) {}

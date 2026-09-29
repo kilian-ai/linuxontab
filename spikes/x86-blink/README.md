@@ -77,18 +77,47 @@ Three more platform problems, each fixed spike-locally:
   `tlsprobe`: 3 of 4 threads saw another thread's value). `__clone` now
   gives each thread its own block.
 
-**Open: fork in a process that already has threads.** The 7.1 kernel
-refuses a memory-copying clone while another thread shares the mm
-(`-EOPNOTSUPP`, arch/wasm/kernel/fork.c: the copy can't be made coherent
-while other workers run). Blink maps guest fork, vfork and
-`clone(CLONE_VM|CLONE_VFORK)` all to a host copying fork, and the worker
-turns CLONE_VM|CLONE_VFORK into a copy for every asyncify module, so a
-threaded guest cannot spawn children (`forkthreads.c` fails). This is what
-Node's child_process needs (libuv: posix_spawn via CLONE_VM vfork, else fork).
+### Spawning children from a threaded guest (`LOT_VFORK`, blink-lot.patch)
+
+The 7.1 kernel refuses a memory-copying clone while another thread shares the
+address space (`-EOPNOTSUPP`, arch/wasm/kernel/fork.c: the snapshot can't be
+coherent while other workers run), and stock Blink maps guest fork, vfork and
+`clone(CLONE_VM|CLONE_VFORK)` all to a host copying fork. Node's
+child_process needs this (libuv: posix_spawn when a vfork probe shows shared
+memory, else fork()).
+
+With `LOT_VFORK`, a guest vfork/posix_spawn clone runs as a host
+`clone(CLONE_VM|CLONE_VFORK)`: a real process (own pid, own host fd table)
+sharing memory, with the caller blocked until the child execs or exits. The
+child gets its own copy of Blink's `System` (guest fd table, pid, signal
+table), sharing only the guest page tables, and its own `Machine`. Details:
+- plain `fork()` in a threaded guest takes the same path; its child resumes on
+  the parent's x86 stack, so the stack window is snapshotted and restored
+  before the parent resumes (the parent never sees the child's writes there)
+- Blink runs x86 execve in-process (wipes and reloads guest memory); a vfork
+  child instead host-execs Blink itself (`blink -0 PROG ARGV0 ...`)
+- a vfork child unpins the guest pages its syscall pinned (PAGE_LOCKS in the
+  shared page tables) before execve/exit and wakes the parent's waiters, or
+  the parent hangs in FreePage() at exit
+- guest threads get 1 MB host stacks (the same patch)
+
+**Needs the worker to keep `CLONE_VM`:** worker.ts turns `CLONE_VM|CLONE_VFORK`
+into a copy for every asyncify module (old musl __clone left the child on
+the parent's stack). It now skips that for modules exporting
+`__lot_clone_sets_sp`, which lot_clone.c does. That worker.ts change was made
+by the parallel SA_SIGINFO-compat session and was NOT yet committed when this
+was verified (2026-09-29).
+
+Verified (threaded build, `spawntest.c`, `forkthreads.c`): libuv's vfork
+probe sees the child's write; posix_spawn with a dup2 into a pipe of a WASM
+program and of an x86 program, from a process with running threads; fork+exec
+of `/bin/echo` x3 with three spinning threads; clean process exit afterwards.
+Full regression on both builds: static + dynamic x86 hello, busybox pipes and
+`$(...)`, thread stress x3.
 
 ## Not done / next
 
-- fork/spawn from a threaded guest (above)
+- Node itself: Alpine x86_64 nodejs + its shared libs in the x86 root
 - speed: a wasm32 "offset-linear" memory mode, asyncify only the syscall path,
   then a block JIT that compiles hot x86 code to wasm modules
 - packaging: blink as an apk package + binfmt registration in /etc/rc + an
