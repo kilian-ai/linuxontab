@@ -24,9 +24,10 @@
 # overflow (the htop "segfault").
 
 NAME="ffmpeg"
-VERSION="5.1.6"
+FFMPEG_UPSTREAM="5.1.6"
+VERSION="${FFMPEG_UPSTREAM}-r1"   # r1: fixed-sysroot brk, heap no longer capped at ~60 MB
 DESCRIPTION="ffmpeg + ffprobe — demux/remux/decode any format (no asm, single-threaded)"
-SOURCE_URL="https://ffmpeg.org/releases/ffmpeg-${VERSION}.tar.gz"
+SOURCE_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_UPSTREAM}.tar.gz"
 SOURCE_SHA256=""
 
 build() {

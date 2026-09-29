@@ -5,7 +5,7 @@
 # full-image copy.
 
 NAME="vnc-server"
-VERSION="1.0.1"
+VERSION="1.0.2"   # 1.0.2: fixed-brk sysroot, heap no longer capped at ~60 MB
 DESCRIPTION="VNC demo: eyes that follow your mouse (open the X display panel)"
 SOURCE_URL="local:"
 

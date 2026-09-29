@@ -5,7 +5,7 @@
 # full-image copy.
 
 NAME="vnc-snake"
-VERSION="1.0.1"
+VERSION="1.0.2"   # 1.0.2: fixed-brk sysroot, heap no longer capped at ~60 MB
 DESCRIPTION="VNC demo: snake game on the X display (arrows/WASD, p pause, r restart)"
 SOURCE_URL="local:"
 
