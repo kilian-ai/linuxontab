@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated": "2026-09-27",
+  "generated": "2026-09-29",
   "packages": {
     "busybox": {
       "version": "1.37.0",
@@ -856,11 +856,11 @@
       "status": "available"
     },
     "netsurf": {
-      "version": "3.11-r1",
-      "description": "NetSurf 3.11 web browser on the X desktop \u2014 HTML/CSS, HTTPS, PNG/JPEG/GIF/SVG, no JavaScript (run xtiny first)",
-      "url": "https://linuxontab.com/packages/netsurf-3.11-r1.tar.gz",
-      "size": 2999412,
-      "sha256": "19816bf96cf564df9af60e3cc179c07430e14452f83b95875290b87f7ebf8974",
+      "version": "3.11-r2",
+      "description": "NetSurf 3.11 web browser on the X desktop \u2014 HTML/CSS, HTTPS, PNG/JPEG/GIF/SVG, basic JavaScript (run xtiny first)",
+      "url": "https://linuxontab.com/packages/netsurf-3.11-r2.tar.gz",
+      "size": 4117812,
+      "sha256": "516453c60310a8f4ae19bf744c05b74900072bb42d19405cf34c73efdc0eb951",
       "bins": [
         "netsurf"
       ],

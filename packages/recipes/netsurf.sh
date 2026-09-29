@@ -7,17 +7,23 @@
 #
 # NetSurf's framebuffer frontend on libnsfb's X (xcb) surface, with its
 # built-in bitmap font. HTML/CSS layout, HTTPS (libcurl + OpenSSL 1.1.1w),
-# PNG/JPEG/GIF/BMP/SVG. No JavaScript (NETSURF_USE_DUKTAPE=NO): JS-only
-# sites won't work; the default search (address bar and start page) is
-# DuckDuckGo's no-JS lite endpoint.
+# PNG/JPEG/GIF/BMP/SVG, and JavaScript through NetSurf's Duktape engine:
+# scripts run while a page loads (document.write, building the DOM before
+# layout), and event handlers, timers, form-field and title updates work.
+# Like upstream NetSurf 3.11, other DOM changes made after the page has
+# been laid out are not re-rendered, so script-driven single-page apps
+# still don't work. The default search (address bar and start page) is
+# DuckDuckGo's lite endpoint. To turn scripts off, put
+# "enable_javascript:0" in /usr/local/share/netsurf/Choices.
 #
 # Everything is cross-built here: NetSurf's own libraries come from the
 # netsurf-all bundle; the rest (OpenSSL, libcurl, libpng, libjpeg, expat,
 # xcb-util×4) is built once into $DEPS and reused (stamp per library).
 # Our libxcb/libXau/zlib/xorgproto packages seed that prefix.
 #
-# Host prerequisites (macOS): Homebrew bison >= 3 (libnslog's grammar) and
-# libpng (NetSurf's build-time image converter runs on the host).
+# Host prerequisites (macOS): Homebrew bison >= 3 (libnslog's grammar and
+# nsgenbind), flex (Xcode's is fine) and libpng (NetSurf's build-time image
+# converter runs on the host).
 #
 # Source patches: packages/patches/netsurf-3.11-lot.patch
 #   - libnsfb X surface: check MIT-SHM is present before querying it (xcb
@@ -29,11 +35,13 @@
 #     maximising the window in xtiny re-lays out the browser
 #   - utils/config.h: no mmap on wasm (NetSurf's read() path)
 #   - default search provider and start-page form: DuckDuckGo lite
+#   - framebuffer frontend: JavaScript on by default (the core default is
+#     off even when Duktape is built in)
 # Build-level fixes are commented where they happen below.
 
 NAME="netsurf"
-VERSION="3.11-r1"   # r1: follows window resizes (maximise)
-DESCRIPTION="NetSurf 3.11 web browser on the X desktop — HTML/CSS, HTTPS, PNG/JPEG/GIF/SVG, no JavaScript (run xtiny first)"
+VERSION="3.11-r2"   # r1: follows window resizes (maximise); r2: JavaScript (Duktape)
+DESCRIPTION="NetSurf 3.11 web browser on the X desktop — HTML/CSS, HTTPS, PNG/JPEG/GIF/SVG, basic JavaScript (run xtiny first)"
 SOURCE_URL="https://download.netsurf-browser.org/netsurf/releases/source-full/netsurf-all-3.11.tar.gz"
 SOURCE_SHA256="4dea880ff3c2f698bfd62c982b259340f9abcd7f67e6c8eb2b32c61f71644b7b"
 DEPENDS="xtiny"
@@ -204,6 +212,13 @@ build() {
             || { echo "netsurf: $L failed" >&2; grep -E "error" "$SRC/nslib-$L.log" | head -5 >&2; exit 1; }
     done
 
+    # nsgenbind generates the Duktape bindings from WebIDL at build time, so
+    # it is a host tool: native compiler, none of the wasm CFLAGS/LDFLAGS.
+    env CFLAGS= LDFLAGS= make -C "$SRC/nsgenbind" install PREFIX="$SRC/hosttools" \
+        NSSHARED="$SRC/buildsystem" HOST="$BUILD" BUILD="$BUILD" CC=cc Q= > "$SRC/nsgenbind.log" 2>&1 \
+        || { echo "netsurf: nsgenbind (host tool) failed" >&2; tail -5 "$SRC/nsgenbind.log" >&2; exit 1; }
+    export PATH="$SRC/hosttools/bin:$PATH"
+
     SHIMS="$SRC/shims"; mkdir -p "$SHIMS"
     for f in wasm_dlmalloc wasm_ld128; do $CC $CFLAGS -c "$REPO_ROOT/sysroot/$f.c" -o "$SHIMS/$f.o"; done
     # libpng reports errors by longjmp through the function NetSurf's png.c
@@ -220,7 +235,7 @@ build() {
     make -C "$SRC/netsurf" TARGET=framebuffer HOST=wasm32-unknown-linux-musl BUILD="$BUILD" PREFIX="$NSP" \
         NSSHARED="$SRC/buildsystem" CC="$CC" AR="$AR" Q= WARNFLAGS="-Wall -W -Wno-error" \
         BUILD_CC="cc -I$HOST_PNG/include -L$HOST_PNG/lib" \
-        NETSURF_FB_FRONTEND=x NETSURF_FB_FONTLIB=internal NETSURF_USE_DUKTAPE=NO \
+        NETSURF_FB_FRONTEND=x NETSURF_FB_FONTLIB=internal NETSURF_USE_DUKTAPE=YES \
         NETSURF_USE_JPEG=YES NETSURF_USE_PNG=YES NETSURF_USE_NSSVG=YES NETSURF_USE_WEBP=NO NETSURF_USE_JPEGXL=NO \
         NETSURF_USE_ROSPRITE=NO NETSURF_USE_LIBICONV_PLUG=NO NETSURF_USE_OPENSSL=YES NETSURF_USE_VIDEO=NO \
         NETSURF_FB_RESPATH=/usr/local/share/netsurf > "$SRC/netsurf-make.log" 2>&1 \

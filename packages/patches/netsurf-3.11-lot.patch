@@ -213,3 +213,16 @@
  </div>
  </form>
  
+--- a/netsurf/frontends/framebuffer/gui.c
++++ b/netsurf/frontends/framebuffer/gui.c
+@@ -559,6 +559,10 @@
+ 	/* Set defaults for absent option strings */
+ 	nsoption_setnull_charp(cookie_file, strdup("~/.netsurf/Cookies"));
+ 	nsoption_setnull_charp(cookie_jar, strdup("~/.netsurf/Cookies"));
++	/* LinuxOnTab: this build carries Duktape, so run page scripts by
++	 * default (the core default is off). A Choices file can still turn
++	 * it off. */
++	nsoption_set_bool(enable_javascript, true);
+ 
+ 	if (nsoption_charp(cookie_file) == NULL ||
+ 	    nsoption_charp(cookie_jar) == NULL) {
