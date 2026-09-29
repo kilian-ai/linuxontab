@@ -3,6 +3,7 @@
 # wasm32 guest binary. Output: $OUT/blink (asyncified, fork enabled).
 #   sh spikes/x86-blink/build.sh [outdir]
 #   THREADS=1 sh spikes/x86-blink/build.sh [outdir]   # guest clone()/pthreads
+#   MODE= THREADS=1 sh spikes/x86-blink/build.sh [outdir]  # debug: blink -s / -L
 # Needs the same toolchain as packages/build-package.sh (Nix clang/lld 19,
 # toolchain/musl-sysroot-fixed, binaryen wasm-opt, gmake).
 set -eu
@@ -32,12 +33,14 @@ export CC="$REPO/sysroot/lot-cc.sh" AR="$W/bin/ar"
 # shims: the sysroot's (clone with per-thread/vfork TLS + the
 # __lot_clone_sets_sp marker, fork restoring the child's globals, sbrk-only
 # dlmalloc that also serves musl's internal __libc_malloc; _mt = locked) and
-# the spike's own (malloc-backed mmap for Blink's nolinear mode, SA_SIGINFO
-# compat for runtimes older than 6e583e7)
+# the spike's own malloc-backed mmap for Blink's nolinear mode. Needs a 7.1
+# runtime with SA_SIGINFO compat (6e583e7): the old lot_sigaction.c wrapper
+# kept handlers in a global table, which a vfork child (shared memory) clobbered
+# when it reset its handlers before exec, so the parent lost SIGCHLD.
 for f in wasm_dlmalloc wasm_dlmalloc_mt wasm_ld128 wasm_clone wasm_fork; do
   $CC1 $CFLAGS0 -w -c "$REPO/sysroot/$f.c" -o "$W/objs/$f.o"
 done
-for f in lot_mmap lot_sigaction; do
+for f in lot_mmap; do
   $CC1 $CFLAGS0 -w -c "$HERE/$f.c" -o "$W/objs/$f.o"
 done
 O="$W/objs"
@@ -46,11 +49,11 @@ if [ "${THREADS:-0}" = 1 ]; then
 else
   MALLOC="$O/wasm_dlmalloc.o"; THREADFLAG="--disable-threads"
 fi
-export LOT_LINK_OBJS="$MALLOC $O/wasm_ld128.o $O/wasm_clone.o $O/wasm_fork.o $O/lot_mmap.o $O/lot_sigaction.o"
+export LOT_LINK_OBJS="$MALLOC $O/wasm_ld128.o $O/wasm_clone.o $O/wasm_fork.o $O/lot_mmap.o"
 
 [ -d "$W/blink" ] || git clone -q https://github.com/jart/blink.git "$W/blink"
 cd "$W/blink"
-git checkout -q "$BLINK_REV" && git checkout -q -- configure blink/syscall.c
+git checkout -q "$BLINK_REV" && git checkout -q -- .
 # blink-lot.patch: 1 MB host stacks for guest threads (musl's 128 KB default is
 # tight for the asyncified interpreter) and LOT_VFORK, guest vfork/fork as a
 # shared-memory host clone(CLONE_VM|CLONE_VFORK) (see the patch comment)
@@ -60,9 +63,12 @@ sed -i '' 's|     run "o/tool/config/${RUNPROGRAM}"; then|     test -f "o/tool/c
 rm -rf o && mkdir -p o/tool && cc -o o/tool/flock tool/flock.c   # host tool
 ./configure CC="$CC" AR="$AR" CFLAGS="$CFLAGS0 -g0" --disable-jit $THREADFLAG --static >/dev/null 2>&1
 sed -i '' 's|^// #define HAVE_FORK|#define HAVE_FORK|' config.h   # probe can't see our fork decl
-sed -i '' "s|^CPPFLAGS = |CPPFLAGS = -DLOT_VFORK -include $HERE/lot_mman.h |; s|^LDFLAGS = .*|LDFLAGS = -static -Wl,--wrap=sigaction|; s|^LDLIBS = .*|LDLIBS = -lm|" config.mk
-rm -rf o/rel/blink
-gmake -j10 MODE=rel o/rel/blink/blink
-wasm-opt --enable-exception-handling --asyncify -O3 o/rel/blink/blink -o "$OUT/blink"
+sed -i '' "s|^CPPFLAGS = |CPPFLAGS = -DLOT_VFORK -DLOT_SYSCALLS -include $HERE/lot_mman.h |; s|^LDFLAGS = .*|LDFLAGS = -static|; s|^LDLIBS = .*|LDLIBS = -lm|" config.mk
+# MODE=rel by default; MODE= (empty) builds Blink's debug mode, with the
+# syscall tracer (blink -s) and logging (blink -L file)
+MODE="${MODE-rel}"
+rm -rf "o/$MODE/blink"
+gmake -j10 MODE="$MODE" "o/$MODE/blink/blink"
+wasm-opt --enable-exception-handling --asyncify -O3 "o/$MODE/blink/blink" -o "$OUT/blink"
 chmod +x "$OUT/blink"
 ls -la "$OUT/blink"

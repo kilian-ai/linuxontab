@@ -36,10 +36,8 @@ Spike-local:
   runs "nolinear" (software page tables), so it only needs zeroed anonymous
   chunks and private read-only file images. Both come from malloc; munmap
   frees only bases it handed out.
-- `lot_sigaction.c`: on 7.1 runtimes before 6e583e7, SA_SIGINFO handlers in
-  pre-7.1-musl binaries killed the process ("Invalid siginfo trampoline").
-  Wraps sigaction to install them as plain handlers through a thunk. Kept so
-  the spike also runs on older runtimes; 6e583e7 fixed it in the worker.
+- (removed) `lot_sigaction.c`: SA_SIGINFO compat now lives in the 7.1 worker
+  (6e583e7); the wrapper's global table broke SIGCHLD with vfork children.
 
 From the sysroot (bugs this spike found, fixed there for every port):
 - brk grew wasm memory 4x faster than the heap, capping dlmalloc heaps at
@@ -104,8 +102,7 @@ table), sharing only the guest page tables, and its own `Machine`. Details:
 into a copy for every asyncify module (old musl __clone left the child on
 the parent's stack). It now skips that for modules exporting
 `__lot_clone_sets_sp`, which sysroot/wasm_clone.c does (worker.ts change committed in
-6e583e7 together with the SA_SIGINFO compat, which also makes lot_sigaction.c
-unnecessary on that runtime; it is kept so older runtimes still work).
+6e583e7 together with the SA_SIGINFO compat).
 
 Verified (threaded build, `spawntest.c`, `forkthreads.c`): libuv's vfork
 probe sees the child's write; posix_spawn with a dup2 into a pipe of a WASM
@@ -114,9 +111,49 @@ of `/bin/echo` x3 with three spinning threads; clean process exit afterwards.
 Full regression on both builds: static + dynamic x86 hello, busybox pipes and
 `$(...)`, thread stress x3.
 
+## Node.js (x86_64 Alpine build, under threaded Blink)
+
+**Real Node.js v20.15.1 runs in the guest** (Alpine 3.20 `nodejs` + 13 shared
+libs, 59 MB, in an isolated root via `BLINK_OVERLAYS`; `fetch-node-root.py
+v3.20 <dir>` resolves and unpacks it). `node --jitless` is required (no JIT
+under emulation; V8 prints "disabling flag --expose_wasm", which is normal).
+`node --version` takes ~2 s, a one-line script ~8 s.
+
+`nodetest.js` in the guest: node/V8/uv versions, os, fs on guest files, crypto,
+zlib, JSON/regex/Intl, `execSync` of a WASM program, timers + promises and a
+TCP server + client all PASS. The last check, async `child_process.exec`,
+hangs or crashes (see below). Under native Linux Blink (Docker) the whole
+file passes 11/11 in ~10 s.
+
+What it took (all in blink-lot.patch, behind `LOT_SYSCALLS`):
+- **`pop [rsp+X]` bug in Blink's CPU** (`OpPopEvq`): the destination address
+  must use rsp AFTER the pop, but C leaves argument evaluation order
+  unspecified and clang/gcc computed it first, writing 8 bytes too low. In
+  V8's runtime C++ this clobbered a return address and V8 jumped into its
+  heap. This is why Node never ran under Blink upstream (jart/blink#87). Found
+  with an instruction ring buffer + a stack-slot watchpoint in a native build.
+- `eventfd`/`eventfd2` (libuv's loop needs it on Linux; no pipe fallback)
+- `mremap` reports EFAULT for unmapped ranges (musl's pthread_getattr_np walks
+  the main stack with mremap until EFAULT; ENOMEM for everything looped forever)
+- process-wide signals go to a guest thread that doesn't block them (Node's
+  workers block everything; SIGCHLD sat pending on one of them)
+- the SA_SIGINFO wrapper (lot_sigaction.c) is gone: its global handler table
+  was clobbered by vfork children resetting their handlers before exec, so
+  the parent lost SIGCHLD. Needs a runtime with 6e583e7.
+
+**Open:** the fork-in-a-threaded-guest path (LOT_VFORK with the stack-window
+snapshot) is the prime suspect for the remaining async child_process hang /
+garbage-pointer SIGSEGV: native Blink (real fork) passes. Likely cause: other
+Node threads write into the main thread's stack during the child's run and
+the restore overwrites them. Proper fix: give the fork child copy-on-write
+pages for the stack window in its own page-table path, instead of snapshot +
+restore. Node 22 (Alpine 3.21) fails earlier in ld-musl ("unsupported
+relocation type 1025"), possibly another emulation bug.
+
 ## Not done / next
 
-- Node itself: Alpine x86_64 nodejs + its shared libs in the x86 root
+- Node: copy-on-write stack window for fork-in-threaded (above), then a
+  `node` wrapper/package (always `--jitless`, BLINK_OVERLAYS, binfmt)
 - speed: a wasm32 "offset-linear" memory mode, asyncify only the syscall path,
   then a block JIT that compiles hot x86 code to wasm modules
 - packaging: blink as an apk package + binfmt registration in /etc/rc + an

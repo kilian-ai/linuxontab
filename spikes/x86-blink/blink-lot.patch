@@ -1,5 +1,63 @@
+diff --git a/blink/signal.c b/blink/signal.c
+index 4fe7ab3..b9ca37e 100644
+--- a/blink/signal.c
++++ b/blink/signal.c
+@@ -265,6 +265,37 @@ int ConsumeSignal(struct Machine *m, int *delivered, bool *restart) {
+ 
+ void EnqueueSignal(struct Machine *m, int sig) {
+   if (m && (1 <= sig && sig <= 64)) {
++#ifdef LOT_SYSCALLS
++    // LinuxOnTab: the host hands a process-wide signal (SIGCHLD, a kill() to
++    // the process) to whichever host thread does not block it, but guest
++    // signal masks live only in Blink, so it can land on a guest thread that
++    // blocks it (Node's V8/libuv workers block everything) and stay pending
++    // there while the thread that wants it sleeps in epoll_pwait: Node's
++    // child_process never saw SIGCHLD. Linux would pick a thread that does
++    // not block the signal, so do that, and poke it with SIGSYS so a blocking
++    // host syscall returns EINTR. A handler context: only trylock.
++    u64 bit = 1ul << (sig - 1);
++    if ((m->sigmask & bit) && sig != SIGSYS_LINUX && m->system &&
++        !pthread_mutex_trylock(&m->system->machines_lock)) {
++      struct Dll *e;
++      struct Machine *t = 0;
++      for (e = dll_first(m->system->machines); e;
++           e = dll_next(m->system->machines, e)) {
++        struct Machine *c = MACHINE_CONTAINER(e);
++        if (c != m && !(c->sigmask & bit)) {
++          t = c;
++          break;
++        }
++      }
++      if (t) {
++        t->signals |= bit;
++        atomic_store_explicit(&t->attention, true, memory_order_release);
++        pthread_kill(t->thread, SIGSYS);
++      }
++      pthread_mutex_unlock(&m->system->machines_lock);
++      if (t) return;
++    }
++#endif
+     m->signals |= 1ul << (sig - 1);
+     if ((m->signals & ~m->sigmask)) {
+       atomic_store_explicit(&m->attention, true, memory_order_release);
+diff --git a/blink/stack.c b/blink/stack.c
+index 19bde1b..b6c04b3 100644
+--- a/blink/stack.c
++++ b/blink/stack.c
+@@ -307,5 +307,10 @@ void OpPushEvq(P) {
+ 
+ void OpPopEvq(P) {
+   unsigned osz = kStackOsz[Osz(rde)][Mode(rde)];
+-  WriteMemWord(GetModrmRegisterWordPointerWrite(A, osz), rde, osz, Pop(A, 0));
++  // pop first: x86 computes an rsp-based destination address (pop [rsp+X])
++  // with rsp AFTER the pop, and C leaves the evaluation order of function
++  // arguments unspecified (clang computed the address first, so V8's runtime
++  // code wrote 8 bytes too low and clobbered a return address)
++  u64 x = Pop(A, 0);
++  WriteMemWord(GetModrmRegisterWordPointerWrite(A, osz), rde, osz, x);
+ }
 diff --git a/blink/syscall.c b/blink/syscall.c
-index 34cc01c..fddb31c 100644
+index 34cc01c..845b890 100644
 --- a/blink/syscall.c
 +++ b/blink/syscall.c
 @@ -349,10 +349,17 @@ static void ClearChildTid(struct Machine *m) {
@@ -267,7 +325,51 @@ index 34cc01c..fddb31c 100644
    err = pthread_create(&thread, &attr, OnSpawn, m2);
    unassert(!pthread_attr_destroy(&attr));
    if (err) {
-@@ -3558,6 +3785,9 @@ static int SysExecve(struct Machine *m, i64 pa, i64 aa, i64 ea) {
+@@ -1255,8 +1482,43 @@ static i64 SysMmap(struct Machine *m, i64 virt, u64 size, int prot, int flags,
+   return res;
+ }
+ 
++#ifdef LOT_SYSCALLS
++// is a page mapped at all (any protection)? a read-only page-table walk:
++// unlike FindPageTableEntry() it neither takes page locks nor commits
++// reserved pages
++static bool LotIsMapped(struct Machine *m, u64 page) {
++  u8 *pslot;
++  u64 entry;
++  unsigned level;
++  if (!(-0x800000000000 <= (i64)page && (i64)page < 0x800000000000)) {
++    return false;
++  }
++  entry = m->system->cr3;
++  level = 39;
++  do {
++    pslot = GetPageAddress(m->system, entry, level == 39);
++    if (!pslot) return false;
++    entry = LoadPte(pslot + ((page >> level) & 511) * 8);
++    if (!(entry & PAGE_V)) return false;
++    if ((entry & PAGE_PS) && level > 12) return true;
++  } while ((level -= 9) >= 12);
++  return true;
++}
++#endif
++
+ static i64 SysMremap(struct Machine *m, i64 old_address, u64 old_size,
+                      u64 new_size, int flags, i64 new_address) {
++#ifdef LOT_SYSCALLS
++  // LinuxOnTab: still no remapping, but report EFAULT for an unmapped range
++  // like Linux does. musl's pthread_getattr_np() sizes the main thread's
++  // stack by mremap()ing page after page downwards until it gets EFAULT;
++  // with ENOMEM for everything it looped forever (Node/V8 ask for it).
++  u64 p;
++  if (old_address & 4095) return einval();
++  for (p = old_address; p < old_address + (old_size ? old_size : 1); p += 4096) {
++    if (!LotIsMapped(m, p)) return efault();
++  }
++#endif
+   // would be nice to have
+   // avoid being noisy in the logs
+   // hope program has fallback for failure
+@@ -3558,6 +3820,9 @@ static int SysExecve(struct Machine *m, i64 pa, i64 aa, i64 ea) {
    if (!(prog = CopyStr(m, pa))) return -1;
    if (!(argv = CopyStrList(m, aa))) return -1;
    if (!(envp = CopyStrList(m, ea))) return -1;
@@ -277,3 +379,60 @@ index 34cc01c..fddb31c 100644
    LOCK(&m->system->exec_lock);
    ExecveBlink(m, prog, argv, envp);
    SYS_LOGF("execve(%s)", prog);
+@@ -5304,6 +5569,45 @@ static i32 SysEpollCreate1(struct Machine *m, i32 flags) {
+   return fildes;
+ }
+ 
++#ifdef LOT_SYSCALLS
++/*
++ * LinuxOnTab: eventfd. libuv (Node's event loop) creates its async wakeup fd
++ * with eventfd() on Linux and has no pipe fallback there, so uv_loop_init()
++ * failed without it. The host kernel is Linux too: pass it straight through.
++ */
++#include <sys/eventfd.h>
++#define EFD_SEMAPHORE_LINUX 1
++#define EFD_NONBLOCK_LINUX 04000
++#define EFD_CLOEXEC_LINUX 02000000
++
++static i32 SysEventfd2(struct Machine *m, u32 initval, i32 flags) {
++  int lim, fildes, oflags = O_RDWR, sysflags = 0;
++  if (flags & ~(EFD_SEMAPHORE_LINUX | EFD_NONBLOCK_LINUX | EFD_CLOEXEC_LINUX)) {
++    LOGF("unsupported %s flags: %#x", "eventfd2", flags);
++    return einval();
++  }
++  if (flags & EFD_SEMAPHORE_LINUX) sysflags |= EFD_SEMAPHORE;
++  if (flags & EFD_NONBLOCK_LINUX) sysflags |= EFD_NONBLOCK, oflags |= O_NONBLOCK;
++  if (flags & EFD_CLOEXEC_LINUX) sysflags |= EFD_CLOEXEC, oflags |= O_CLOEXEC;
++  if (!(lim = GetFileDescriptorLimit(m->system))) return emfile();
++  if ((fildes = eventfd(initval, sysflags)) != -1) {
++    if (fildes >= lim) {
++      close(fildes);
++      fildes = emfile();
++    } else {
++      LOCK(&m->system->fds.lock);
++      unassert(AddFd(&m->system->fds, fildes, oflags));
++      UNLOCK(&m->system->fds.lock);
++    }
++  }
++  return fildes;
++}
++
++static i32 SysEventfd(struct Machine *m, u32 initval) {
++  return SysEventfd2(m, initval, 0);
++}
++#endif /* LOT_SYSCALLS */
++
+ static i32 SysEpollCreate(struct Machine *m, i32 size) {
+   if (size <= 0) return einval();
+   return SysEpollCreate1(m, 0);
+@@ -5688,6 +5992,10 @@ void OpSyscall(P) {
+ #ifdef HAVE_EPOLL_PWAIT1
+     SYSCALL(1, 0x0D5, "epoll_create", SysEpollCreate, STRACE_1);
+     SYSCALL(1, 0x123, "epoll_create1", SysEpollCreate1, STRACE_1);
++#ifdef LOT_SYSCALLS
++    SYSCALL(1, 0x11C, "eventfd", SysEventfd, STRACE_1);
++    SYSCALL(2, 0x122, "eventfd2", SysEventfd2, STRACE_2);
++#endif
+     SYSCALL(4, 0x0E9, "epoll_ctl", SysEpollCtl, STRACE_4);
+     SYSCALL(4, 0x0E8, "epoll_wait", SysEpollWait, STRACE_4);
+     SYSCALL(6, 0x119, "epoll_pwait", SysEpollPwait, STRACE_6);
