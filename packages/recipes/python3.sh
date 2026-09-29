@@ -8,7 +8,7 @@
 # Build deps: host python3.11+ (for --with-build-python), curl, make
 
 NAME="python3"
-VERSION="3.11.14"
+VERSION="3.11.14-r1"   # r1: locked sbrk dlmalloc (wasm_dlmalloc_mt) instead of mallocng, per-thread TLS
 DESCRIPTION="Python 3.11 interpreter (CPython, WASM)"
 SOURCE_URL="https://www.python.org/ftp/python/3.11.14/Python-3.11.14.tar.xz"
 # Leave SOURCE_SHA256 empty to skip checksum (set once confirmed)
@@ -925,10 +925,19 @@ SITE
     # couple of handoffs. wasm_clone.o (linked before -lc, overriding libc's
     # clone.o) makes each thread run on its own stack. Verified: threading,
     # Lock/Event/Condition ping-pong, concurrent-thread SQLite.
+    # It also gives each thread its own _Thread_local block.
     _CLONE_OBJ="$BLD/wasm_clone.o"
     $CC $CFLAGS -c "$REPO_ROOT/sysroot/wasm_clone.c" -o "$_CLONE_OBJ"
+    # Allocator: sbrk-only dlmalloc with spin locks instead of musl's mallocng
+    # (this build has --without-pymalloc, so every object is a malloc). With
+    # threads, mallocng's large-block path traps in __libc_malloc_impl inside
+    # pthread_create (16 MB thread stacks, see local/thread-shims/README.md),
+    # and its get_meta checks are the "python mallocng get_meta flake". Routes
+    # musl's internal __libc_malloc too, so mallocng is not linked at all.
+    _MALLOC_OBJ="$BLD/wasm_dlmalloc_mt.o"
+    $CC $CFLAGS -w -c "$REPO_ROOT/sysroot/wasm_dlmalloc_mt.c" -o "$_MALLOC_OBJ"
     # LIBS: CRT1 first (provides _start), builtins last (provides __muldi3 etc.)
-    _LIBS="$CRT1 $_CLONE_OBJ -lz -lm -lc $BUILTINS"
+    _LIBS="$CRT1 $_MALLOC_OBJ $_CLONE_OBJ -lz -lm -lc $BUILTINS"
 
     cd "$BLD"
     PATH="$WASM_LD_DIR:$PATH" "$SRC/configure" \

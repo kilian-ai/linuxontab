@@ -87,11 +87,11 @@
       "depends": []
     },
     "python3": {
-      "version": "3.11.14",
+      "version": "3.11.14-r1",
       "description": "Python 3.11 interpreter (CPython, WASM)",
-      "url": "https://linuxontab.com/packages/python3-3.11.14.tar.gz",
-      "size": 37739120,
-      "sha256": "6d67c2f30a12c3923f007851da21405519603f60e581b5ba920b53d721e49269",
+      "url": "https://linuxontab.com/packages/python3-3.11.14-r1.tar.gz",
+      "size": 37743924,
+      "sha256": "47e75f09906b810da834b367ce70f5377ecdc393d0811c0e5550c74df6fa5821",
       "bins": [
         "python3",
         "python3.11",
@@ -620,11 +620,11 @@
       "status": "available"
     },
     "redis": {
-      "version": "7.2.5",
+      "version": "7.2.5-r1",
       "description": "Redis key/value database server + CLI",
-      "url": "https://linuxontab.com/packages/redis-7.2.5.tar.gz",
-      "size": 2126793,
-      "sha256": "e2dc2d59e20e7d971d1bac29842254693e4733d86bf0ac011280fb53f8ad5653",
+      "url": "https://linuxontab.com/packages/redis-7.2.5-r1.tar.gz",
+      "size": 2153076,
+      "sha256": "71b72a2c5e0642166a1a1030b74e1ccd5e8c4be00bd7c55db9b92872c9cb2e82",
       "bins": [
         "redis-server",
         "redis-cli"

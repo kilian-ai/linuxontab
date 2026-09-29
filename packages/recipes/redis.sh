@@ -22,9 +22,10 @@
 #   - Explicit 8 MB stack: the wasm-ld default is 64 KB.
 
 NAME="redis"
-VERSION="7.2.5"
+REDIS_UPSTREAM="7.2.5"
+VERSION="${REDIS_UPSTREAM}-r1"   # r1: own thread stacks + TLS (wasm_clone), locked dlmalloc, fork-child globals
 DESCRIPTION="Redis key/value database server + CLI"
-SOURCE_URL="https://download.redis.io/releases/redis-${VERSION}.tar.gz"
+SOURCE_URL="https://download.redis.io/releases/redis-${REDIS_UPSTREAM}.tar.gz"
 SOURCE_SHA256=""
 
 build() {
@@ -34,6 +35,13 @@ build() {
     printf '#include <sys/types.h>\npid_t fork(void);\npid_t vfork(void);\n' \
         > "$SRC/redis-fork.h"
     $CC $CFLAGS -c "$REPO_ROOT/sysroot/wasm_fork.c" -o "$SRC/wasm_fork.o"
+    # Threads (bio + io): wasm_clone.c gives each its own stack and
+    # _Thread_local block — libc's __clone ran them all on the main thread's
+    # stack. Allocator: sbrk-only dlmalloc with spin locks; with MALLOC=libc
+    # everything, thread stacks included, went to musl's mallocng, whose
+    # large-block path traps on this platform.
+    $CC $CFLAGS -c "$REPO_ROOT/sysroot/wasm_clone.c" -o "$SRC/wasm_clone.o"
+    $CC $CFLAGS -w -c "$REPO_ROOT/sysroot/wasm_dlmalloc_mt.c" -o "$SRC/wasm_dlmalloc_mt.o"
 
     # musl's pthread_cancel needs asm cancellation points (__cp_begin/__cp_end/
     # __syscall_cp_asm) that don't exist on wasm32. Redis only cancels bio/io
@@ -135,7 +143,7 @@ NOCANCELEOF
 
     STACK="-Wl,-z,stack-size=8388608"
     LDF="$LDFLAGS $STACK"
-    LIBS_ALL="$SRC/wasm_fork.o $SRC/sjlj_rt.o $SRC/wasm_nocancel.o $CRT1 -lc -lm $BUILTINS"
+    LIBS_ALL="$SRC/wasm_dlmalloc_mt.o $SRC/wasm_clone.o $SRC/wasm_fork.o $SRC/sjlj_rt.o $SRC/wasm_nocancel.o $CRT1 -lc -lm $BUILTINS"
 
     # Build each dep to the exact artifact src/Makefile links, rather than via
     # deps/Makefile: its "lua" target also links the lua/luac INTERPRETERS,
