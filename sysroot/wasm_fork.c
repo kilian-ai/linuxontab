@@ -42,6 +42,21 @@
  *   magic tag) still get the legacy 4 MB JS override, so the handler is
  *   backward-compatible across a staged rebuild.
  *
+ * CHILD GLOBALS: the child is a fresh wasm instance rewound into
+ *   __wasm_fork_impl. Asyncify restores locals, not globals, so the child used
+ *   to come back with __stack_pointer at the module default (the stack top:
+ *   the worker patches it only when the module exports __stack_pointer, and
+ *   none do) and __tls_base = 0 (_start's __wasm_init_tls is never re-run).
+ *   Every _Thread_local then read/wrote address 0+offset (threaded Blink's
+ *   forked children got pid 0 and "returned" from fork twice), and calls
+ *   made before fork() returned (free(buf) below) carved frames at the stack
+ *   top, over the outermost live frames; each function epilogue restores SP
+ *   from its own local, which is what kept that window small. Both are saved
+ *   in locals before the syscall, and the child writes them back right after
+ *   it returns — before any call can carve a frame. The parent gets the same
+ *   values back, so nothing changes for it. On 7.1 vfork() is a copying
+ *   clone too (the parent just waits), so this holds for both.
+ *
  * LIMITATION: requires the user binary to be transformed with:
  *   wasm-opt --asyncify -O1 input.wasm -o input.wasm
  * Binaries without asyncify exports (asyncify_get_state, asyncify_start_unwind,
@@ -71,12 +86,43 @@ extern long syscall(long nr, ...);
  * directly, do NOT override with the fixed top-of-memory region." */
 #define WASM_FORK_MAGIC  0x464f524bL   /* 'FORK' */
 
+__asm__(".globaltype __stack_pointer, i32\n");
+/* __tls_base is a mutable, per-instance global only in -matomics builds
+ * (which is what --shared-memory, and so every guest binary, requires); a
+ * non-atomics link makes it immutable and TLS is plain data anyway. */
+#ifdef __wasm_atomics__
+#define LOT_FORK_TLS 1
+__asm__(".globaltype __tls_base, i32\n");
+#else
+#define LOT_FORK_TLS 0
+#endif
+
 /* Read the wasm shadow-stack pointer (the __stack_pointer global). */
 static inline uintptr_t __wasm_sp(void)
 {
 	uintptr_t p;
 	__asm__ volatile("global.get __stack_pointer\n local.set %0" : "=r"(p));
 	return p;
+}
+static inline void __wasm_set_sp(uintptr_t p)
+{
+	__asm__ volatile("local.get %0\n global.set __stack_pointer" ::"r"(p));
+}
+static inline uintptr_t __wasm_tls(void)
+{
+	uintptr_t p = 0;
+#if LOT_FORK_TLS
+	__asm__ volatile("global.get __tls_base\n local.set %0" : "=r"(p));
+#endif
+	return p;
+}
+static inline void __wasm_set_tls(uintptr_t p)
+{
+#if LOT_FORK_TLS
+	__asm__ volatile("local.get %0\n global.set __tls_base" ::"r"(p));
+#else
+	(void)p;
+#endif
 }
 
 /* Captured near the stack top at process start so we can measure how much stack
@@ -97,6 +143,7 @@ static pid_t __wasm_fork_impl(long syscall_nr)
 	 * deep $() nest, rather than betting a single fixed size is both enough
 	 * and not wasteful. */
 	uintptr_t sp   = __wasm_sp();
+	uintptr_t tls  = __wasm_tls();
 	uintptr_t used = (__wasm_stack_top_at_start > sp)
 			 ? (__wasm_stack_top_at_start - sp) : 0;
 	size_t    sz   = (size_t)used * 3 + (64u << 10);
@@ -142,6 +189,10 @@ static pid_t __wasm_fork_impl(long syscall_nr)
 		0L, 0L);
 
 	int32_t r = retval;
+	if (r == 0) {             /* child: see CHILD GLOBALS above */
+		__wasm_set_sp(sp);
+		__wasm_set_tls(tls);
+	}
 	free(buf);
 	if (r < 0) {
 		errno = -r;
