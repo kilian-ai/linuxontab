@@ -711,11 +711,11 @@
       "status": "available"
     },
     "ffmpeg7": {
-      "version": "7.0.2",
+      "version": "7.0.2-r1",
       "description": "ffmpeg 7.0 + ffprobe 7.0 with pthreads (EXPERIMENTAL: threaded CLI can deadlock under load) \u2014 installs as ffmpeg7 / ffprobe7",
-      "url": "https://linuxontab.com/packages/ffmpeg7-7.0.2.tar.gz",
-      "size": 16395358,
-      "sha256": "cac389989bbe4942b6f2883235c7a23380853264434340066db7d4a2aac9d542",
+      "url": "https://linuxontab.com/packages/ffmpeg7-7.0.2-r1.tar.gz",
+      "size": 16394002,
+      "sha256": "937eafdae799dbcdb459f5a08a18cce1dbf6d1e02dbaf394be400b7e7bd64909",
       "bins": [
         "ffmpeg7",
         "ffprobe7"
@@ -856,11 +856,11 @@
       "status": "available"
     },
     "netsurf": {
-      "version": "3.11-r2",
+      "version": "3.11-r3",
       "description": "NetSurf 3.11 web browser on the X desktop \u2014 HTML/CSS, HTTPS, PNG/JPEG/GIF/SVG, basic JavaScript (run xtiny first)",
-      "url": "https://linuxontab.com/packages/netsurf-3.11-r2.tar.gz",
-      "size": 4117812,
-      "sha256": "516453c60310a8f4ae19bf744c05b74900072bb42d19405cf34c73efdc0eb951",
+      "url": "https://linuxontab.com/packages/netsurf-3.11-r3.tar.gz",
+      "size": 4113778,
+      "sha256": "8344290cd217ca23ff24c37bb543b2b8502f0325d2dad280cc074120f1acd656",
       "bins": [
         "netsurf"
       ],

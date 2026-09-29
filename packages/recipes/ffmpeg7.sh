@@ -23,9 +23,10 @@
 # overflow (the htop "segfault").
 
 NAME="ffmpeg7"
-VERSION="7.0.2"
+FFMPEG_UPSTREAM="7.0.2"
+VERSION="${FFMPEG_UPSTREAM}-r1"   # r1: fixed-sysroot brk, heap no longer capped at ~60 MB
 DESCRIPTION="ffmpeg 7.0 + ffprobe 7.0 with pthreads (EXPERIMENTAL: threaded CLI can deadlock under load) — installs as ffmpeg7 / ffprobe7"
-SOURCE_URL="https://ffmpeg.org/releases/ffmpeg-${VERSION}.tar.gz"
+SOURCE_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_UPSTREAM}.tar.gz"
 SOURCE_SHA256=""
 
 build() {

@@ -40,7 +40,8 @@
 # Build-level fixes are commented where they happen below.
 
 NAME="netsurf"
-VERSION="3.11-r2"   # r1: follows window resizes (maximise); r2: JavaScript (Duktape)
+VERSION="3.11-r3"   # r1: follows window resizes (maximise); r2: JavaScript (Duktape)
+                    # r3: fixed-sysroot brk, heap no longer capped at ~60 MB
 DESCRIPTION="NetSurf 3.11 web browser on the X desktop — HTML/CSS, HTTPS, PNG/JPEG/GIF/SVG, basic JavaScript (run xtiny first)"
 SOURCE_URL="https://download.netsurf-browser.org/netsurf/releases/source-full/netsurf-all-3.11.tar.gz"
 SOURCE_SHA256="4dea880ff3c2f698bfd62c982b259340f9abcd7f67e6c8eb2b32c61f71644b7b"
