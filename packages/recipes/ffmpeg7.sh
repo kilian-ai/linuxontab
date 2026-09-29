@@ -24,7 +24,8 @@
 
 NAME="ffmpeg7"
 FFMPEG_UPSTREAM="7.0.2"
-VERSION="${FFMPEG_UPSTREAM}-r1"   # r1: fixed-sysroot brk, heap no longer capped at ~60 MB
+VERSION="${FFMPEG_UPSTREAM}-r2"   # r1: fixed-sysroot brk, heap no longer capped at ~60 MB
+                                  # r2: locked dlmalloc (wasm_dlmalloc_mt), per-thread TLS
 DESCRIPTION="ffmpeg 7.0 + ffprobe 7.0 with pthreads (EXPERIMENTAL: threaded CLI can deadlock under load) — installs as ffmpeg7 / ffprobe7"
 SOURCE_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_UPSTREAM}.tar.gz"
 SOURCE_SHA256=""
@@ -38,9 +39,12 @@ build() {
     # consistency checks (av_buffer_pool_uninit → free, av_new_packet →
     # realloc: "unreachable", shown as Segmentation fault). Every >=720p frame
     # buffer is that big. See sysroot/wasm_dlmalloc.c. No mmap shim, no fork.
-    $CC $CFLAGS -w -c "$REPO_ROOT/sysroot/wasm_dlmalloc.c" -o "$WEBDEPS_OBJS/wasm_dlmalloc.o"
+    # The _mt variant: every ffmpeg 7 CLI stage runs on its own thread and
+    # they all allocate — the unlocked allocator (r1 and earlier) raced.
+    # wasm_clone.c gives each thread its own stack and _Thread_local block.
+    $CC $CFLAGS -w -c "$REPO_ROOT/sysroot/wasm_dlmalloc_mt.c" -o "$WEBDEPS_OBJS/wasm_dlmalloc_mt.o"
     $CC $CFLAGS -c "$REPO_ROOT/sysroot/wasm_clone.c" -o "$WEBDEPS_OBJS/wasm_clone.o"
-    export LOT_LINK_OBJS="$WEBDEPS_OBJS/wasm_dlmalloc.o $WEBDEPS_OBJS/wasm_ld128.o $WEBDEPS_OBJS/wasm_clone.o"
+    export LOT_LINK_OBJS="$WEBDEPS_OBJS/wasm_dlmalloc_mt.o $WEBDEPS_OBJS/wasm_ld128.o $WEBDEPS_OBJS/wasm_clone.o"
 
     NM=$(find /nix/store -maxdepth 3 -name "llvm-nm" -path "*llvm-19*" 2>/dev/null | sort | head -1)
     [ -x "$NM" ] || NM=nm
