@@ -683,11 +683,11 @@
       "status": "available"
     },
     "ffmpeg": {
-      "version": "5.1.6",
+      "version": "5.1.6-r1",
       "description": "ffmpeg + ffprobe \u2014 demux/remux/decode any format (no asm, single-threaded)",
-      "url": "https://linuxontab.com/packages/ffmpeg-5.1.6.tar.gz",
-      "size": 15272591,
-      "sha256": "711097115fbe6118c644870bd3c8bfa74c6ad969e6c6cd4096b70a660f5d12d5",
+      "url": "https://linuxontab.com/packages/ffmpeg-5.1.6-r1.tar.gz",
+      "size": 15271903,
+      "sha256": "51b5d9da0c1a9f72998a912dcfc6f963832368263a8dd2bd42bcb262f493a83e",
       "bins": [
         "ffmpeg",
         "ffprobe"
@@ -803,11 +803,11 @@
       "status": "available"
     },
     "vnc-server": {
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "VNC demo: eyes that follow your mouse (open the X display panel)",
-      "url": "https://linuxontab.com/packages/vnc-server-1.0.1.tar.gz",
-      "size": 29066,
-      "sha256": "0cb28d67b53f37716597cfe00c23d83c4f20ace48f70ea3cf92011a00fe3c314",
+      "url": "https://linuxontab.com/packages/vnc-server-1.0.2.tar.gz",
+      "size": 28741,
+      "sha256": "4a2c540359cd51ec9bbb1042d835623074393cb872c81937fc00a2a93592ff16",
       "bins": [
         "vnc-server"
       ],
@@ -815,11 +815,11 @@
       "status": "available"
     },
     "vnc-snake": {
-      "version": "1.0.1",
+      "version": "1.0.2",
       "description": "VNC demo: snake game on the X display (arrows/WASD, p pause, r restart)",
-      "url": "https://linuxontab.com/packages/vnc-snake-1.0.1.tar.gz",
-      "size": 30111,
-      "sha256": "9074d1b4ec874a7b9912efa2285190e31ae36bf71cbf7a8bde56d763e366d92b",
+      "url": "https://linuxontab.com/packages/vnc-snake-1.0.2.tar.gz",
+      "size": 29735,
+      "sha256": "3a90d385d581366b06abe3ef578c6fe4feda127c36676ccf44e8a2fb5c88bfea",
       "bins": [
         "vnc-snake"
       ],
