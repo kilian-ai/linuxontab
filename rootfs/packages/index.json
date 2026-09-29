@@ -698,11 +698,11 @@
       "status": "available"
     },
     "ffmpeg7": {
-      "version": "7.0.2-r2",
-      "description": "ffmpeg 7.0 + ffprobe 7.0 with pthreads (EXPERIMENTAL: threaded CLI can deadlock under load) \u2014 installs as ffmpeg7 / ffprobe7",
-      "url": "https://linuxontab.com/packages/ffmpeg7-7.0.2-r2.tar.gz",
-      "size": 16394437,
-      "sha256": "279dd8bb4e864f48ad32f01d7988a20a8236c5455e16305a86ad1fb3eb774312",
+      "version": "7.0.2-r3",
+      "description": "ffmpeg 7.0 + ffprobe 7.0 with pthreads \u2014 installs as ffmpeg7 / ffprobe7",
+      "url": "https://linuxontab.com/packages/ffmpeg7-7.0.2-r3.tar.gz",
+      "size": 16394499,
+      "sha256": "c5cf28fccfe322008e7baefd796b36d9dca7e1eebf6d8181702199671bfa10ed",
       "bins": [
         "ffmpeg7",
         "ffprobe7"

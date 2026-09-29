@@ -5,13 +5,16 @@
 #   ffmpeg -i movie.mkv -c copy -movflags frag_keyframe+empty_moov out.mp4   (remux)
 #   ffmpeg -i in.m2v -f rawvideo -pix_fmt yuv420p -                          (decode → page)
 #
-# EXPERIMENTAL opt-in build of ffmpeg 7.0.2 with pthreads. It links the thread
-# stack fix (sysroot/wasm_clone.c) and decodes correctly, but its always-threaded
-# CLI (demux/decode/filter/encode/mux threads since 7.0) still deadlocks
-# intermittently on this kernel when other processes compete for the single
-# CPU (observed 2026-09-02: h264.mkv run 1 ok, run 2 hung with python starting
-# alongside; hung runs cannot be ^C'd). Installed as ffmpeg7/ffprobe7 next to
-# the single-threaded 5.1 default. Revisit when the kernel thread-sync work lands.
+# Opt-in build of ffmpeg 7.0.2 with pthreads, installed as ffmpeg7/ffprobe7
+# next to the single-threaded 5.1 default. Its always-threaded CLI (demux/
+# decode/filter/encode/mux threads since 7.0) used to deadlock when another
+# threaded process ran alongside (2026-09-02: h264.mkv run 2 hung with python
+# starting; hung runs could not be ^C'd). Cause: the no-MMU kernel keyed
+# futexes by address alone, and wasm processes share address layouts, so one
+# process's FUTEX_WAKE woke a waiter in another — fixed in the 7.1 kernel
+# (3c3768d). r2 added the locked allocator and per-thread TLS. Verified on the
+# fixed kernel: two concurrent threaded 720p encode/probe/decode loops 8/8
+# each, and 20/20 alone next to busy loops.
 #
 # Cross notes: ffmpeg's configure supports cross builds natively and skips
 # every exec test under --enable-cross-compile, so it needs no answer table —
@@ -24,9 +27,10 @@
 
 NAME="ffmpeg7"
 FFMPEG_UPSTREAM="7.0.2"
-VERSION="${FFMPEG_UPSTREAM}-r2"   # r1: fixed-sysroot brk, heap no longer capped at ~60 MB
+VERSION="${FFMPEG_UPSTREAM}-r3"   # r1: fixed-sysroot brk, heap no longer capped at ~60 MB
                                   # r2: locked dlmalloc (wasm_dlmalloc_mt), per-thread TLS
-DESCRIPTION="ffmpeg 7.0 + ffprobe 7.0 with pthreads (EXPERIMENTAL: threaded CLI can deadlock under load) — installs as ffmpeg7 / ffprobe7"
+                                  # r3: same code, EXPERIMENTAL dropped (kernel futex fix)
+DESCRIPTION="ffmpeg 7.0 + ffprobe 7.0 with pthreads — installs as ffmpeg7 / ffprobe7"
 SOURCE_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_UPSTREAM}.tar.gz"
 SOURCE_SHA256=""
 
