@@ -608,11 +608,11 @@
       "status": "available"
     },
     "xterm": {
-      "version": "379-r1",
+      "version": "379-r2",
       "description": "X terminal emulator",
-      "url": "https://linuxontab.com/packages/xterm-379-r1.tar.gz",
-      "size": 766579,
-      "sha256": "ff3a469dae58bbb39d7a911228f8210ec2f04e92a37609cb2647f37eaec8904b",
+      "url": "https://linuxontab.com/packages/xterm-379-r2.tar.gz",
+      "size": 762963,
+      "sha256": "ce33652fc932e45fae507c6d192b5610e5b99a41e2bd6369e95beedd4b305865",
       "bins": [
         "xterm"
       ],
@@ -827,11 +827,11 @@
       "status": "available"
     },
     "xtiny": {
-      "version": "1.0.2",
+      "version": "1.0.3",
       "description": "Tiny X11 server + desktop on :5900 for real X clients (xterm, xeyes, wolf3d); open the X display panel",
-      "url": "https://linuxontab.com/packages/xtiny-1.0.2.tar.gz",
-      "size": 62359,
-      "sha256": "4bdbe9abd4dd722f4d75453e3c807f6a47dfa0de4c42105bc692f21f5cf6a70f",
+      "url": "https://linuxontab.com/packages/xtiny-1.0.3.tar.gz",
+      "size": 62051,
+      "sha256": "62102b0936efa38eeab7f4fa350e31cd3ceed3676bf7ed6d1d118140826ccc2b",
       "bins": [
         "xtiny"
       ],
@@ -842,11 +842,11 @@
       "status": "available"
     },
     "wolf3d": {
-      "version": "1.4-20011028-r1",
+      "version": "1.4-20011028-r2",
       "description": "Wolfenstein 3D shareware (episode 1) \u2014 id's raycaster on the X server (run xtiny first)",
-      "url": "https://linuxontab.com/packages/wolf3d-1.4-20011028-r1.tar.gz",
-      "size": 783189,
-      "sha256": "0145aac4e4b83869e9848fed27057ad5318230ae920d8310286fac32d96018ea",
+      "url": "https://linuxontab.com/packages/wolf3d-1.4-20011028-r2.tar.gz",
+      "size": 779733,
+      "sha256": "39b81b5d015c96fc70a567447322ac45ef5cc9e0dda995cee93bf729656d4c43",
       "bins": [
         "wolf3d"
       ],

@@ -11,7 +11,8 @@
 #   wolf3d &         # the game, DISPLAY defaults to :1
 
 NAME="wolf3d"
-VERSION="1.4-20011028-r1"   # r1: scales to the window (maximise)
+VERSION="1.4-20011028-r2"   # r1: scales to the window (maximise)
+                            # r2: fixed-brk sysroot, heap no longer capped at ~60 MB
 DESCRIPTION="Wolfenstein 3D shareware (episode 1) — id's raycaster on the X server (run xtiny first)"
 # icculus.org dropped the tarball; FreeBSD's ports distfile cache keeps it.
 SOURCE_URL="http://distcache.freebsd.org/ports-distfiles/wolf3d-20011028.tar.gz"

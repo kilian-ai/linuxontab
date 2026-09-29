@@ -17,7 +17,8 @@
 
 NAME="xterm"
 XTERM_UPSTREAM="379"
-VERSION="${XTERM_UPSTREAM}-r1"   # r1: dlmalloc, so resizing no longer traps
+VERSION="${XTERM_UPSTREAM}-r2"   # r1: dlmalloc, so resizing no longer traps
+                                 # r2: fixed-brk sysroot, heap no longer capped at ~60 MB
 DESCRIPTION="X terminal emulator"
 # Statically linked (the X libraries are built into the binary below), so
 # no runtime package dependencies.
