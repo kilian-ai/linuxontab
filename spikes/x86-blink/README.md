@@ -31,19 +31,27 @@ Register (after mounting binfmt_misc):
 
 ## Shims (why each exists)
 
+Spike-local:
 - `lot_mman.h` / `lot_mmap.c`: the sysroot has no mmap. On a 32-bit host Blink
   runs "nolinear" (software page tables), so it only needs zeroed anonymous
   chunks and private read-only file images. Both come from malloc; munmap
   frees only bases it handed out.
-- `lot_sbrk.c`: **platform bug** — the sysroot musl `_brk` grows wasm memory
-  4x faster than the heap (16 KiB vs 64 KiB page units), so every dlmalloc port
-  tops out at ~54 MB. `toolchain/patches/musl-brk-wasm-page-units.patch` fixes
-  it; `toolchain/musl-sysroot-fixed` includes it since 2026-09-29 (memprobe:
-  250 MB), so the shim is redundant with a current sysroot. With it: 243 MB.
-- `lot_sigaction.c`: **platform bug** — on the 7.1 kernel, SA_SIGINFO handlers
-  in pre-7.1-musl binaries kill the process ("Invalid siginfo trampoline": the
-  kernel calls sa_restorer as a 2-arg trampoline, old musl never sets one).
-  Wraps sigaction to install them as plain handlers through a thunk.
+- `lot_sigaction.c`: on 7.1 runtimes before 6e583e7, SA_SIGINFO handlers in
+  pre-7.1-musl binaries killed the process ("Invalid siginfo trampoline").
+  Wraps sigaction to install them as plain handlers through a thunk. Kept so
+  the spike also runs on older runtimes; 6e583e7 fixed it in the worker.
+
+From the sysroot (bugs this spike found, fixed there for every port):
+- brk grew wasm memory 4x faster than the heap, capping dlmalloc heaps at
+  ~54 MB (3c5a41c; now 243 MB)
+- `wasm_dlmalloc.c` / `wasm_dlmalloc_mt.c`: musl's internal `__libc_malloc`
+  (pthread_create's stack + TLS) went to mallocng, whose large-block path
+  traps without mmap; `_mt` adds locking for threaded ports (1ac3cfd)
+- `wasm_fork.c`: the fork child now restores `__stack_pointer` and
+  `__tls_base` (1ac3cfd)
+- `wasm_clone.c`: per-thread TLS for CLONE_SETTLS clones, a fresh TLS block
+  for CLONE_VFORK children with their own stack (Blink's vfork child runs an
+  emulator there), and the `__lot_clone_sets_sp` marker (1ac3cfd)
 
 ## Performance (primes < 200000, same C source)
 
@@ -63,19 +71,10 @@ ping-pong 2000 rounds (~46 us/handoff), per-thread guest TLS (%fs), a
 sleeping thread's join value; fork + pipes + `$(...)` still work.
 Test programs: `threads.c`, `forkthreads.c`.
 
-Three more platform problems, each fixed spike-locally:
-- `lot_dlmalloc_mt.c`: musl's *internal* allocations (`__libc_malloc`:
-  pthread_create's stack + TLS) go to mallocng, whose large-block path needs
-  mmap and traps; every guest clone() died. Routed to a locked dlmalloc.
-- `lot_fork.c`: the fork child is a fresh instance rewound into fork();
-  asyncify restores locals, not globals, so it came back with
-  `__stack_pointer` at the stack top (the worker restores it only when the
-  module exports it — none do) and `__tls_base` = 0. The child now writes
-  both back from locals right after the fork syscall.
-- `lot_clone.c`: no one calls `__wasm_init_tls` for new threads, so all
-  threads of every threaded wasm program share one TLS block (native probe
-  `tlsprobe`: 3 of 4 threads saw another thread's value). `__clone` now
-  gives each thread its own block.
+Three more platform problems surfaced here (internal allocator, fork-child
+globals, no per-thread TLS; native probe `tlsprobe`: 3 of 4 threads saw
+another thread's value). They were fixed spike-locally first and now live in
+the sysroot (1ac3cfd), listed under Shims above.
 
 ### Spawning children from a threaded guest (`LOT_VFORK`, blink-lot.patch)
 
@@ -104,7 +103,7 @@ table), sharing only the guest page tables, and its own `Machine`. Details:
 **Needs the worker to keep `CLONE_VM`:** worker.ts turns `CLONE_VM|CLONE_VFORK`
 into a copy for every asyncify module (old musl __clone left the child on
 the parent's stack). It now skips that for modules exporting
-`__lot_clone_sets_sp`, which lot_clone.c does (worker.ts change committed in
+`__lot_clone_sets_sp`, which sysroot/wasm_clone.c does (worker.ts change committed in
 6e583e7 together with the SA_SIGINFO compat, which also makes lot_sigaction.c
 unnecessary on that runtime; it is kept so older runtimes still work).
 

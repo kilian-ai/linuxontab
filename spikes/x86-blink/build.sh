@@ -29,20 +29,24 @@ export LOT_LDFLAGS="-nostdlib -static -Wl,--import-memory -Wl,--export-memory -W
 printf '#!/bin/sh\nexec %s --format=gnu "$@"\n' "$LLVM_AR" > "$W/bin/ar"; chmod +x "$W/bin/ar"
 export CC="$REPO/sysroot/lot-cc.sh" AR="$W/bin/ar"
 
-# shims: lot_sbrk FIRST (overrides musl's broken sbrk), then the usual objects
-for f in wasm_dlmalloc wasm_ld128 wasm_clone wasm_fork; do
+# shims: the sysroot's (clone with per-thread/vfork TLS + the
+# __lot_clone_sets_sp marker, fork restoring the child's globals, sbrk-only
+# dlmalloc that also serves musl's internal __libc_malloc; _mt = locked) and
+# the spike's own (malloc-backed mmap for Blink's nolinear mode, SA_SIGINFO
+# compat for runtimes older than 6e583e7)
+for f in wasm_dlmalloc wasm_dlmalloc_mt wasm_ld128 wasm_clone wasm_fork; do
   $CC1 $CFLAGS0 -w -c "$REPO/sysroot/$f.c" -o "$W/objs/$f.o"
 done
-for f in lot_sbrk lot_mmap lot_sigaction lot_dlmalloc_mt lot_fork lot_clone; do
+for f in lot_mmap lot_sigaction; do
   $CC1 $CFLAGS0 -w -c "$HERE/$f.c" -o "$W/objs/$f.o"
 done
 O="$W/objs"
 if [ "${THREADS:-0}" = 1 ]; then
-  MALLOC="$O/lot_dlmalloc_mt.o"; THREADFLAG=""
+  MALLOC="$O/wasm_dlmalloc_mt.o"; THREADFLAG=""
 else
   MALLOC="$O/wasm_dlmalloc.o"; THREADFLAG="--disable-threads"
 fi
-export LOT_LINK_OBJS="$O/lot_sbrk.o $MALLOC $O/wasm_ld128.o $O/lot_clone.o $O/lot_fork.o $O/lot_mmap.o $O/lot_sigaction.o"
+export LOT_LINK_OBJS="$MALLOC $O/wasm_ld128.o $O/wasm_clone.o $O/wasm_fork.o $O/lot_mmap.o $O/lot_sigaction.o"
 
 [ -d "$W/blink" ] || git clone -q https://github.com/jart/blink.git "$W/blink"
 cd "$W/blink"
