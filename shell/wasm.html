@@ -4547,7 +4547,15 @@ function xDbg(msg) {
 class RfbClient {
   constructor(canvas, socket) {
     this._canvas = canvas;
-    this._ctx    = canvas.getContext('2d');
+    this._vctx   = canvas.getContext('2d');
+    // Rects are drawn into an off-screen back buffer and copied to the
+    // visible canvas only when a whole FramebufferUpdate has arrived
+    // (_flush at msg-done). A big update spans many socket messages, and
+    // the browser paints between them: drawn straight to the page, a
+    // half-received update showed up on screen — flat RRE background
+    // flashes over most wolf3d/NetSurf frames.
+    this._ctx    = this._vctx;   // until server-init sizes the back buffer
+    this._dirty  = null;         // {x0,y0,x1,y1} drawn since the last flush
     this._ws     = socket;
     this._buf    = new Uint8Array(0);
     this._state  = 'version';
@@ -4681,6 +4689,11 @@ class RfbClient {
       this._consume(24 + nameLen);
       this._canvas.width  = this._w;
       this._canvas.height = this._h;
+      const back = document.createElement('canvas');
+      back.width = this._w; back.height = this._h;
+      this._ctx = back.getContext('2d');
+      this._back = back;
+      this._dirty = null;
       $('x-status').textContent = 'connected — ' + this._w + '×' + this._h + ' "' + name + '"';
       xDbg('server-init ' + this._w + 'x' + this._h + ' name=' + JSON.stringify(name));
       $('x-disconnect').disabled = false;
@@ -4740,6 +4753,7 @@ class RfbClient {
       // document.visibilityState is hidden) cannot slow the update loop.
       // Pacing is the server's job: it sleeps ~30 ms before answering when
       // the pupils didn't move.
+      this._flush();
       this._sendFbReq(true);
       this._state = 'msg';
       return true;
@@ -4766,26 +4780,21 @@ class RfbClient {
     case 'rre-hdr': {
       // RRE (encoding 2): u32 nSubrects, bg pixel (4B BGRA), then per
       // subrect: pixel (4B) + x,y,w,h (u16 each) relative to rect origin.
+      // Paint only once every subrect is here: the background fill alone
+      // is a flat-colour rect.
       if (b.length < 8) return false;
-      this._rreN = this._u32(0);
-      this._rreBg = 'rgb(' + b[6] + ',' + b[5] + ',' + b[4] + ')';  // B,G,R
-      this._consume(8);
-      this._ctx.fillStyle = this._rreBg;
+      const n = this._u32(0);
+      if (b.length < 8 + n * 12) return false;
+      this._ctx.fillStyle = 'rgb(' + b[6] + ',' + b[5] + ',' + b[4] + ')';  // B,G,R
       this._ctx.fillRect(this._rawX, this._rawY, this._rawW, this._rawH);
-      this._state = this._rreN > 0 ? 'rre-sub' : 'rre-done';
-      return true;
-    }
-
-    case 'rre-sub': {
-      const need = this._rreN * 12;
-      if (b.length < need) return false;
-      for (let i = 0; i < this._rreN; i++) {
-        const o = i * 12;
+      for (let i = 0; i < n; i++) {
+        const o = 8 + i * 12;
         this._ctx.fillStyle = 'rgb(' + b[o+2] + ',' + b[o+1] + ',' + b[o] + ')';
         this._ctx.fillRect(this._rawX + this._u16(o+4), this._rawY + this._u16(o+6),
                            this._u16(o+8), this._u16(o+10));
       }
-      this._consume(need);
+      this._consume(8 + n * 12);
+      this._markDirty(this._rawX, this._rawY, this._rawW, this._rawH);
       this._state = 'rre-done';
       return true;
     }
@@ -4817,6 +4826,7 @@ class RfbClient {
         rgba[i+3] = 255;
       }
       this._ctx.putImageData(new ImageData(rgba, this._rawW, this._rawH), this._rawX, this._rawY);
+      this._markDirty(this._rawX, this._rawY, this._rawW, this._rawH);
       this._lastFrameTs = Date.now();
       this._frames++;
       if (this._frames <= 3 || (this._frames % 60) === 0) {
@@ -4829,6 +4839,22 @@ class RfbClient {
 
     }
     return false;
+  }
+
+  _markDirty(x, y, w, h) {
+    const d = this._dirty;
+    if (!d) { this._dirty = { x0: x, y0: y, x1: x + w, y1: y + h }; return; }
+    d.x0 = Math.min(d.x0, x);     d.y0 = Math.min(d.y0, y);
+    d.x1 = Math.max(d.x1, x + w); d.y1 = Math.max(d.y1, y + h);
+  }
+
+  // Present the finished update: one copy of what changed, back → visible.
+  _flush() {
+    const d = this._dirty;
+    if (!d || !this._back) return;
+    this._dirty = null;
+    const w = d.x1 - d.x0, h = d.y1 - d.y0;
+    if (w > 0 && h > 0) this._vctx.drawImage(this._back, d.x0, d.y0, w, h, d.x0, d.y0, w, h);
   }
 
   _sendFbReq(incremental) {
