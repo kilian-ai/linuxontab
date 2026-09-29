@@ -425,7 +425,13 @@ const NR_WASM_GET_ARGS = 245;
           // memory.grow fails and musl traps. Cap them at 256 MiB like the
           // 6.1 host did; only WALI (Rust) modules keep their declared limit.
           const wali_module = WebAssembly.Module.imports(module).some((i) => i.module === "wali");
-          if (!wali_module) maximum = Math.min(maximum, USER_MEMORY_DEFAULT_MAX_PAGES);
+          // Opt-in for the few programs that need more: a module exporting
+          // __lot_big_memory keeps its declared maximum. The x86 emulator
+          // (spikes/x86-blink) declares 1 GiB: Node under Blink holds the
+          // 42 MB node binary, its libraries, V8's heap and Blink's page
+          // tables, and ran out of 256 MiB mid-run (random guest SIGSEGVs).
+          const big_memory = WebAssembly.Module.exports(module).some((e) => e.name === "__lot_big_memory");
+          if (!wali_module && !big_memory) maximum = Math.min(maximum, USER_MEMORY_DEFAULT_MAX_PAGES);
           // Start C processes at 128 MiB like the 6.1 host did (its random
           // 2048-3048 pages). This is not just headroom: a process whose heap
           // had to grow through memory.grow before it forked corrupts mallocng

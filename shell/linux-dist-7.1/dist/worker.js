@@ -1376,7 +1376,8 @@ function user_imports({
           declared_max = Number(memory_import.type.maximum);
           maximum = Math.min(declared_max, rlimit_pages);
           const wali_module = WebAssembly.Module.imports(module).some((i) => i.module === "wali");
-          if (!wali_module) maximum = Math.min(maximum, USER_MEMORY_DEFAULT_MAX_PAGES);
+          const big_memory = WebAssembly.Module.exports(module).some((e) => e.name === "__lot_big_memory");
+          if (!wali_module && !big_memory) maximum = Math.min(maximum, USER_MEMORY_DEFAULT_MAX_PAGES);
           if (!wali_module) minimum = Math.max(minimum, Math.min(USER_MEMORY_DEFAULT_MIN_PAGES, maximum));
         } catch {
           return -8;
