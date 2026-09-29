@@ -87,11 +87,11 @@
       "depends": []
     },
     "python3": {
-      "version": "3.11.14",
+      "version": "3.11.14-r1",
       "description": "Python 3.11 interpreter (CPython, WASM)",
-      "url": "https://linuxontab.com/packages/python3-3.11.14.tar.gz",
-      "size": 37739120,
-      "sha256": "6d67c2f30a12c3923f007851da21405519603f60e581b5ba920b53d721e49269",
+      "url": "https://linuxontab.com/packages/python3-3.11.14-r1.tar.gz",
+      "size": 37743924,
+      "sha256": "47e75f09906b810da834b367ce70f5377ecdc393d0811c0e5550c74df6fa5821",
       "bins": [
         "python3",
         "python3.11",
