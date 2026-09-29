@@ -27,16 +27,16 @@
       "depends": []
     },
     "curl": {
-      "version": "8.13.0",
-      "description": "Command-line tool for transferring data with URLs (HTTP)",
-      "url": "https://linuxontab.com/packages/curl-8.13.0.tar.gz",
-      "size": 1077904,
-      "sha256": "0f2e8e78b86c7e15900c4732ba2e4f63899923d86ed544fbbd2aad47dbd38588",
+      "version": "8.13.0-r1",
+      "description": "Command-line tool for transferring data with URLs (HTTP and HTTPS)",
+      "url": "https://linuxontab.com/packages/curl-8.13.0-r1.tar.gz",
+      "size": 1172611,
+      "sha256": "9addb7390ae97cf42247a455b335913958c2bc348029a757c8fb3e5318bc2d98",
       "bins": [
         "curl"
       ],
-      "status": "available",
-      "depends": []
+      "depends": [],
+      "status": "available"
     },
     "jq": {
       "version": "1.7.1",
@@ -854,6 +854,34 @@
       "depends": [
         "xtiny"
       ],
+      "status": "available"
+    },
+    "claw": {
+      "version": "1.0.0-62f05f9",
+      "description": "clawlite \u2014 tiny POSIX-sh LLM agent (Anthropic/OpenAI) with shell tool calls; set ANTHROPIC_API_KEY or OPENAI_API_KEY",
+      "url": "https://linuxontab.com/packages/claw-1.0.0-62f05f9.tar.gz",
+      "size": 16397,
+      "sha256": "dde5c893259bf740124ec37e7a6a2eaa455d7b9000a24d7bc41e55c0f6d859b1",
+      "bins": [
+        "claw"
+      ],
+      "depends": [
+        "curl",
+        "jq",
+        "zsh"
+      ],
+      "status": "available"
+    },
+    "zsh": {
+      "version": "5.9",
+      "description": "Z shell 5.9 \u2014 also a POSIX sh for scripts busybox hush can't run (zsh --emulate sh)",
+      "url": "https://linuxontab.com/packages/zsh-5.9.tar.gz",
+      "size": 867535,
+      "sha256": "03c2066ae98fdf24f5f485909134c65e5468d21b68bcf2c74e5d95b3cf2b8ed2",
+      "bins": [
+        "zsh"
+      ],
+      "depends": [],
       "status": "available"
     }
   }

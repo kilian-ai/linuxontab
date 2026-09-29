@@ -155,8 +155,13 @@ VERSION=""
 DESCRIPTION=""
 SOURCE_URL=""
 SOURCE_SHA256=""
+NO_ASYNCIFY=""
 
 . "$RECIPE"
+
+# A recipe that stages an already-asyncified binary sets NO_ASYNCIFY=1:
+# asyncifying twice breaks it.
+[ "$NO_ASYNCIFY" = 1 ] && SKIP_ASYNCIFY=1
 
 [ -n "$NAME" ]       || NAME="$RECIPE_NAME"
 [ -n "$VERSION" ]    || { echo "Error: recipe must set VERSION="; exit 1; }

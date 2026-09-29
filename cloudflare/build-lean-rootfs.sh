@@ -304,6 +304,7 @@ cat > "$STAGE/etc/motd" << 'EOF'
   X display:    vnc-server · vnc-snake · xtiny (X11 desktop)  → top bar: X display
   Games:        wolf3d — Wolfenstein 3D on the X desktop (run `xtiny &` first)
   Browser:      netsurf — web browser on the X desktop (run `xtiny &` first)
+  AI agent:     claw — LLM agent with shell tools (export ANTHROPIC_API_KEY, then claw -p anthropic)
   Everything runs in this tab. Nothing is sent to a server.
 
 EOF
