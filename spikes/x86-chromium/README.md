@@ -150,6 +150,18 @@ What it took, all found with the debugging aids below:
    (duplicated tiles). SQLite databases (named, writable, outside /tmp) are
    refused MAP_SHARED so it falls back to pread (the "profile error" dialog).
 
+5. **`madvise(MADV_DONTNEED)` was a no-op** (upstream Blink). Linux zeroes
+   private anonymous pages on DONTNEED and PartitionAlloc counts on it:
+   calloc() from decommitted-then-recommitted memory isn't cleared again. So
+   calloc returned stale bytes; most runs died ~20-30 s in, silently (exit
+   137), when leveldb's `opendir()` got a DIR with a garbage `buf_pos` and
+   `readdir()` faulted. Intermittent because PartitionAlloc purges on
+   wall-clock timers, which fire constantly relative to emulated work. Now
+   nolinear Blink zeroes those pages (`DiscardVirtual`); 4/4 runs clean vs
+   ~1/8 before. Also: Blink's crash printer asserted on wasm
+   (`pthread_setcancelstate`), which ate every crash report — fixed, so
+   `blink-dbg -L log` prints the guest backtrace again.
+
 Debugging aids that found them:
 - `BLINK_DUMP=<s> BLINK_DUMP_FILE=f` (debug Blink): every guest thread's
   registers + backtrace at that interval.

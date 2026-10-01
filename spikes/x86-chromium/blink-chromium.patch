@@ -125,6 +125,50 @@ index 3458213..2380f3c 100644
  #define CAN_64BIT 1
  #elif LONG_BIT >= 64
  #define CAN_64BIT 1
+diff --git a/blink/demangle.c b/blink/demangle.c
+index 387d589..bc4ffc9 100644
+--- a/blink/demangle.c
++++ b/blink/demangle.c
+@@ -236,7 +236,7 @@ char *Demangle(char *p, const char *symbol, size_t n) {
+   sigset_t ss, oldss;
+   sn = strlen(symbol);
+   if (StartsWith(symbol, "_Z")) {
+-#ifdef HAVE_PTHREAD_SETCANCELSTATE
++#if defined(HAVE_PTHREAD_SETCANCELSTATE) && !defined(__wasm__)
+     unassert(!pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cs));
+ #endif
+     unassert(!pthread_once_(&g_cxxfilt.once, InitCxxFilt));
+@@ -263,7 +263,7 @@ char *Demangle(char *p, const char *symbol, size_t n) {
+       r = 0;
+     }
+     UNLOCK(&g_cxxfilt.lock);
+-#ifdef HAVE_PTHREAD_SETCANCELSTATE
++#if defined(HAVE_PTHREAD_SETCANCELSTATE) && !defined(__wasm__)
+     unassert(!pthread_setcancelstate(cs, 0));
+ #endif
+   } else {
+diff --git a/blink/errfd.c b/blink/errfd.c
+index bfffb2c..5d3efa8 100644
+--- a/blink/errfd.c
++++ b/blink/errfd.c
+@@ -37,12 +37,15 @@ int WriteErrorString(const char *buf) {
+ 
+ int WriteError(int fd, const char *buf, int len) {
+   int rc, cs;
+-#ifdef HAVE_PTHREAD_SETCANCELSTATE
++  // wasm: pthread_setcancelstate fails on threads the sysroot's clone made,
++  // so the unassert killed every crash report (the faulting thread's
++  // diagnostics never printed); there is no cancellation to defer there.
++#if defined(HAVE_PTHREAD_SETCANCELSTATE) && !defined(__wasm__)
+   unassert(!pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cs));
+ #endif
+   do rc = write(fd > 0 ? fd : g_errfd, buf, len);
+   while (rc == -1 && errno == EINTR);
+-#ifdef HAVE_PTHREAD_SETCANCELSTATE
++#if defined(HAVE_PTHREAD_SETCANCELSTATE) && !defined(__wasm__)
+   unassert(!pthread_setcancelstate(cs, 0));
+ #endif
+   return rc;
 diff --git a/blink/linux.h b/blink/linux.h
 index 51973e2..a08cc6e 100644
 --- a/blink/linux.h
@@ -146,7 +190,7 @@ index 51973e2..a08cc6e 100644
  
  #define IOV_MAX_LINUX 1024
 diff --git a/blink/machine.h b/blink/machine.h
-index be17a8a..6d72a8c 100644
+index be17a8a..6fcd59a 100644
 --- a/blink/machine.h
 +++ b/blink/machine.h
 @@ -453,6 +453,7 @@ struct Machine {               //
@@ -157,6 +201,14 @@ index be17a8a..6d72a8c 100644
  extern _Thread_local siginfo_t g_siginfo;
  extern _Thread_local struct Machine *g_machine;
  extern const nexgen32e_f kConvert[3];
+@@ -545,6 +546,7 @@ void ResetRam(struct Machine *);
+ void SetReadAddr(struct Machine *, i64, u32);
+ void SetWriteAddr(struct Machine *, i64, u32);
+ int SyncVirtual(struct System *, i64, i64, int);
++int DiscardVirtual(struct System *, i64, i64);
+ int ProtectVirtual(struct System *, i64, i64, int, bool);
+ bool IsFullyMapped(struct System *, i64, i64);
+ bool IsFullyUnmapped(struct System *, i64, i64);
 diff --git a/blink/map.c b/blink/map.c
 index b25aa74..65190e1 100644
 --- a/blink/map.c
@@ -210,7 +262,7 @@ index 6c2d34c..2f54e4f 100644
          m->system->rss -= 1;
        }
 diff --git a/blink/memorymalloc.c b/blink/memorymalloc.c
-index 464beef..39d8287 100644
+index 464beef..4722dc2 100644
 --- a/blink/memorymalloc.c
 +++ b/blink/memorymalloc.c
 @@ -69,34 +69,56 @@ static void FreeHostPage(struct HostPage *hp) {
@@ -303,6 +355,48 @@ index 464beef..39d8287 100644
      if (entry & PAGE_RSRV) {
        s->memstat.reserved -= 1;
      } else {
+@@ -1303,6 +1327,41 @@ MemoryDisappeared:
+   return enomem();
+ }
+ 
++// madvise(MADV_DONTNEED) for nolinear mode: zero the private anonymous
++// pages in [virt, virt+size). Linux guarantees they read back as zeros, and
++// PartitionAlloc relies on it: calloc() memory carved from decommitted then
++// recommitted pages is not cleared again. Pages never touched (PAGE_RSRV) are
++// zero already; host-mapped pages (MUG: files, shared memory) keep their data.
++int DiscardVirtual(struct System *s, i64 virt, i64 size) {
++  u8 *mi, *host;
++  u64 pt;
++  i64 ti, end, level;
++  if (!IsValidAddrSize(virt, size)) return einval();
++  if (!IsFullyMapped(s, virt, size)) return enomem();
++  for (end = virt + size;;) {
++    for (pt = s->cr3, level = 39; level >= 12; level -= 9) {
++      ti = (virt >> level) & 511;
++      mi = GetPageAddress(s, pt, level == 39) + ti * 8;
++      pt = LoadPte(mi);
++      if (level > 12) {
++        if (!(pt & PAGE_V)) return enomem();
++        continue;
++      }
++      for (;;) {
++        if (!(pt & PAGE_V)) return enomem();
++        if (!(pt & PAGE_RSRV) &&
++            (pt & (PAGE_HOST | PAGE_MAP | PAGE_MUG)) == PAGE_HOST &&
++            (host = GetPageAddress(s, pt, false))) {
++          memset(host, 0, 4096);
++        }
++        if ((virt += 4096) >= end) return 0;
++        if (++ti == 512) break;
++        pt = LoadPte((mi += 8));
++      }
++    }
++  }
++}
++
+ int SyncVirtual(struct System *s, i64 virt, i64 size, int sysflags) {
+   int rc;
+   u8 *mi;
 diff --git a/blink/ssefloat.c b/blink/ssefloat.c
 index cf239ff..0a45885 100644
 --- a/blink/ssefloat.c
@@ -374,7 +468,7 @@ index cf239ff..0a45885 100644
      Write32(p + 1 * 4, x[1].i);
      Write32(p + 2 * 4, x[2].i);
 diff --git a/blink/syscall.c b/blink/syscall.c
-index 7ccfa52..c0ebb67 100644
+index 7ccfa52..1e76250 100644
 --- a/blink/syscall.c
 +++ b/blink/syscall.c
 @@ -369,6 +369,13 @@ _Noreturn void SysExitGroup(struct Machine *m, int rc) {
@@ -463,7 +557,29 @@ index 7ccfa52..c0ebb67 100644
    if (!IsValidAddrSize(addr, size)) return einval();
    if ((unsupported = prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC))) {
      LOGF("unsupported mprotect() protection: %#x", unsupported);
-@@ -1518,6 +1551,30 @@ static i64 SysMmapImpl(struct Machine *m, i64 virt, i64 size, int prot,
+@@ -1402,7 +1435,20 @@ static int SysMprotect(struct Machine *m, i64 addr, u64 size, int prot) {
+ }
+ 
+ static int SysMadvise(struct Machine *m, i64 addr, u64 len, int advice) {
+-  return 0;
++  int rc;
++  // MADV_DONTNEED (4) must leave private anonymous memory zeroed; the old
++  // no-op let PartitionAlloc hand out stale bytes from calloc() (Chromium:
++  // opendir() got a DIR with a garbage buf_pos and readdir() faulted). In
++  // linear mode the host mapping may be a shared file, so leave it alone.
++  if (advice != 4 || HasLinearMapping() || !len) return 0;
++  len = ROUNDUP(len, 4096);
++  if (!IsValidAddrSize(addr, len)) return einval();
++  BEGIN_NO_PAGE_FAULTS;
++  LOCK(&m->system->mmap_lock);
++  rc = DiscardVirtual(m->system, addr, len);
++  UNLOCK(&m->system->mmap_lock);
++  END_NO_PAGE_FAULTS;
++  return rc;
+ }
+ 
+ static i64 SysBrk(struct Machine *m, i64 addr) {
+@@ -1518,6 +1564,30 @@ static i64 SysMmapImpl(struct Machine *m, i64 virt, i64 size, int prot,
        errno = EACCES;
        return -1;
      }
@@ -494,7 +610,7 @@ index 7ccfa52..c0ebb67 100644
    }
    newautomap = -1;
    fixedmap = false;
-@@ -1650,7 +1707,9 @@ static int XlatMsyncFlags(int flags) {
+@@ -1650,7 +1720,9 @@ static int XlatMsyncFlags(int flags) {
  }
  
  static int SysMsync(struct Machine *m, i64 virt, u64 size, int flags) {
@@ -505,7 +621,7 @@ index 7ccfa52..c0ebb67 100644
    if ((flags = XlatMsyncFlags(flags)) == -1) return -1;
    return SyncVirtual(m->system, virt, size, flags);
  }
-@@ -2551,6 +2610,9 @@ static int SysConnect(struct Machine *m, int fd, i64 aa, u32 as) {
+@@ -2551,6 +2623,9 @@ static int SysConnect(struct Machine *m, int fd, i64 aa, u32 as) {
  static int UnXlatSocketType(int x) {
    if (x == SOCK_STREAM) return SOCK_STREAM_LINUX;
    if (x == SOCK_DGRAM) return SOCK_DGRAM_LINUX;
@@ -515,7 +631,7 @@ index 7ccfa52..c0ebb67 100644
    LOGF("%s %d not supported yet", "socket type", x);
    return einval();
  }
-@@ -4063,11 +4125,13 @@ static int SysPrlimit(struct Machine *m, i32 pid, i32 resource,
+@@ -4063,11 +4138,13 @@ static int SysPrlimit(struct Machine *m, i32 pid, i32 resource,
  #ifndef TINY
    if ((old_rlimit_addr &&
         !IsValidMemory(m, old_rlimit_addr, sizeof(struct rlimit_linux),
