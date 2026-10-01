@@ -1,0 +1,570 @@
+diff --git a/blink/bit.c b/blink/bit.c
+index 05f3f47..9c1deee 100644
+--- a/blink/bit.c
++++ b/blink/bit.c
+@@ -83,6 +83,13 @@ void OpBit(P) {
+     default:
+       OpUdImpl(m);
+   }
+-  WriteRegisterOrMemory(rde, p, z);
++  if (Lock(rde) && !IsModrmRegister(rde) && Rexw(rde)) {
++    // LinuxOnTab: on a 32-bit host Store64 takes this same bus lock itself,
++    // so `lock bts/btr/btc` on a quadword deadlocked the thread for good
++    // (GLib's g_param_spec_ref_sink hung Chromium's main thread)
++    Store64Unlocked(p, z);
++  } else {
++    WriteRegisterOrMemory(rde, p, z);
++  }
+   if (Lock(rde)) UnlockBus(p);
+ }
+diff --git a/blink/blink.c b/blink/blink.c
+index 3571b61..3d36496 100644
+--- a/blink/blink.c
++++ b/blink/blink.c
+@@ -141,20 +141,21 @@ static void OnSigSys(int sig) {
+ static void PrintDiagnostics(struct Machine *m) {
+   ERRF("additional information\n"
+        "\t%s\n"
+-       "%s\n"
+        "%s",
+-       GetBacktrace(m), FormatPml4t(m), GetBlinkBacktrace());
++       GetBacktrace(m), GetBlinkBacktrace());
+ }
+ 
+ void TerminateSignal(struct Machine *m, int sig, int code) {
+   int syssig;
+   struct sigaction sa;
+   unassert(!IsSignalIgnoredByDefault(sig));
+-  KillOtherThreads(m->system);
+-#ifdef HAVE_JIT
+-  DisableJit(&m->system->jit);  // unmapping exec pages is slow
+-#endif
++  // report before stopping the other threads: KillOtherThreads falls back
++  // to SIGKILL for unresponsive threads, which ends the whole process
+   if (IsSignalSerious(sig)) {
++    // one report at a time: a second thread faulting while the first
++    // prints would interleave or cut it off
++    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
++    pthread_mutex_lock(&lock);
+     ERRF("terminating due to %s ("
+          "rip=%#" PRIx64 " "
+          "code=%d "
+@@ -162,6 +163,10 @@ void TerminateSignal(struct Machine *m, int sig, int code) {
+          DescribeSignal(sig), m->ip, code, m->faultaddr);
+     PrintDiagnostics(m);
+   }
++  KillOtherThreads(m->system);
++#ifdef HAVE_JIT
++  DisableJit(&m->system->jit);  // unmapping exec pages is slow
++#endif
+   if ((syssig = XlatSignal(sig)) == -1) syssig = SIGKILL;
+   FreeMachine(m);
+ #ifdef HAVE_JIT
+@@ -202,6 +207,36 @@ static void ProgramLimit(struct System *s, int hresource, int gresource) {
+   }
+ }
+ 
++// LinuxOnTab: BLINK_DUMP=<seconds> appends every guest thread's registers
++// and backtrace to $BLINK_DUMP_FILE (default /tmp/blink-dump.txt) at that
++// interval, for finding spins and deadlocks in a process nothing can attach
++// to. Plain write(): Blink's logging asserts on non-guest threads.
++static void *DumpThreads(void *arg) {
++  struct System *s = (struct System *)arg;
++  struct Dll *e;
++  char *buf;
++  int fd, n, round = 0, secs = atoi(getenv("BLINK_DUMP"));
++  const char *path = getenv("BLINK_DUMP_FILE");
++  if (secs < 1) secs = 1;
++  if (!path) path = "/tmp/blink-dump.txt";
++  if ((fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644)) == -1) return 0;
++  if (!(buf = (char *)malloc(65536))) return 0;
++  for (;;) {
++    sleep(secs);
++    ++round;
++    LOCK(&s->machines_lock);
++    for (e = dll_first(s->machines); e; e = dll_next(s->machines, e)) {
++      struct Machine *t = MACHINE_CONTAINER(e);
++      n = snprintf(buf, 65536, "DUMP %d tid=%d ip=%#llx insyscall=%d\n%s\n",
++                   round, t->tid, (unsigned long long)t->ip, (int)t->insyscall,
++                   GetBacktrace(t));
++      if (n > 0) (void)!write(fd, buf, n < 65536 ? n : 65535);
++    }
++    UNLOCK(&s->machines_lock);
++  }
++  return 0;
++}
++
+ static int Exec(char *execfn, char *prog, char **argv, char **envp) {
+   int i;
+   sigset_t oldmask;
+@@ -220,6 +255,10 @@ static int Exec(char *execfn, char *prog, char **argv, char **envp) {
+       AddStdFd(&m->system->fds, i);
+     }
+     ProgramLimit(m->system, RLIMIT_NOFILE, RLIMIT_NOFILE_LINUX);
++    if (getenv("BLINK_DUMP")) {
++      pthread_t th;
++      pthread_create(&th, 0, DumpThreads, m->system);
++    }
+   } else {
+ #ifdef HAVE_JIT
+     DisableJit(&old->system->jit);  // unmapping exec pages is slow
+diff --git a/blink/builtin.h b/blink/builtin.h
+index 3458213..2380f3c 100644
+--- a/blink/builtin.h
++++ b/blink/builtin.h
+@@ -236,7 +236,11 @@
+ #define printf_attr(n)
+ #endif
+ 
+-#ifdef __x86_64__
++#if defined(LOT_FORCE_32BIT_HOST)
++// LinuxOnTab: exercise a 32-bit host's code paths on a 64-bit build, to
++// debug the wasm32 build natively
++#define CAN_64BIT 0
++#elif defined(__x86_64__)
+ #define CAN_64BIT 1
+ #elif LONG_BIT >= 64
+ #define CAN_64BIT 1
+diff --git a/blink/linux.h b/blink/linux.h
+index 51973e2..a08cc6e 100644
+--- a/blink/linux.h
++++ b/blink/linux.h
+@@ -676,6 +676,7 @@
+ 
+ #define SO_DEBUG_LINUX             1
+ #define SO_REUSEADDR_LINUX         2
++#define SO_PASSCRED_LINUX          16  // LOT: chromium crashpad
+ #define SO_TYPE_LINUX              3
+ #define SO_ERROR_LINUX             4
+ #define SO_DONTROUTE_LINUX         5
+@@ -719,6 +720,7 @@
+ 
+ #define SOCK_STREAM_LINUX 1
+ #define SOCK_DGRAM_LINUX  2
++#define SOCK_SEQPACKET_LINUX 5
+ #define SOCK_RAW_LINUX    3
+ 
+ #define IOV_MAX_LINUX 1024
+diff --git a/blink/machine.h b/blink/machine.h
+index be17a8a..6d72a8c 100644
+--- a/blink/machine.h
++++ b/blink/machine.h
+@@ -453,6 +453,7 @@ struct Machine {               //
+ };  //
+ 
+ extern struct HostPages g_hostpages;
++void UntrackHostPage(u64);
+ extern _Thread_local siginfo_t g_siginfo;
+ extern _Thread_local struct Machine *g_machine;
+ extern const nexgen32e_f kConvert[3];
+diff --git a/blink/map.c b/blink/map.c
+index b25aa74..65190e1 100644
+--- a/blink/map.c
++++ b/blink/map.c
+@@ -37,7 +37,13 @@
+ #include "blink/vfs.h"
+ 
+ static long GetSystemPageSize(void) {
+-#ifdef __EMSCRIPTEN__
++#if defined(__EMSCRIPTEN__) || defined(__wasm__)
++  // LinuxOnTab: likewise on our wasm host, whose mmap (lot_mmap.c) hands out
++  // 4 KiB-aligned malloc blocks while sysconf says 16 KiB. With 16 KiB,
++  // replacing one page of a file mapping (ld-musl's MAP_FIXED segments over
++  // its initial whole-file map) unmapped from the rounded-down block base,
++  // which freed page 0 still in use: chromium's libwebpdemux hash table read
++  // back as zeros and ld-musl faulted in its GNU-hash lookup.
+   // "pages" in Emscripten only refer to the granularity the memory
+   // buffer can be grown at but does not affect functions like mmap
+   return 4096;
+@@ -101,6 +107,15 @@ static void *PortableMmap(void *addr,     //
+ static int GetBitsInAddressSpace(void) {
+ #ifdef __EMSCRIPTEN__
+   return 32;
++#elif defined(__wasm__)
++  // LinuxOnTab: a wasm host always runs nolinear (software page tables), so
++  // guest addresses are never host pointers. Probing finds ~32 bits and
++  // ScaleAddress() then squeezes the whole x86-64 layout (image, mmap arena,
++  // interpreter, stack) into 4 GB: the image lands at 0x88000000 with the
++  // mmap arena at 0x80000000 below it, and big programs (chromium: 211 MB
++  // image, ~100 GB of PROT_NONE reservations) collide or run out. Use the
++  // native x86-64 layout instead.
++  return 48;
+ #else
+   int i;
+   void *ptr;
+diff --git a/blink/memory.c b/blink/memory.c
+index 6c2d34c..2f54e4f 100644
+--- a/blink/memory.c
++++ b/blink/memory.c
+@@ -103,7 +103,11 @@ u64 HandlePageFault(struct Machine *m, u8 *pslot, u64 entry) {
+         m->system->memstat.reserved -= 1;
+         entry = x;
+       } else {
+-        FreeAnonymousPage(m->system, (u8 *)(uintptr_t)(page & PAGE_TA));
++        // LinuxOnTab: in nolinear mode `page` is a host-page slot index,
++        // not a pointer: freeing it as one put a bogus page on the free list
++        // (a later allocation then scribbled over Blink's own heap)
++        FreeAnonymousPage(m->system, FindHostPage(page));
++        UntrackHostPage(page);
+         entry = LoadPte(pslot);
+         m->system->rss -= 1;
+       }
+diff --git a/blink/memorymalloc.c b/blink/memorymalloc.c
+index 464beef..39d8287 100644
+--- a/blink/memorymalloc.c
++++ b/blink/memorymalloc.c
+@@ -69,34 +69,56 @@ static void FreeHostPage(struct HostPage *hp) {
+   free(hp);
+ }
+ 
++// LinuxOnTab: in nolinear mode (every 32-bit host, and -m) a page table
++// entry holds an index into g_hostpages, not a host pointer. The array used
++// to grow forever (every anonymous page fault and every file page mapping
++// appended a slot, freed pages never gave theirs back) and was realloc()ed
++// while other threads indexed it without a lock. Chromium churns pages fast
++// enough to cross the 1M initial slots within a minute, after which lookups
++// read the moved array: tiles came out blank or garbled, Blink trapped. Now
++// the array is allocated once and never moves, and freed pages return their
++// slot to a free list. A 4 GiB wasm heap has at most 1M live 4 KiB pages;
++// 4M slots leaves room for aliases and the few slots that are never freed
++// (page tables).
++#define kHostPagesMax (1u << 22)
++static pthread_mutex_t g_hostpages_lock = PTHREAD_MUTEX_INITIALIZER;
++static u32 *g_hostfree;
++static size_t g_nhostfree;
++
+ static u64 TrackHostPage(u8 *ptr) {
+   u64 entry;
+   if (HasLinearMapping()) {
+     return (uintptr_t)ptr;
+   } else {
+-    // LinuxOnTab: nolinear mode (every 32-bit host) appended here without a
+-    // lock, so two threads allocating at once could get the same index: two
+-    // guest pages aliasing one host page (threaded guests like Node crashed
+-    // on garbage pointers). Appends are serialized now. Readers (FindHostPage)
+-    // still index the array without a lock, so a realloc that moves it can
+-    // race with them: start big (1M entries) so that almost never happens.
+-    // (Growing by copy without ever freeing the old array broke page lookups
+-    // on the wasm build for reasons not yet understood; realloc is kept.)
+-    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+-    pthread_mutex_lock(&lock);
+-    if (g_hostpages.n == g_hostpages.c) {
+-      g_hostpages.c = g_hostpages.c ? g_hostpages.c * 2 : 1 << 20;
+-      g_hostpages.p =
+-          realloc(g_hostpages.p, g_hostpages.c * sizeof(*g_hostpages.p));
+-      unassert(g_hostpages.p);
++    pthread_mutex_lock(&g_hostpages_lock);
++    if (!g_hostpages.p) {
++      g_hostpages.c = kHostPagesMax;
++      g_hostpages.p = (u8 **)calloc(g_hostpages.c, sizeof(*g_hostpages.p));
++      g_hostfree = (u32 *)malloc(g_hostpages.c * sizeof(*g_hostfree));
++      unassert(g_hostpages.p && g_hostfree);
++    }
++    if (g_nhostfree) {
++      entry = g_hostfree[--g_nhostfree];
++    } else {
++      if (g_hostpages.n == g_hostpages.c) {
++        WriteErrorString("blink: out of host page slots\n");
++        abort();
++      }
++      entry = g_hostpages.n++;
+     }
+-    entry = g_hostpages.n++;
+     g_hostpages.p[entry] = ptr;
+-    pthread_mutex_unlock(&lock);
++    pthread_mutex_unlock(&g_hostpages_lock);
+     return entry << 12;
+   }
+ }
+ 
++void UntrackHostPage(u64 entry) {
++  if (HasLinearMapping()) return;
++  pthread_mutex_lock(&g_hostpages_lock);
++  g_hostfree[g_nhostfree++] = (entry & PAGE_TA) >> 12;
++  pthread_mutex_unlock(&g_hostpages_lock);
++}
++
+ void FreeAnonymousPage(struct System *s, u8 *page) {
+   struct HostPage *h;
+   unassert((h = NewHostPage()));
+@@ -652,6 +674,7 @@ static bool FreePage(struct System *s, i64 virt, u64 entry, u64 size,
+     s->memstat.committed -= 1;
+     ClearPage((page = FindHostPage(entry)));
+     FreeAnonymousPage(s, page);
++    UntrackHostPage(entry);
+     --*rss_delta;
+     return false;
+   } else if ((entry & (PAGE_HOST | PAGE_MAP | PAGE_MUG)) ==
+@@ -661,6 +684,7 @@ static bool FreePage(struct System *s, i64 virt, u64 entry, u64 size,
+     real = mug = FindHostPage(entry);
+     while ((uintptr_t)mug & (pagesize - 1)) mug -= 4096;
+     unassert(!Munmap(mug, real - mug + size));
++    UntrackHostPage(entry);
+     if (entry & PAGE_RSRV) {
+       s->memstat.reserved -= 1;
+     } else {
+diff --git a/blink/ssefloat.c b/blink/ssefloat.c
+index cf239ff..0a45885 100644
+--- a/blink/ssefloat.c
++++ b/blink/ssefloat.c
+@@ -594,9 +594,9 @@ static int Cmps(int imm, float x, float y) {
+     case 4:
+       return x != y ? -1 : 0;
+     case 5:
+-      return x >= y ? -1 : 0;
++      return !(x < y) ? -1 : 0;  // NLT: true when unordered
+     case 6:
+-      return x > y ? -1 : 0;
++      return !(x <= y) ? -1 : 0;  // NLE: true when unordered
+     case 7:
+       return !(isnan(x) || isnan(y)) ? -1 : 0;
+     default:
+@@ -617,9 +617,9 @@ static i32 Cmpd(int imm, double x, double y) {
+     case 4:
+       return x != y ? -1 : 0;
+     case 5:
+-      return x >= y ? -1 : 0;
++      return !(x < y) ? -1 : 0;  // NLT: true when unordered
+     case 6:
+-      return x > y ? -1 : 0;
++      return !(x <= y) ? -1 : 0;  // NLE: true when unordered
+     case 7:
+       return !(isnan(x) || isnan(y)) ? -1 : 0;
+     default:
+@@ -634,13 +634,13 @@ void OpCmppsd(P) {
+     union DoublePun x, y;
+     y.i = Read64(GetModrmRegisterXmmPointerRead8(A));
+     x.i = Read64(XmmRexrReg(m, rde));
+-    x.f = Cmpd(imm, x.f, y.f);
++    x.i = Cmpd(imm, x.f, y.f);
+     Write64(XmmRexrReg(m, rde), x.i);
+   } else if (Rep(rde) == 3) {
+     union FloatPun x, y;
+     y.i = Read32(GetModrmRegisterXmmPointerRead4(A));
+     x.i = Read32(XmmRexrReg(m, rde));
+-    x.f = Cmps(imm, x.f, y.f);
++    x.i = Cmps(imm, x.f, y.f);
+     Write32(XmmRexrReg(m, rde), x.i);
+   } else if (Osz(rde)) {
+     u8 *p;
+@@ -651,8 +651,8 @@ void OpCmppsd(P) {
+     p = XmmRexrReg(m, rde);
+     x[0].i = Read64(p + 0 * 8);
+     x[1].i = Read64(p + 1 * 8);
+-    x[0].f = Cmpd(imm, x[0].f, y[0].f);
+-    x[1].f = Cmpd(imm, x[1].f, y[1].f);
++    x[0].i = Cmpd(imm, x[0].f, y[0].f);
++    x[1].i = Cmpd(imm, x[1].f, y[1].f);
+     Write64(p + 0 * 8, x[0].i);
+     Write64(p + 1 * 8, x[1].i);
+   } else {
+@@ -668,10 +668,10 @@ void OpCmppsd(P) {
+     x[1].i = Read32(p + 1 * 4);
+     x[2].i = Read32(p + 2 * 4);
+     x[3].i = Read32(p + 3 * 4);
+-    x[0].f = Cmps(imm, x[0].f, y[0].f);
+-    x[1].f = Cmps(imm, x[1].f, y[1].f);
+-    x[2].f = Cmps(imm, x[2].f, y[2].f);
+-    x[3].f = Cmps(imm, x[3].f, y[3].f);
++    x[0].i = Cmps(imm, x[0].f, y[0].f);
++    x[1].i = Cmps(imm, x[1].f, y[1].f);
++    x[2].i = Cmps(imm, x[2].f, y[2].f);
++    x[3].i = Cmps(imm, x[3].f, y[3].f);
+     Write32(p + 0 * 4, x[0].i);
+     Write32(p + 1 * 4, x[1].i);
+     Write32(p + 2 * 4, x[2].i);
+diff --git a/blink/syscall.c b/blink/syscall.c
+index 7ccfa52..c0ebb67 100644
+--- a/blink/syscall.c
++++ b/blink/syscall.c
+@@ -369,6 +369,13 @@ _Noreturn void SysExitGroup(struct Machine *m, int rc) {
+     _Exit(rc);
+   } else {
+     THR_LOGF("calling exit(%d)", rc);
++#if defined(__wasm__) && !defined(TINY)
++    // LinuxOnTab: the host exit_group ends every thread anyway. Stopping them
++    // one by one first doesn't work here (guest threads parked in futex
++    // waits don't acknowledge SIGSYS), so KillOtherThreads fell back to
++    // SIGKILL after 10 tries and a clean exit(0) became status 137.
++    if (!m->system->trapexit) _Exit(rc);
++#endif
+     KillOtherThreads(m->system);
+ #ifdef HAVE_JIT
+     DisableJit(&m->system->jit);  // unmapping exec pages is slow
+@@ -974,7 +981,8 @@ static int SysFutexWait(struct Machine *m,  //
+                         i64 uaddr,          //
+                         i32 op,             //
+                         u32 expect,         //
+-                        i64 timeout_addr) {
++                        i64 timeout_addr,   //
++                        int abs_clock) {    // -1: timeout is relative
+   int rc;
+   u8 *mem;
+   struct Futex *f;
+@@ -991,6 +999,14 @@ static int SysFutexWait(struct Machine *m,  //
+     if (!(0 <= timeout.tv_nsec && timeout.tv_nsec < 1000000000)) {
+       return einval();
+     }
++    if (abs_clock != -1) {
++      // FUTEX_WAIT_BITSET: an absolute time on CLOCK_MONOTONIC (or
++      // CLOCK_REALTIME with FUTEX_CLOCK_REALTIME); make it relative
++      struct timespec cnow;
++      clock_gettime(abs_clock, &cnow);
++      timeout = SubtractTime(timeout, cnow);
++      if (timeout.tv_sec < 0) timeout.tv_sec = timeout.tv_nsec = 0;
++    }
+     deadline = AddTime(now, timeout);
+   } else {
+     deadline = GetMaxTime();
+@@ -1074,15 +1090,30 @@ static int SysFutex(struct Machine *m,  //
+   op &= ~FUTEX_PRIVATE_FLAG_LINUX;
+   switch (op) {
+     case FUTEX_WAIT_LINUX:
+-      return SysFutexWait(m, uaddr, op, val, timeout_addr);
++      return SysFutexWait(m, uaddr, op, val, timeout_addr, -1);
+     case FUTEX_WAKE_LINUX:
+       return SysFutexWake(m, uaddr, val);
+     case FUTEX_WAIT_BITSET_LINUX:
+     case FUTEX_WAIT_BITSET_LINUX | FUTEX_CLOCK_REALTIME_LINUX:
+-      // will be supported soon
+-      // avoid logging when cosmo feature checks this
+-      if (!m->system->iscosmo) goto DefaultCase;
+-      return einval();
++      // LinuxOnTab: implemented (Chromium's base futex waiter uses it; the
++      // EINVAL was a fatal CHECK). The bitset is ignored: every waiter is a
++      // candidate, and a spurious wakeup is allowed by the futex contract.
++      if (!val3) return einval();
++      return SysFutexWait(m, uaddr, op, val, timeout_addr,
++                          (op & FUTEX_CLOCK_REALTIME_LINUX) ? CLOCK_REALTIME
++                                                           : CLOCK_MONOTONIC);
++    case 10:  // FUTEX_WAKE_BITSET
++      if (!val3) return einval();
++      return SysFutexWake(m, uaddr, val);
++    case 6:   // FUTEX_LOCK_PI
++    case 7:   // FUTEX_UNLOCK_PI
++    case 8:   // FUTEX_TRYLOCK_PI
++    case 13:  // FUTEX_LOCK_PI2
++      // priority-inheritance futexes aren't emulated; report them as
++      // unsupported the way a kernel without PI support does, so musl's
++      // pthread_mutexattr_setprotocol returns ENOTSUP (PulseAudio, which
++      // Chromium loads, aborts on any other error) instead of EINVAL.
++      return eopnotsupp();
+     default:
+     DefaultCase:
+       LOGF("unsupported %s op %#x", "futex", op);
+@@ -1386,7 +1417,9 @@ static int SysMprotect(struct Machine *m, i64 addr, u64 size, int prot) {
+   _Static_assert(PROT_EXEC == 4, "");
+   int rc;
+   int unsupported;
+-  if (size > NUMERIC_MAX(size_t)) return eoverflow();
++  // only the host mprotect/msync of linear mode needs a host size_t; on a
++  // 32-bit host (nolinear) V8's 4 GB sandbox mprotect got EOVERFLOW here
++  if (HasLinearMapping() && size > NUMERIC_MAX(size_t)) return eoverflow();
+   if (!IsValidAddrSize(addr, size)) return einval();
+   if ((unsupported = prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC))) {
+     LOGF("unsupported mprotect() protection: %#x", unsupported);
+@@ -1518,6 +1551,30 @@ static i64 SysMmapImpl(struct Machine *m, i64 virt, i64 size, int prot,
+       errno = EACCES;
+       return -1;
+     }
++#ifdef __wasm__
++    // LinuxOnTab: the wasm host has no real mmap (lot_mmap.c copies file
++    // bytes), so a shared mapping of a named, writable file would go stale
++    // as soon as anyone write()s it. SQLite maps its databases that way and
++    // writes with pwrite; refusing makes it fall back to pread (Chromium's
++    // "profile error" dialog). Read-only files (.pak, fonts) are still
++    // mapped, and so is shared memory (below).
++    // Shared-memory files (Chromium's tiles live in /tmp/.org.chromium.*,
++    // still linked while mapped) must keep working: only named files
++    // outside /tmp and /dev/shm are refused.
++    if ((flags & MAP_SHARED_LINUX) && (oflags & O_ACCMODE) != O_RDONLY) {
++      struct stat st;
++      char link[64], path[512];
++      ssize_t n;
++      snprintf(link, sizeof(link), "/proc/self/fd/%d", fildes);
++      if (!fstat(fildes, &st) && S_ISREG(st.st_mode) && st.st_nlink > 0 &&
++          (n = readlink(link, path, sizeof(path) - 1)) > 0) {
++        path[n] = 0;
++        if (strncmp(path, "/tmp/", 5) && strncmp(path, "/dev/shm/", 9)) {
++          return enodev();
++        }
++      }
++    }
++#endif
+   }
+   newautomap = -1;
+   fixedmap = false;
+@@ -1650,7 +1707,9 @@ static int XlatMsyncFlags(int flags) {
+ }
+ 
+ static int SysMsync(struct Machine *m, i64 virt, u64 size, int flags) {
+-  if (size > NUMERIC_MAX(size_t)) return eoverflow();
++  // only the host mprotect/msync of linear mode needs a host size_t; on a
++  // 32-bit host (nolinear) V8's 4 GB sandbox mprotect got EOVERFLOW here
++  if (HasLinearMapping() && size > NUMERIC_MAX(size_t)) return eoverflow();
+   if ((flags = XlatMsyncFlags(flags)) == -1) return -1;
+   return SyncVirtual(m->system, virt, size, flags);
+ }
+@@ -2551,6 +2610,9 @@ static int SysConnect(struct Machine *m, int fd, i64 aa, u32 as) {
+ static int UnXlatSocketType(int x) {
+   if (x == SOCK_STREAM) return SOCK_STREAM_LINUX;
+   if (x == SOCK_DGRAM) return SOCK_DGRAM_LINUX;
++#ifdef SOCK_SEQPACKET
++  if (x == SOCK_SEQPACKET) return SOCK_SEQPACKET_LINUX;
++#endif
+   LOGF("%s %d not supported yet", "socket type", x);
+   return einval();
+ }
+@@ -4063,11 +4125,13 @@ static int SysPrlimit(struct Machine *m, i32 pid, i32 resource,
+ #ifndef TINY
+   if ((old_rlimit_addr &&
+        !IsValidMemory(m, old_rlimit_addr, sizeof(struct rlimit_linux),
+-                      PROT_WRITE)) &&
++                      PROT_WRITE)) ||
+       (new_rlimit_addr &&
+        !IsValidMemory(m, new_rlimit_addr, sizeof(struct rlimit_linux),
+                       PROT_READ))) {
+-    return -1;
++    // EFAULT, not SIGSEGV: chromium's base::ProtectedMemory proves a page
++    // is read-only by passing it to getrlimit() and expecting EFAULT
++    return efault();
+   }
+ #endif
+   if ((old_rlimit_addr && SysGetrlimit(m, resource, old_rlimit_addr) == -1) ||
+diff --git a/blink/tunables.h b/blink/tunables.h
+index a9f19f8..1e4cca0 100644
+--- a/blink/tunables.h
++++ b/blink/tunables.h
+@@ -43,7 +43,7 @@
+ #define kSmcQueueSize 32
+ #define kMaxMapSize   (UINT64_C(8) * 1024 * 1024 * 1024)
+ #define kMaxResident  (UINT64_C(8) * 1024 * 1024 * 1024)
+-#define kMaxVirtual   (kMaxResident * 8)
++#define kMaxVirtual   (kMaxResident * 64)  // LOT: chromium reserves ~100 GB PROT_NONE
+ #define kMaxAncillary 1000
+ #define kMaxShebang   512
+ #define kMaxSigDepth  8
+diff --git a/blink/xlat.c b/blink/xlat.c
+index 37f82e8..c587d62 100644
+--- a/blink/xlat.c
++++ b/blink/xlat.c
+@@ -553,6 +553,9 @@ int XlatSocketType(int x) {
+     XLAT(SOCK_STREAM_LINUX, SOCK_STREAM);
+     XLAT(SOCK_DGRAM_LINUX, SOCK_DGRAM);
+     XLAT(SOCK_RAW_LINUX, SOCK_RAW);
++#ifdef SOCK_SEQPACKET
++    XLAT(SOCK_SEQPACKET_LINUX, SOCK_SEQPACKET);
++#endif
+     default:
+       LOGF("%s %d not supported yet", "socket type", x);
+       return einval();
+@@ -613,6 +616,9 @@ int XlatSocketOptname(int level, int optname) {
+ #ifdef SO_REUSEPORT
+         XLAT(SO_REUSEPORT_LINUX, SO_REUSEPORT);
+ #endif
++#ifdef SO_PASSCRED
++        XLAT(SO_PASSCRED_LINUX, SO_PASSCRED);
++#endif
+ #endif
+         default:
+           break;

@@ -1,0 +1,22 @@
+#!/bin/sh
+# Chromium 131 (Alpine x86-64) under the Blink emulator, in a window on the
+# guest's X server (xtiny, DISPLAY=:1), with tabs and an address bar.
+#   xtiny &
+#   /opt/x86/chromium-x [url]          # full browser
+#   CHROMIUM_APP=1 /opt/x86/chromium-x url   # bare app window, no toolbar
+# No crashpad (its sockets/signals aren't emulated), no GPU or software GL,
+# one process, no JIT. First window takes a few minutes.
+export BLINK_OVERLAYS=/opt/x86/root:
+# the guest's HOME is / (kernel env): Chrome can't place its profile there
+[ "${HOME:-/}" = / ] && HOME=/root
+export HOME
+: "${DISPLAY:=:1}"
+export DISPLAY
+url="${1:-about:blank}"; [ $# -gt 0 ] && shift
+if [ -n "$CHROMIUM_APP" ]; then target="--app=$url"; else target="$url"; fi
+exec /opt/x86/blink /opt/x86/root/usr/lib/chromium/chrome \
+  --no-sandbox --single-process --no-zygote --disable-gpu \
+  --disable-software-rasterizer --disable-gpu-compositing \
+  --disable-dev-shm-usage --js-flags=--jitless --ozone-platform=x11 \
+  --disable-crashpad-for-testing --no-first-run --test-type \
+  "$target" "$@"

@@ -3614,11 +3614,37 @@ async function doBoat() {
     'ip=' + lotGuestIp + '::192.168.86.1:255.255.255.0::eth0:off', 'lot_ip=' + lotGuestIp,
     ...(lotHosts ? ['lot_hosts=' + lotHosts] : []), ...(lotSvcs ? ['lot_svc=' + lotSvcs] : []), ...(lotRun ? ['lot_run=' + lotRun] : []),
     'lot_epoch=' + Math.floor(Date.now() / 1000), 'lot_tty=' + term.rows + 'x' + term.cols];
+  // ?xdisk=<same-origin path>: an extra READ-ONLY disk image as /dev/vdc, for
+  // images too big for the rootfs or a package (the x86 Chromium spike root:
+  // `mount -o ro /dev/vdc /opt/x86`). Writes are refused; nothing persists.
+  let xDiskDev = null;
+  const xDiskPath = lotParams.get('xdisk');
+  if (xDiskPath && /^[A-Za-z0-9._\/-]+$/.test(xDiskPath) && !xDiskPath.includes('..')) {
+    try {
+      const xr = await fetch('./' + xDiskPath.replace(/^\/+/, ''), { cache: 'no-store' });
+      if (!xr.ok) throw new Error('HTTP ' + xr.status);
+      const xBytes = new Uint8Array(await xr.arrayBuffer());
+      xDiskDev = blockDevice({
+        capacity: xBytes.byteLength,
+        read: (offset, target) => {
+          const n = Math.max(0, Math.min(target.byteLength, xBytes.byteLength - offset));
+          target.set(xBytes.subarray(offset, offset + n));
+          return n;
+        },
+        write: () => { throw new Error('xdisk is read-only'); },
+        flush: () => {},
+      });
+      term.write(`\r\n\x1b[36m[xdisk] ${xDiskPath} (${(xBytes.byteLength / 1048576).toFixed(0)} MiB) → /dev/vdc (read-only)\x1b[0m\r\n`);
+    } catch (e) {
+      term.write(`\r\n\x1b[33m[xdisk] ${xDiskPath} not attached: ${e.message}\x1b[0m\r\n`);
+    }
+  }
   console.log('[WASM Boot] booting Linux 7.1 with WispSlirp networking (WISP + virtio-net)…');
   try {
     // Plugin order = virtio device order: the rootfs must stay /dev/vda.
     machine = await bootMachine({ cpus: 1, args: lotArgs, initcpio, memoryMiB: lotMemMiB,
-                                  plugins: [consoleDev, entropyDev, blockDev, pkgDropDev, netDev] });
+                                  plugins: [consoleDev, entropyDev, blockDev, pkgDropDev, netDev,
+                                            ...(xDiskDev ? [xDiskDev] : [])] });
   } catch (err) {
     hideDlProgress();
     setStatus('boot failed', 'err');

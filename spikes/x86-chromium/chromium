@@ -1,0 +1,10 @@
+#!/bin/sh
+# Headless Chromium 131 (Alpine x86-64) under the Blink emulator.
+#   /opt/x86/chromium --dump-dom file:///tmp/t.html
+# /proc/self/exe is Blink, so Chrome finds its .pak/.dat files next to it
+# (the symlinks in /opt/x86). No JIT (--jitless), no GPU, one process.
+export BLINK_OVERLAYS=/opt/x86/root:
+exec /opt/x86/blink /opt/x86/root/usr/lib/chromium/chrome --headless=old \
+  --no-sandbox --single-process --no-zygote --disable-gpu \
+  --disable-software-rasterizer --disable-gpu-compositing \
+  --disable-dev-shm-usage --js-flags=--jitless "$@"

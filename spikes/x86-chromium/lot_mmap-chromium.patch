@@ -1,0 +1,250 @@
+--- a/spikes/x86-blink/lot_mmap.c
++++ b/spikes/x86-blink/lot_mmap.c
+@@ -8,15 +8,24 @@
+  * MAP_FIXED requests are refused (nolinear Blink never makes them).
+  */
+ #include <errno.h>
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ #include <sched.h>
+ #include <unistd.h>
++#include <sys/stat.h>
++#include <fcntl.h>
+ #include "lot_mman.h"
+ 
+-/* Every mapping's base, so munmap frees only what mmap returned. Blink may
+- * unmap sub-ranges or pointers it computed; those are ignored (leaked). */
+-static void **g_maps;
++/* Every mapping's base and length, so munmap frees only a WHOLE mapping mmap
++ * returned. Blink unmaps single pages of a file mapping when a MAP_FIXED
++ * mapping replaces them, passing the page address rounded down to the host
++ * page size (64 KiB here) — which is the block's base whenever malloc
++ * happened to align it that way. Freeing the block then would release pages
++ * still in use (ld-musl read a library's hash table out of reused memory:
++ * chromium's 175 libraries always hit it). Partial unmaps are ignored. */
++struct map { void *p; size_t n; };
++static struct map *g_maps;
+ static size_t g_nmaps, g_cmaps;
+ static volatile int g_lock;   /* threaded Blink maps from several threads */
+ 
+@@ -25,32 +34,176 @@
+ }
+ static void unlock(void) { __atomic_store_n(&g_lock, 0, __ATOMIC_RELEASE); }
+ 
+-static void track(void *p) {
++static void track(void *p, size_t len) {
+   lock();
+   if (g_nmaps == g_cmaps) {
+     size_t c = g_cmaps ? g_cmaps * 2 : 256;
+-    void **n = realloc(g_maps, c * sizeof(*n));
++    struct map *n = realloc(g_maps, c * sizeof(*n));
+     if (!n) { unlock(); return; }   /* untracked: never freed, never wrongly freed */
+     g_maps = n; g_cmaps = c;
+   }
+-  g_maps[g_nmaps++] = p;
++  g_maps[g_nmaps].p = p;
++  g_maps[g_nmaps++].n = len;
+   unlock();
+ }
+ 
+-static int untrack(void *p) {
++static int untrack(void *p, size_t len) {
+   int found = 0;
+   lock();
+   for (size_t i = g_nmaps; i-- > 0;)
+-    if (g_maps[i] == p) { g_maps[i] = g_maps[--g_nmaps]; found = 1; break; }
++    if (g_maps[i].p == p) {
++      if (len >= g_maps[i].n) { g_maps[i] = g_maps[--g_nmaps]; found = 1; }
++      break;
++    }
+   unlock();
+   return found;
+ }
+ 
++/* MAP_SHARED file mappings: one host buffer per file, handed out to every
++ * mapping of it. Blink runs all guest threads (and single-process Chromium's
++ * browser + renderer) in this one host process, so that is enough for them to
++ * see each other's writes. Chromium's shared memory (a /tmp file when memfd
++ * is missing) mapped as separate private copies broke Mojo: the headless
++ * command page never got its DevTools replies and Chromium exited without
++ * loading the page. Not written back to the file.
++ *
++ * Each cached file stays open (a dup far above the guest's fds): Chromium
++ * unlinks and closes its shared-memory files right after mapping them, and
++ * ext4 hands a freed inode number to the next new file at once, so without
++ * the pin a later region matched an old one's (dev, ino) and got its bytes
++ * (the headless command page's JS failed to parse, nondeterministically). */
++struct shared {
++  dev_t dev; ino_t ino;
++  char *p; size_t n;
++  long refs;   /* bytes currently mapped from this buffer */
++  int pin;     /* keeps the inode alive (ext4 reuses numbers at once) */
++  int wpin;    /* a writable fd, for writing the buffer back */
++};
++/* Growable: Chromium's software compositor passes every raster tile through
++ * its own shared-memory file, so hundreds are live. A fixed table (256) that
++ * filled up handed out untracked buffers, the other side's mapping of the
++ * same file got a fresh copy, and stale tiles showed up in the window. */
++static struct shared *g_shared;
++static int g_nshared, g_cshared;
++
++static int g_dbg = -1;
++static void dbg(const char *fmt, long a, long b, long c, long d) {
++  char buf[160];
++  if (g_dbg < 0) g_dbg = getenv("LOT_MMAP_DEBUG") != 0;
++  if (!g_dbg) return;
++  int n = snprintf(buf, sizeof buf, fmt, a, b, c, d);
++  if (n > 0) (void)!write(2, buf, n);
++}
++
++/* The last unmap writes the buffer back to the file, as the page cache
++ * would keep it: Chromium draws a tile into a shared-memory file, unmaps it,
++ * and the compositor maps the same file again later. Without the write-back
++ * that second mapping read the file's old bytes (blank or stale tiles). */
++static void note_writable(struct shared *e, int fd) {
++  int fl;
++  if (e->wpin >= 0) return;
++  fl = fcntl(fd, F_GETFL);
++  if (fl != -1 && (fl & O_ACCMODE) != O_RDONLY)
++    e->wpin = fcntl(fd, F_DUPFD_CLOEXEC, 512);
++}
++
++static void write_back(struct shared *e) {
++  struct stat st;
++  size_t n;
++  if (e->wpin < 0 || fstat(e->wpin, &st)) return;
++  n = (size_t)st.st_size < e->n ? (size_t)st.st_size : e->n;
++  for (size_t done = 0; done < n;) {
++    ssize_t r = pwrite(e->wpin, e->p + done, n - done, done);
++    if (r <= 0) break;
++    done += r;
++  }
++}
++
++static void *map_shared(size_t len, int fd, off_t off) {
++  struct stat st;
++  void *p;
++  size_t need, n;
++  int i, known = 0;
++  if (fstat(fd, &st) || (off & 4095)) return NULL;
++  need = (size_t)off + len;
++  lock();
++  for (i = 0; i < g_nshared; i++) {
++    if (g_shared[i].dev == st.st_dev && g_shared[i].ino == st.st_ino) {
++      if (need <= g_shared[i].n) {
++        dbg("lot_mmap: hit ino=%ld off=%ld len=%ld refs=%ld\n", (long)st.st_ino,
++            (long)off, (long)len, g_shared[i].refs);
++        g_shared[i].refs += len;
++        note_writable(&g_shared[i], fd);
++        unlock();
++        return g_shared[i].p + off;
++      }
++      known = 1;
++    }
++  }
++  if (known) dbg("lot_mmap: SECOND buffer ino=%ld need=%ld size=%ld nlink=%ld\n",
++                 (long)st.st_ino, (long)need, (long)st.st_size, (long)st.st_nlink);
++  if (g_nshared == g_cshared) {
++    int c = g_cshared ? g_cshared * 2 : 256;
++    struct shared *t = realloc(g_shared, c * sizeof(*t));
++    if (!t) { unlock(); return NULL; }
++    g_shared = t; g_cshared = c;
++  }
++  n = (need > (size_t)st.st_size ? need : (size_t)st.st_size);
++  n = (n + 4095) & ~(size_t)4095;
++  if (posix_memalign(&p, 4096, n)) { unlock(); return NULL; }
++  memset(p, 0, n);
++  for (size_t got = 0; got < (size_t)st.st_size && got < n;) {
++    ssize_t r = pread(fd, (char *)p + got, n - got, got);
++    if (r <= 0) break;
++    got += r;
++  }
++  i = g_nshared++;
++  dbg("lot_mmap: new shared ino=%ld size=%ld off=%ld live=%ld\n", (long)st.st_ino,
++      (long)st.st_size, (long)off, (long)g_nshared);
++  g_shared[i].dev = st.st_dev; g_shared[i].ino = st.st_ino;
++  g_shared[i].p = p; g_shared[i].n = n;
++  g_shared[i].refs = len;
++  g_shared[i].pin = fcntl(fd, F_DUPFD_CLOEXEC, 512);
++  g_shared[i].wpin = -1;
++  note_writable(&g_shared[i], fd);
++  unlock();
++  return (char *)p + off;
++}
++
++/* munmap of (part of) a shared buffer: drop its references; the last one
++ * frees the buffer and unpins the file. Returns 1 if addr was shared. */
++static int unmap_shared(void *a, size_t len) {
++  int r = 0;
++  lock();
++  for (int i = 0; i < g_nshared; i++) {
++    struct shared *e = &g_shared[i];
++    if ((char *)a >= e->p && (char *)a < e->p + e->n) {
++      r = 1;
++      if ((e->refs -= len) <= 0) {
++        write_back(e);
++        if (e->wpin >= 0) close(e->wpin);
++        dbg("lot_mmap: free shared ino=%ld live=%ld\n", (long)e->ino, (long)g_nshared - 1, 0, 0);
++        free(e->p);
++        if (e->pin >= 0) close(e->pin);
++        *e = g_shared[--g_nshared];
++      }
++      break;
++    }
++  }
++  unlock();
++  return r;
++}
++
+ void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t off) {
+   void *p = NULL;
+   (void)prot;
+   if (!len || (flags & MAP_FIXED)) { errno = EINVAL; return MAP_FAILED; }
+   if (addr && (flags & MAP_FIXED_NOREPLACE)) { errno = EEXIST; return MAP_FAILED; }
++  if (!(flags & MAP_ANON) && (flags & MAP_SHARED) && fd >= 0) {
++    if ((p = map_shared(len, fd, off))) return p;
++    errno = ENOMEM;
++    return MAP_FAILED;
++  }
+   if (posix_memalign(&p, 4096, len)) {
+     /* say so: Blink turns a failed page allocation into a guest SIGSEGV at a
+      * random place, which otherwise looks like memory corruption */
+@@ -64,7 +217,7 @@
+   }
+   if (flags & MAP_ANON) {
+     memset(p, 0, len);
+-    track(p);
++    track(p, len);
+     return p;
+   }
+   /* file mapping: private copy of the file's bytes, zero-filled past EOF */
+@@ -76,18 +229,24 @@
+     got += r;
+   }
+   memset((char *)p + got, 0, len - got);
+-  track(p);
++  track(p, len);
+   return p;
+ }
+ 
+ int munmap(void *addr, size_t len) {
+-  (void)len;
+-  if (addr && addr != MAP_FAILED && untrack(addr)) free(addr);
++  if (addr && addr != MAP_FAILED && !unmap_shared(addr, len) && untrack(addr, len)) free(addr);
+   return 0;
+ }
+ 
+ int mprotect(void *a, size_t n, int p) { (void)a; (void)n; (void)p; return 0; }
+-int msync(void *a, size_t n, int f) { (void)a; (void)n; (void)f; return 0; }
++int msync(void *a, size_t n, int f) {
++  (void)n; (void)f;
++  lock();
++  for (int i = 0; i < g_nshared; i++)
++    if ((char *)a >= g_shared[i].p && (char *)a < g_shared[i].p + g_shared[i].n) write_back(&g_shared[i]);
++  unlock();
++  return 0;
++}
+ int madvise(void *a, size_t n, int f) { (void)a; (void)n; (void)f; return 0; }
+ int posix_madvise(void *a, size_t n, int f) { (void)a; (void)n; (void)f; return 0; }
+ int mlock(const void *a, size_t n) { (void)a; (void)n; return 0; }
