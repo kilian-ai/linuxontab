@@ -2,6 +2,7 @@
 # Build the read-only disk image the Chromium spike boots with:
 #   /opt/x86/blink, /opt/x86/blink-dbg   wasm Blink (build.sh, release + debug)
 #   /opt/x86/chromium                    launcher (headless, one process, no JIT)
+#   /opt/x86/chromium-x, chromium-desktop full browser on X; X server + page + browser
 #   /opt/x86/<chrome data files>         symlinks: /proc/self/exe is Blink, so
 #                                        Chrome looks for its .pak/.dat here
 #   /opt/x86/root                        Alpine 3.20 chromium 131, pruned to the
@@ -18,6 +19,7 @@ REPO="$(cd "$HERE/../.." && pwd)"
 W="${1:-/tmp/lot-build/x86-chromium}"
 MKE2FS=/opt/homebrew/opt/e2fsprogs/sbin/mke2fs
 E2FSCK=/opt/homebrew/opt/e2fsprogs/sbin/e2fsck
+RESIZE2FS=/opt/homebrew/opt/e2fsprogs/sbin/resize2fs
 mkdir -p "$W"
 
 [ -d "$W/root-full/usr/lib/chromium" ] || python3 "$HERE/fetch-root.py" v3.20 "$W/root-full" chromium
@@ -73,13 +75,18 @@ EOF
 cd "$W/stage"
 cp "$W/blink/blink" blink
 cp "$W/blink-dbg/blink" blink-dbg
-cp "$HERE/chromium" "$HERE/chromium-x" . && chmod 755 chromium chromium-x blink blink-dbg
+cp "$HERE/chromium" "$HERE/chromium-x" "$HERE/chromium-desktop" .
+chmod 755 chromium chromium-x chromium-desktop blink blink-dbg
 for f in root/usr/lib/chromium/*; do
   b=$(basename "$f")
   case $b in chrome|chromium) ;; *) ln -s "$f" "$b" ;; esac
 done
 rm -f "$W/x86-chromium.ext4"
 "$MKE2FS" -q -t ext4 -O ^has_journal -L x86 -d "$W/stage" "$W/x86-chromium.ext4" 470M
+# shrink to the data (the disk is mounted read-only; every free block is
+# just more download for the page)
+"$E2FSCK" -fy "$W/x86-chromium.ext4" > /dev/null || true
+"$RESIZE2FS" -M "$W/x86-chromium.ext4" 2>&1 | tail -1
 "$E2FSCK" -fn "$W/x86-chromium.ext4" | tail -1
 cp "$W/x86-chromium.ext4" "$REPO/shell/linux-dist/x86-chromium.ext4"
 ls -la "$REPO/shell/linux-dist/x86-chromium.ext4"

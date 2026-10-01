@@ -48,6 +48,7 @@ rsync -a \
   --exclude='rootfs.ext4' \
   --exclude='rootfs.ext4?*' \
   --exclude='rootfs-lean.ext4' \
+  --exclude='x86-chromium.ext4' \
   --exclude='*.bak' \
   --exclude='*.map' \
   "$SRC/linux-dist/" "$PUB/linux-dist/"

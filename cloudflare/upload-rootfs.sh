@@ -21,11 +21,16 @@
 # Tunables:
 #   PART_MB   part size in MiB (default 25 — small, resilient over flaky links)
 #   RETRIES   attempts per part (default 8)
+#   IMAGE     file under shell/linux-dist to upload (default rootfs.ext4); its
+#             keys are "$IMAGE.<slot>.part-*" + "$IMAGE.manifest", e.g.
+#             IMAGE=x86-chromium.ext4 for the Chromium spike's extra disk
+#             (served by functions/linux-dist/x86-chromium.ext4.js)
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
-SRC="$REPO/shell/linux-dist/rootfs.ext4"
+IMAGE="${IMAGE:-rootfs.ext4}"
+SRC="$REPO/shell/linux-dist/$IMAGE"
 BUCKET="linuxontab-rootfs"
 PART_MB="${PART_MB:-25}"
 RETRIES="${RETRIES:-8}"
@@ -39,14 +44,14 @@ trap 'rm -rf "$WORK"' EXIT
 
 # Pick the inactive slot: read the live manifest's slot and use the other one.
 # No manifest / no slot field (legacy in-place layout) → start with "a".
-CUR_SLOT=$(npx --yes wrangler r2 object get "$BUCKET/rootfs.ext4.manifest" --pipe --remote 2>/dev/null \
+CUR_SLOT=$(npx --yes wrangler r2 object get "$BUCKET/$IMAGE.manifest" --pipe --remote 2>/dev/null \
   | python3 -c 'import json,sys;print(json.load(sys.stdin).get("slot",""))' 2>/dev/null || echo "")
 if [ "$CUR_SLOT" = "a" ]; then SLOT="b"; else SLOT="a"; fi
 echo "live slot: '${CUR_SLOT:-none}' → uploading to slot '$SLOT'"
 
 echo "splitting $(du -h "$SRC" | cut -f1) into ${PART_MB} MiB parts…"
-split -b "${PART_MB}m" "$SRC" "$WORK/rootfs.ext4.part-"
-TOTAL=$(ls "$WORK"/rootfs.ext4.part-* | wc -l | tr -d ' ')
+split -b "${PART_MB}m" "$SRC" "$WORK/$IMAGE.part-"
+TOTAL=$(ls "$WORK"/"$IMAGE".part-* | wc -l | tr -d ' ')
 
 put() { # key file
   i=1
@@ -61,9 +66,9 @@ put() { # key file
 }
 
 n=0
-for f in "$WORK"/rootfs.ext4.part-*; do
+for f in "$WORK"/"$IMAGE".part-*; do
   n=$((n+1))
-  key="rootfs.ext4.${SLOT}.$(basename "$f" | sed 's/^rootfs.ext4.//')"
+  key="$IMAGE.${SLOT}.$(basename "$f" | sed "s/^$IMAGE.//")"
   printf 'uploading [%d/%d] %s … ' "$n" "$TOTAL" "$key"
   put "$key" "$f" application/octet-stream || { echo "FAILED after $RETRIES tries"; exit 1; }
   echo ok
@@ -78,10 +83,10 @@ done
 # every returning visitor.
 SIZE=$(wc -c < "$SRC" | tr -d ' ')
 SHA=$(shasum -a 256 "$SRC" | awk '{print $1}')
-KEYS=$(ls "$WORK"/rootfs.ext4.part-* | sed 's#.*/##' | sed "s/^rootfs.ext4./\"rootfs.ext4.${SLOT}./; s/\$/\"/" | paste -sd, -)
+KEYS=$(ls "$WORK"/"$IMAGE".part-* | sed 's#.*/##' | sed "s/^$IMAGE./\"$IMAGE.${SLOT}./; s/\$/\"/" | paste -sd, -)
 printf '{"slot":"%s","parts":[%s],"size":%s,"sha256":"%s"}' "$SLOT" "$KEYS" "$SIZE" "$SHA" > "$WORK/manifest.json"
 printf 'uploading manifest (%d parts, %s bytes) … ' "$TOTAL" "$SIZE"
-put "rootfs.ext4.manifest" "$WORK/manifest.json" application/json || { echo "FAILED"; exit 1; }
+put "$IMAGE.manifest" "$WORK/manifest.json" application/json || { echo "FAILED"; exit 1; }
 echo ok
 
 echo "done. Now: ./build-publish.sh && npx wrangler pages deploy --branch=main"

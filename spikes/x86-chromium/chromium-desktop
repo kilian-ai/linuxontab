@@ -1,0 +1,11 @@
+#!/bin/sh
+# One-shot desktop for the console's "chromium" row: X server, a local page,
+# and the full Chromium browser on it.
+#   mkdir -p /opt/x86 && mount -t ext4 -o ro /dev/vdc /opt/x86 && /opt/x86/chromium-desktop [url]
+# The page (?x) connects its X display panel to :5900 by itself.
+url="${1:-http://127.0.0.1:8080/}"
+xtiny > /tmp/xtiny.log 2>&1 &
+[ -x /usr/local/bin/nginx-demo ] && nginx-demo > /tmp/nginx-demo.log 2>&1
+echo "[chromium] starting x86-64 Chromium under Blink: the first window takes ~3 min"
+echo "[chromium] log: /tmp/chromium.log"
+/opt/x86/chromium-x "$url" > /tmp/chromium.log 2>&1 &

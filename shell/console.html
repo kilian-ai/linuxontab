@@ -202,6 +202,14 @@ const WEBDEMOS = [
 const TUIAPPS = [
   { name: 'trust-ide', image: 'trust', what: 'TRUST — retro DOS-style Rust IDE on the console; F5 builds and runs with the guest rustc + cargo (installed on first use)' },
 ];
+// X apps: boot the full disk plus an extra read-only disk (?xdisk=), start the
+// program on the X server, and open the X display panel by itself (?x).
+const XAPPS = [
+  { name: 'chromium', size: '470 MB + full disk',
+    what: 'Chromium 131 (x86-64, unmodified) under the Blink emulator on the X server — full browser with address bar; first window takes ~3 min',
+    extra: { disk: 'full', xdisk: 'linux-dist/x86-chromium.ext4', x: '',
+             cmd: 'mkdir -p /opt/x86 && mount -t ext4 -o ro /dev/vdc /opt/x86 && /opt/x86/chromium-desktop' } },
+];
 const imgDb = () => new Promise((res, rej) => {
   const rq = indexedDB.open('lot-images', 1);
   rq.onupgradeneeded = () => rq.result.createObjectStore('images', { keyPath: 'name' });
@@ -319,6 +327,10 @@ async function renderImages(force) {
     for (const d of TUIAPPS) {
       tb.appendChild(imageRow(d.name, 'terminal app', 'on demand', null, d.image, d.name,
         {}, d.what + ' — opens the console with the app already running'));
+    }
+    for (const d of XAPPS) {
+      tb.appendChild(imageRow(d.name, 'X app', d.size, null, '', d.name,
+        d.extra, d.what + ' — opens in a new tab'));
     }
     for (const im of committed) {
       const push = document.createElement('button');

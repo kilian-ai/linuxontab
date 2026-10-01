@@ -119,6 +119,15 @@ comes from it; without GTK typed keys never reach the page).
     /opt/x86/chromium-x http://127.0.0.1:8080/ > /tmp/cx.log 2>&1 &
     # page: "X display" -> "connect :5900"; click the canvas to give it keys
 
+**One click:** console.html's Images table has a `chromium` row (kind "X
+app"). It opens `wasm.html?disk=full&xdisk=linux-dist/x86-chromium.ext4&x&cmd=…`:
+the page downloads the disk once (Cache Storage, keyed by its ETag), the
+`cmd=` line mounts it and runs `/opt/x86/chromium-desktop` (xtiny +
+nginx-demo + `chromium-x http://127.0.0.1:8080/`), and `?x` connects the X
+display panel by itself. On the site the disk comes from R2
+(`IMAGE=x86-chromium.ext4 cloudflare/upload-rootfs.sh`, served by
+`cloudflare/functions/linux-dist/x86-chromium.ext4.js`).
+
 What it took, all found with the debugging aids below:
 
 1. **Main-thread deadlock — `lock btr/bts/btc` on a quadword** (GLib's
