@@ -47,6 +47,14 @@ typedef struct rfb_config {
      * May be NULL. */
     void (*on_idle)(rfb_server *s);
 
+    /* The viewer asked for a new framebuffer size (RFB ExtendedDesktopSize:
+     * the shell's X display panel sends its own size, so the desktop fills
+     * it). Clamp *w and *h to what the app supports and return 1 to accept —
+     * librfb then reallocates the framebuffer, tells the viewer and sends a
+     * full frame — or return 0 to refuse. NULL = fixed size (the resize
+     * capability is then never advertised). */
+    int (*on_resize)(rfb_server *s, int *w, int *h);
+
     void *user;         /* app state, reachable via rfb_user() */
 } rfb_config;
 
@@ -70,9 +78,28 @@ void rfb_fill_circle(rfb_server *s, int cx, int cy, int rad,
 void rfb_draw_text(rfb_server *s, int x, int y, const char *txt,
                    uint8_t b, uint8_t g, uint8_t r);
 
+/* Blend a colour over the framebuffer: a = 0 (transparent) .. 255 (opaque). */
+void rfb_blend_px(rfb_server *s, int x, int y,
+                  uint8_t b, uint8_t g, uint8_t r, int a);
+void rfb_blend_rect(rfb_server *s, int x, int y, int w, int h,
+                    uint8_t b, uint8_t g, uint8_t r, int a);
+/* Anti-aliased filled rounded rectangle / circle (blended over the fb). */
+void rfb_fill_rrect(rfb_server *s, int x, int y, int w, int h, int rad,
+                    uint8_t b, uint8_t g, uint8_t r);
+void rfb_fill_circle_aa(rfb_server *s, float cx, float cy, float rad,
+                        uint8_t b, uint8_t g, uint8_t r, int a);
+
+/* ── UI labels: anti-aliased proportional font (Inter Medium 13 px) ──
+ * Text is vertically centred on cy (the middle of the box it labels).
+ * maxw > 0 clips to that many pixels, ending in an ellipsis. Returns the
+ * width drawn. Full ASCII; other bytes draw as '?'. */
+int  rfb_label_width(const char *txt);
+int  rfb_draw_label(rfb_server *s, int x, int cy, int maxw, const char *txt,
+                    uint8_t b, uint8_t g, uint8_t r);
+
 /* ── draggable window-frame chrome (shared demo desktop) ── */
-#define RFB_TITLE_H 28
-#define RFB_BORDER   2
+#define RFB_TITLE_H 30
+#define RFB_BORDER   1
 
 typedef struct rfb_winframe {
     int x, y;           /* frame top-left on the desktop */
@@ -80,14 +107,23 @@ typedef struct rfb_winframe {
     const char *title;
     int dragging, drag_ox, drag_oy;
     int inactive;       /* 1 = dim the chrome (window lacks focus) */
+    int hover;          /* 1 = pointer over the buttons: show their glyphs */
+    int square;         /* 1 = maximised: no rounded corners, no shadow */
 } rfb_winframe;
 
 void rfb_draw_desktop(rfb_server *s);
+/* Frame chrome: soft drop shadow, rounded title bar, centred title, the
+ * three window buttons. Draw back to front — the shadow blends over
+ * whatever is already in the framebuffer. */
 void rfb_draw_winframe(rfb_server *s, const rfb_winframe *wf);
 /* Which title-bar button is under the point, if any. Keeps the button
  * geometry in one place instead of duplicating it in every app. */
 enum { RFB_BTN_NONE = 0, RFB_BTN_CLOSE, RFB_BTN_MIN, RFB_BTN_MAX };
 int  rfb_winframe_button_at(const rfb_winframe *wf, int x, int y);
+/* 1 if the point is over the button group (drives wf->hover). */
+int  rfb_winframe_over_buttons(const rfb_winframe *wf, int x, int y);
+/* Title-bar strip, for damaging just the chrome (hover changes). */
+void rfb_damage_titlebar(rfb_server *s, const rfb_winframe *wf);
 /* Content-area origin. */
 int  rfb_winframe_cx(const rfb_winframe *wf);
 int  rfb_winframe_cy(const rfb_winframe *wf);

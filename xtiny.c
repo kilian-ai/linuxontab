@@ -40,11 +40,18 @@
  * (sysroot/wasm_fork.c, linked into this binary). */
 pid_t fork(void);
 
-#define FB_W 800
-#define FB_H 600
+/* The desktop follows the viewer: the shell's X display panel asks for its
+ * own size (RFB SetDesktopSize → on_resize). Until a viewer connects the
+ * screen is XTINY_GEOMETRY (WxH) or 1024x768. */
+#define FB_W (X.fbw)
+#define FB_H (X.fbh)
+#define FB_MIN_W 640
+#define FB_MIN_H 400
+#define FB_MAX_W 3840
+#define FB_MAX_H 2160
 
 /* The taskbar owns the bottom strip; windows live above it. */
-#define TASKBAR_H 26
+#define TASKBAR_H 34
 #define WORK_H    (FB_H - TASKBAR_H)
 
 #define MAX_XCLIENTS 8
@@ -158,7 +165,54 @@ static struct {
                           * selects for keys but ignores them). */
 
     int cursor_shape;           /* current RFB_CUR_* for the pointer window */
+
+    int fbw, fbh;               /* current screen size (see FB_W) */
+    int tb_hover;               /* taskbar item under the pointer, -1 none */
+
+    /* Edge-drag resize of a top-level (see on_pointer). */
+    uint32_t rz_win;
+    int rz_edges;               /* RZ_* bits */
+    int rz_px, rz_py;           /* pointer at press */
+    int rz_x, rz_w, rz_h;       /* frame x + content size at press */
+    int rz_nw, rz_nh, rz_nx;    /* latest target geometry */
+    uint64_t rz_last_ms;        /* throttle: clients re-layout per resize */
 } X;
+
+/* Default X resources, served as the root window's RESOURCE_MANAGER (what
+ * xrdb would load). Xlib reads it at connect, so every Xt app — xterm
+ * above all — starts with a theme matching the desktop instead of the
+ * stark black-on-white defaults. A client that sets the property wins. */
+static const char XTINY_RESOURCES[] =
+    "XTerm*title:\tTerminal\n"
+    "XTerm*iconName:\tTerminal\n"
+    "XTerm*background:\t#1b1d23\n"
+    "XTerm*foreground:\t#d5d9e0\n"
+    "XTerm*cursorColor:\t#7aa2f7\n"
+    "XTerm*highlightColor:\t#3e4451\n"
+    "XTerm*internalBorder:\t10\n"
+    "XTerm*borderWidth:\t0\n"
+    "XTerm*scrollBar:\tfalse\n"
+    "XTerm*saveLines:\t4000\n"
+    "XTerm*metaSendsEscape:\ttrue\n"
+    "XTerm*vt100.geometry:\t80x24\n"
+    "XTerm*color0:\t#2a2e38\n"
+    "XTerm*color1:\t#e06c75\n"
+    "XTerm*color2:\t#98c379\n"
+    "XTerm*color3:\t#e5c07b\n"
+    "XTerm*color4:\t#61afef\n"
+    "XTerm*color5:\t#c678dd\n"
+    "XTerm*color6:\t#56b6c2\n"
+    "XTerm*color7:\t#abb2bf\n"
+    "XTerm*color8:\t#5c6370\n"
+    "XTerm*color9:\t#ef7b84\n"
+    "XTerm*color10:\t#a9d48a\n"
+    "XTerm*color11:\t#f0cf8f\n"
+    "XTerm*color12:\t#79bdf5\n"
+    "XTerm*color13:\t#d595e8\n"
+    "XTerm*color14:\t#6ccbd6\n"
+    "XTerm*color15:\t#e6e9ef\n";
+#define XA_RESOURCE_MANAGER 23
+#define XA_STRING           31
 
 /* ── predefined atoms (X11 standard, ids 1..68) ───────────────────────────── */
 static const char *PREATOMS[] = { "",
@@ -190,7 +244,52 @@ static const struct { const char *name; uint32_t rgb; } COLORS[] = {
     {"navy",0x000080},{"navy blue",0x000080},
 };
 
+/* Numeric colour specs, as XParseColor accepts them: #RGB, #RRGGBB,
+ * #RRRGGGBBB, #RRRRGGGGBBBB (high bits significant) and rgb:R/G/B with
+ * 1-4 hex digits per channel (scaled). xterm sends its #rrggbb resource
+ * colours to the server by name, so these must resolve here. */
+static int hexval(char ch) {
+    if (ch >= '0' && ch <= '9') return ch - '0';
+    if (ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+    if (ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+    return -1;
+}
+static int color_numeric(const char *name, int len, uint32_t *rgb) {
+    unsigned ch[3];
+    if (len >= 4 && name[0] == '#' && (len - 1) % 3 == 0 && len - 1 <= 12) {
+        int d = (len - 1) / 3;
+        for (int k = 0; k < 3; k++) {
+            unsigned v = 0;
+            for (int i = 0; i < d; i++) {
+                int h = hexval(name[1 + k*d + i]);
+                if (h < 0) return 0;
+                v = v << 4 | (unsigned)h;
+            }
+            ch[k] = d >= 2 ? v >> (4*d - 8) : v * 17;   /* top 8 bits */
+        }
+    } else if (len > 4 && !strncmp(name, "rgb:", 4)) {
+        int k = 0, i = 4;
+        while (k < 3) {
+            unsigned v = 0; int d = 0;
+            while (i < len && name[i] != '/') {
+                int h = hexval(name[i++]);
+                if (h < 0 || ++d > 4) return 0;
+                v = v << 4 | (unsigned)h;
+            }
+            if (!d) return 0;
+            ch[k++] = v * 255 / ((1u << (4*d)) - 1);  /* scale to 8 bits */
+            if (k < 3) { if (i >= len) return 0; i++; }
+        }
+        if (i != len) return 0;
+    } else {
+        return 0;
+    }
+    *rgb = ch[0] << 16 | ch[1] << 8 | ch[2];
+    return 1;
+}
+
 static int color_lookup(const char *name, int len, uint32_t *rgb) {
+    if (color_numeric(name, len, rgb)) return 1;
     for (unsigned i = 0; i < sizeof COLORS / sizeof COLORS[0]; i++) {
         const char *c = COLORS[i].name;
         if ((int)strlen(c) != len) continue;
@@ -739,6 +838,19 @@ static void set_prop(XWindow *w, uint32_t atom, uint32_t type, uint8_t fmt,
     w->nprops++;
 }
 
+/* Slide a top-level's frame back onto the screen. Toolkits create their
+ * shell window at 1x1 and grow it before mapping (xterm does), so the
+ * placement check at CreateWindow sees nothing to clamp — check again
+ * when the window is mapped or a mapped window grows. */
+static void keep_on_screen(XWindow *w) {
+    if (!w->toplevel || w->maxed) return;
+    int fw = w->w + 2*RFB_BORDER, fh = RFB_TITLE_H + w->h + RFB_BORDER;
+    if (w->frame.x + fw > FB_W)   w->frame.x = FB_W - fw;
+    if (w->frame.y + fh > WORK_H) w->frame.y = WORK_H - fh;
+    if (w->frame.x < 0) w->frame.x = 0;
+    if (w->frame.y < 0) w->frame.y = 0;
+}
+
 /* ── request processing ───────────────────────────────────────────────────── */
 static int xtrace = 0;   /* set by XTINY_TRACE=1 in the environment */
 
@@ -872,6 +984,7 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
             w->mapped = 1;
             if (w->toplevel) {           /* newly shown windows come to front
                                           * and take the keyboard */
+                keep_on_screen(w);
                 stack_add(w->id);
                 stack_raise(w->id);
                 set_focus(w->id);
@@ -938,7 +1051,10 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
             w->w = nw; w->h = nh;
             w->px = w->class_ == 1 ? malloc((size_t)nw * nh * 4) : NULL;
             if (w->px) win_fill_bg(w);
-            if (w->toplevel) { w->frame.w = nw; w->frame.h = nh; }
+            if (w->toplevel) {
+                w->frame.w = nw; w->frame.h = nh;
+                if (w->mapped) keep_on_screen(w);
+            }
             ev_configure_notify(w);
             ev_expose(w);
         } else {
@@ -1045,20 +1161,37 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
         XWindow *w = find_win(g32(r, 4));
         if (!w) { send_error(c, 3, g32(r, 4), op); return; }
         uint32_t prop = g32(r, 8);
+        const uint8_t *data = NULL;
+        uint32_t type = 0, total = 0;
+        int fmt = 0;
         for (int i = 0; i < w->nprops; i++) {
             if (w->props[i].atom == prop) {
-                int unit = w->props[i].fmt / 8;
-                int bytes = (int)w->props[i].n * unit;
-                uint8_t b[24]; memset(b, 0, sizeof b);
-                p32(b, 0, w->props[i].type);
-                p32(b, 4, 0);                     /* bytes_after */
-                p32(b, 8, w->props[i].n);
-                send_reply(c, w->props[i].fmt, b, w->props[i].data, bytes);
-                return;
+                data = w->props[i].data;
+                type = w->props[i].type;
+                fmt = w->props[i].fmt;
+                total = w->props[i].n * (uint32_t)(fmt / 8);
+                break;
             }
         }
+        if (!data && w->id == ROOT_ID && prop == XA_RESOURCE_MANAGER) {
+            data = (const uint8_t *)XTINY_RESOURCES;
+            type = XA_STRING; fmt = 8;
+            total = (uint32_t)strlen(XTINY_RESOURCES);
+        }
         uint8_t b[24]; memset(b, 0, sizeof b);
-        send_reply(c, 0, b, NULL, 0);             /* None */
+        if (!data) { send_reply(c, 0, b, NULL, 0); break; }   /* None */
+        /* long-offset / long-length are in 4-byte units (Xlib asks for a
+         * big length; a length-0 query just learns the type and size) */
+        uint32_t start = g32(r, 16) * 4u, want = g32(r, 20) * 4u;
+        if (start > total) { send_error(c, 2, g32(r, 16), op); return; }
+        uint32_t n = total - start;
+        if (want < n) n = want;
+        int unit = fmt / 8;
+        n -= n % (uint32_t)unit;
+        p32(b, 0, type);
+        p32(b, 4, total - start - n);             /* bytes_after */
+        p32(b, 8, n / (uint32_t)unit);
+        send_reply(c, (uint8_t)fmt, b, data + start, (int)n);
         break;
     }
 
@@ -1985,11 +2118,13 @@ static void toggle_maximize(XWindow *w) {
     if (w->maxed) {
         w->frame.x = w->save_x; w->frame.y = w->save_y;
         w->maxed = 0;
+        w->frame.square = 0;
         resize_window(w, w->save_w, w->save_h);
     } else {
         w->save_x = w->frame.x; w->save_y = w->frame.y;
         w->save_w = w->w;       w->save_h = w->h;
         w->maxed = 1;
+        w->frame.square = 1;
         w->frame.x = 0; w->frame.y = 0;
         resize_window(w, FB_W - 2*RFB_BORDER,
                       WORK_H - RFB_TITLE_H - RFB_BORDER);
@@ -2012,16 +2147,34 @@ static void restore_window(XWindow *w) {
 }
 
 /* ── launcher ─────────────────────────────────────────────────────────────── */
+/* Apps appear on the taskbar only while installed (apk add netsurf → a
+ * Browser button shows up within a few seconds). */
 static const struct {
     const char *label;
     const char *path;
-    const char *argv[6];
+    const char *argv[8];
 } LAUNCH[] = {
-    { "xterm", "/usr/bin/xterm",
+    { "Terminal", "/usr/bin/xterm",
       { "xterm", "-fn", "fixed", "-e", "/bin/sh", NULL } },
-    { "eyes",  "/usr/bin/xeyes", { "xeyes", NULL } },
+    { "Browser",  "/usr/local/bin/netsurf", { "netsurf", NULL } },
+    { "Wolf3D",   "/usr/local/bin/wolf3d",  { "wolf3d", NULL } },
+    { "Eyes",     "/usr/bin/xeyes",         { "xeyes", NULL } },
 };
 #define NLAUNCH ((int)(sizeof LAUNCH / sizeof LAUNCH[0]))
+static int launch_ok[NLAUNCH];
+
+static void refresh_launchers(void) {
+    static uint64_t last;
+    uint64_t now = rfb_now_ms();
+    if (last && now - last < 3000) return;
+    last = now;
+    int changed = 0;
+    for (int i = 0; i < NLAUNCH; i++) {
+        int ok = access(LAUNCH[i].path, X_OK) == 0;
+        if (ok != launch_ok[i]) { launch_ok[i] = ok; changed = 1; }
+    }
+    if (changed && X.srv) rfb_damage(X.srv, 0, WORK_H, FB_W, TASKBAR_H);
+}
 
 static void spawn(int idx) {
     if (idx < 0 || idx >= NLAUNCH) return;
@@ -2049,21 +2202,35 @@ static void spawn(int idx) {
 enum { TB_NONE = 0, TB_LAUNCH, TB_WINDOW };
 typedef struct { int x, w, kind, arg; uint32_t win; } TbItem;
 
+#define TB_PAD    5                       /* button inset from the bar edge */
+#define TB_CLOCK_W 64
+
 static int taskbar_layout(TbItem *it, int max) {
-    int n = 0, x = 6;
+    int n = 0, x = 8;
     for (int i = 0; i < NLAUNCH && n < max; i++) {
-        int bw = 12 * (int)strlen(LAUNCH[i].label) + 16;
+        if (!launch_ok[i]) continue;
+        int bw = rfb_label_width(LAUNCH[i].label) + 24;
         it[n].x = x; it[n].w = bw; it[n].kind = TB_LAUNCH;
         it[n].arg = i; it[n].win = 0;
         x += bw + 4;
         n++;
     }
-    x += 10;                              /* gap between launchers and list */
-    for (int i = 0; i < X.nstack && n < max; i++) {
+    x += 12;                              /* gap between launchers and list */
+    int nwin = 0;
+    for (int i = 0; i < X.nstack; i++) {
         XWindow *w = find_win(X.stack[i]);
-        if (!w || !w->mapped) continue;
-        int bw = 120;
-        if (x + bw > FB_W - 70) break;    /* leave room for the clock */
+        if (w && w->mapped) nwin++;
+    }
+    /* window buttons share what is left, 90..180 px each */
+    int room = FB_W - TB_CLOCK_W - 8 - x;
+    int bw = nwin ? room / nwin - 4 : 0;
+    if (bw > 180) bw = 180;
+    if (bw < 90)  bw = 90;
+    /* list in creation order (stable), not stacking order (which jumps) */
+    for (int i = 0; i < MAX_WINDOWS && n < max; i++) {
+        XWindow *w = &X.win[i];
+        if (!w->id || !w->toplevel || !w->mapped) continue;
+        if (x + bw > FB_W - TB_CLOCK_W - 8) break;
         it[n].x = x; it[n].w = bw; it[n].kind = TB_WINDOW;
         it[n].arg = 0; it[n].win = w->id;
         x += bw + 4;
@@ -2072,35 +2239,43 @@ static int taskbar_layout(TbItem *it, int max) {
     return n;
 }
 
+static int taskbar_item_at(int x, int y) {
+    if (y < WORK_H) return -1;
+    TbItem it[24];
+    int n = taskbar_layout(it, 24);
+    for (int i = 0; i < n; i++)
+        if (x >= it[i].x && x < it[i].x + it[i].w) return i;
+    return -1;
+}
+
 static void draw_taskbar(rfb_server *s) {
     int y = WORK_H;
-    rfb_fill_rect(s, 0, y, FB_W, TASKBAR_H, 0x1E,0x1C,0x1A);
-    rfb_fill_rect(s, 0, y, FB_W, 1, 0x50,0x4C,0x48);
+    rfb_fill_rect(s, 0, y, FB_W, TASKBAR_H, 0x1D,0x1A,0x17);
+    rfb_fill_rect(s, 0, y, FB_W, 1, 0x3A,0x36,0x32);
+    int by = y + TB_PAD, bh = TASKBAR_H - 2*TB_PAD, cy = y + TASKBAR_H/2;
 
     TbItem it[24];
     int n = taskbar_layout(it, 24);
     for (int i = 0; i < n; i++) {
+        int hov = (i == X.tb_hover);
         if (it[i].kind == TB_LAUNCH) {
-            rfb_fill_rect(s, it[i].x, y+4, it[i].w, TASKBAR_H-8, 0x3C,0x38,0x34);
-            rfb_draw_text(s, it[i].x+8, y+(TASKBAR_H-10)/2,
-                          LAUNCH[it[i].arg].label, 0xD8,0xD8,0xD8);
+            uint8_t v = hov ? 0x3A : 0x2C;
+            rfb_fill_rrect(s, it[i].x, by, it[i].w, bh, 6, v, (uint8_t)(v-2), (uint8_t)(v-4));
+            rfb_draw_label(s, it[i].x + 12, cy, it[i].w - 20,
+                           LAUNCH[it[i].arg].label, 0xE0,0xDD,0xDA);
         } else {
             XWindow *w = find_win(it[i].win);
             if (!w) continue;
             int focused = (w->id == X.focus) && !w->minimized;
-            uint8_t bg = focused ? 0x50 : 0x2E;
-            rfb_fill_rect(s, it[i].x, y+4, it[i].w, TASKBAR_H-8,
-                          bg, (uint8_t)(bg-4), (uint8_t)(bg-8));
+            uint8_t v = focused ? 0x3C : hov ? 0x30 : 0x24;
+            rfb_fill_rrect(s, it[i].x, by, it[i].w, bh, 6, v, (uint8_t)(v-2), (uint8_t)(v-4));
+            if (focused)                  /* accent bar under the active app */
+                rfb_fill_rrect(s, it[i].x + it[i].w/2 - 12, by + bh - 3, 24, 3, 1,
+                               0xFF,0xA2,0x5E);
             const char *t = w->title[0] ? w->title : "x11";
-            /* clip the label to the button */
-            char lbl[12];
-            int max = (it[i].w - 12) / 12;
-            if (max > (int)sizeof lbl - 1) max = (int)sizeof lbl - 1;
-            int k = 0;
-            for (; t[k] && k < max; k++) lbl[k] = t[k];
-            lbl[k] = 0;
-            uint8_t fg = w->minimized ? 0x88 : 0xE0;
-            rfb_draw_text(s, it[i].x+6, y+(TASKBAR_H-10)/2, lbl, fg, fg, fg);
+            uint8_t fg = w->minimized ? 0x80 : focused ? 0xF0 : 0xC8;
+            rfb_draw_label(s, it[i].x + 10, cy, it[i].w - 20, t,
+                           fg, (uint8_t)(fg+1), (uint8_t)(fg+2));
         }
     }
 
@@ -2110,7 +2285,8 @@ static void draw_taskbar(rfb_server *s) {
     if (localtime_r(&now, &tmv)) {
         char buf[8];
         snprintf(buf, sizeof buf, "%02d:%02d", tmv.tm_hour, tmv.tm_min);
-        rfb_draw_text(s, FB_W - 62, y+(TASKBAR_H-10)/2, buf, 0xC0,0xC0,0xC0);
+        rfb_draw_label(s, FB_W - 12 - rfb_label_width(buf), cy, 0, buf,
+                       0xD2,0xCF,0xCC);
     }
 }
 
@@ -2135,12 +2311,69 @@ static int taskbar_click(rfb_server *s, int x, int y) {
     return 1;      /* bare taskbar — still ours, don't leak it to a window */
 }
 
+/* ── desktop ──────────────────────────────────────────────────────────────── */
+/* A quiet vertical gradient. Each row is one flat colour, and adjacent
+ * rows mostly share one (the channels move ~25 levels over the whole
+ * height), so RRE sends it as a few dozen tall bands, not per-pixel data. */
+static void draw_desktop(rfb_server *s) {
+    static const int top[3] = {0x48, 0x38, 0x2E}, bot[3] = {0x26, 0x1E, 0x19};
+    int h = WORK_H > 1 ? WORK_H : 1;
+    for (int y = 0; y < WORK_H; y++) {
+        uint8_t c[3];
+        for (int k = 0; k < 3; k++)
+            c[k] = (uint8_t)(top[k] + (bot[k] - top[k]) * y / (h - 1 > 0 ? h - 1 : 1));
+        rfb_fill_rect(s, 0, y, FB_W, 1, c[0], c[1], c[2]);
+    }
+}
+
+/* ── resize ───────────────────────────────────────────────────────────────── */
+/* The viewer asked for a new screen size: adopt it, keep every title bar
+ * reachable, refit maximised windows, and tell clients watching the root. */
+static int on_resize(rfb_server *s, int *w, int *h) {
+    (void)s;
+    if (*w < FB_MIN_W) *w = FB_MIN_W;
+    if (*h < FB_MIN_H) *h = FB_MIN_H;
+    if (*w > FB_MAX_W) *w = FB_MAX_W;
+    if (*h > FB_MAX_H) *h = FB_MAX_H;
+    X.fbw = *w; X.fbh = *h;
+    X.win[0].w = *w; X.win[0].h = *h;
+    if (X.ptr_x >= *w) X.ptr_x = *w - 1;
+    if (X.ptr_y >= *h) X.ptr_y = *h - 1;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        XWindow *t = &X.win[i];
+        if (!t->id || !t->toplevel) continue;
+        if (t->maxed) {
+            t->frame.x = 0; t->frame.y = 0;
+            resize_window(t, FB_W - 2*RFB_BORDER, WORK_H - RFB_TITLE_H - RFB_BORDER);
+            continue;
+        }
+        int fw = t->w + 2*RFB_BORDER;
+        if (t->frame.x + fw > FB_W) t->frame.x = FB_W - fw;
+        if (t->frame.x < 0) t->frame.x = 0;
+        if (t->frame.y > WORK_H - RFB_TITLE_H) t->frame.y = WORK_H - RFB_TITLE_H;
+        if (t->frame.y < 0) t->frame.y = 0;
+    }
+    for (int i = 0; i < MAX_XCLIENTS; i++) {
+        XClient *c = &X.cl[i];
+        if (c->fd < 0 || c->state != 2 || !(c->root_evmask & 0x20000)) continue;
+        uint8_t ev[32]; memset(ev, 0, sizeof ev);
+        ev[0] = 22;                               /* ConfigureNotify */
+        p32(ev, 4, ROOT_ID); p32(ev, 8, ROOT_ID);
+        p16(ev, 20, (uint16_t)*w); p16(ev, 22, (uint16_t)*h);
+        send_event(c, ev);
+    }
+    printf("[xtiny] screen %dx%d\n", *w, *h);
+    fflush(stdout);
+    return 1;
+}
+
 /* ── librfb callbacks ─────────────────────────────────────────────────────── */
 static void on_idle(rfb_server *s) {
     X.srv = s;
 
     /* Reap launched apps so they don't linger as zombies. */
     while (waitpid(-1, NULL, WNOHANG) > 0) { }
+    refresh_launchers();
 
     /* The clock only changes once a minute; damage it then, so an idle
      * desktop still sends the odd tiny update instead of a full frame. */
@@ -2150,7 +2383,7 @@ static void on_idle(rfb_server *s) {
         struct tm tmv;
         if (localtime_r(&now, &tmv) && tmv.tm_min != last_min) {
             last_min = tmv.tm_min;
-            rfb_damage(s, FB_W - 70, WORK_H, 70, TASKBAR_H);
+            rfb_damage(s, FB_W - TB_CLOCK_W - 8, WORK_H, TB_CLOCK_W + 8, TASKBAR_H);
         }
     }
     /* accept new X clients */
@@ -2197,7 +2430,7 @@ static void blit_window(rfb_server *s, XWindow *w, int ox, int oy) {
 
 static void render(rfb_server *s) {
     X.srv = s;
-    rfb_draw_desktop(s);
+    draw_desktop(s);
     /* back to front, so the front-most window lands on top */
     for (int i = X.nstack - 1; i >= 0; i--) {
         XWindow *w = find_win(X.stack[i]);
@@ -2211,21 +2444,133 @@ static void render(rfb_server *s) {
     draw_taskbar(s);          /* always on top of the windows */
 }
 
+/* ── edge resize ──────────────────────────────────────────────────────────── */
+enum { RZ_L = 1, RZ_R = 2, RZ_B = 4 };
+#define RZ_OUT 6     /* grab zone outside the frame (where the shadow is) */
+#define RZ_IN  3     /* ... and just inside it */
+
+/* Which resize edges of which window are under the point. The front-most
+ * window whose (zone-expanded) frame contains the point decides, so an
+ * edge buried under another window can't be grabbed. */
+static int resize_edges_at(int x, int y, XWindow **out) {
+    *out = NULL;
+    if (y >= WORK_H) return 0;
+    for (int i = 0; i < X.nstack; i++) {
+        XWindow *w = find_win(X.stack[i]);
+        if (!w || !w->mapped || w->minimized || !w->toplevel) continue;
+        int fx = w->frame.x, fy = w->frame.y;
+        int fw = w->w + 2*RFB_BORDER, fh = RFB_TITLE_H + w->h + RFB_BORDER;
+        if (x < fx - RZ_OUT || x >= fx + fw + RZ_OUT ||
+            y < fy || y >= fy + fh + RZ_OUT)
+            continue;
+        if (w->maxed) return 0;
+        int e = 0;
+        if (y >= fy + RFB_TITLE_H) {              /* title bar = move, not resize */
+            if (x < fx + RZ_IN)       e |= RZ_L;
+            if (x >= fx + fw - RZ_IN) e |= RZ_R;
+        }
+        if (y >= fy + fh - RZ_IN)     e |= RZ_B;
+        if (e) *out = w;
+        return e;
+    }
+    return 0;
+}
+
+static int resize_cursor(int e) {
+    if ((e & RZ_B) && (e & RZ_L)) return RFB_CUR_NESW_RESIZE;
+    if ((e & RZ_B) && (e & RZ_R)) return RFB_CUR_NWSE_RESIZE;
+    if (e & RZ_B)                 return RFB_CUR_NS_RESIZE;
+    return RFB_CUR_EW_RESIZE;
+}
+
+/* Apply the pending edge-drag geometry. Throttled while dragging: each
+ * resize makes the client re-layout and repaint (xterm reflows its whole
+ * screen), so per-motion-event resizes would just queue up behind it. */
+static void resize_apply(rfb_server *s, int force) {
+    XWindow *w = find_win(X.rz_win);
+    if (!w) { X.rz_win = 0; return; }
+    if (w->w == X.rz_nw && w->h == X.rz_nh && w->frame.x == X.rz_nx) return;
+    uint64_t now = rfb_now_ms();
+    if (!force && now - X.rz_last_ms < 80) return;
+    X.rz_last_ms = now;
+    w->frame.x = X.rz_nx;
+    resize_window(w, X.rz_nw, X.rz_nh);
+    rfb_damage_full(s);
+}
+
 static void on_pointer(rfb_server *s, int buttons, int x, int y) {
     X.srv = s;
     X.ptr_x = x; X.ptr_y = y;
+    static int prev_btn1 = 0;
+    static int swallow_drag = 0;      /* press consumed by a button/taskbar */
+
+    /* Hover feedback: taskbar buttons, and the window-button glyphs of the
+     * front-most window under the pointer. Only the strips that changed
+     * are damaged. */
+    {
+        int th = taskbar_item_at(x, y);
+        if (th != X.tb_hover) {
+            X.tb_hover = th;
+            rfb_damage(s, 0, WORK_H, FB_W, TASKBAR_H);
+        }
+        XWindow *ht = toplevel_at(x, y);
+        for (int i = 0; i < MAX_WINDOWS; i++) {
+            XWindow *w = &X.win[i];
+            if (!w->id || !w->toplevel) continue;
+            int hv = (w == ht) && !(buttons & 1) &&
+                     rfb_winframe_over_buttons(&w->frame, x, y);
+            if (hv != w->frame.hover) {
+                w->frame.hover = hv;
+                rfb_damage_titlebar(s, &w->frame);
+            }
+        }
+    }
+
+    /* An edge drag in progress owns the pointer until release. */
+    if (X.rz_win) {
+        int dx = x - X.rz_px, dy = y - X.rz_py;
+        int nw = X.rz_w, nh = X.rz_h;
+        if (X.rz_edges & RZ_R) nw += dx;
+        if (X.rz_edges & RZ_L) nw -= dx;
+        if (X.rz_edges & RZ_B) nh += dy;
+        if (nw < 160) nw = 160;
+        if (nh < 60)  nh = 60;
+        if (nw > FB_W - 2*RFB_BORDER) nw = FB_W - 2*RFB_BORDER;
+        if (nh > WORK_H - RFB_TITLE_H - RFB_BORDER) nh = WORK_H - RFB_TITLE_H - RFB_BORDER;
+        X.rz_nw = nw; X.rz_nh = nh;
+        X.rz_nx = (X.rz_edges & RZ_L) ? X.rz_x + (X.rz_w - nw) : X.rz_x;
+        int done = !(buttons & 1);
+        resize_apply(s, done);
+        if (done) { X.rz_win = 0; prev_btn1 = 0; swallow_drag = 0; }
+        rfb_set_cursor(s, resize_cursor(X.rz_edges));
+        return;
+    }
 
     /* Click-to-raise/focus, before anything else looks at the click: a
      * press on any part of a window (chrome or content) brings it to the
      * front and gives it the keyboard. */
-    static int prev_btn1 = 0;
-    static int swallow_drag = 0;      /* press consumed by a button/taskbar */
     int btn1 = buttons & 1;
     if (btn1 && !prev_btn1) {
         if (taskbar_click(s, x, y)) {
             swallow_drag = 1;
             prev_btn1 = btn1;
             X.btn_state = 0;
+            return;
+        }
+        XWindow *rw;
+        int e = resize_edges_at(x, y, &rw);
+        if (e) {                          /* start an edge drag */
+            if (stack_raise(rw->id)) rfb_damage_full(s);
+            set_focus(rw->id);
+            X.rz_win = rw->id; X.rz_edges = e;
+            X.rz_px = x; X.rz_py = y;
+            X.rz_x = rw->frame.x; X.rz_w = rw->w; X.rz_h = rw->h;
+            X.rz_nx = rw->frame.x; X.rz_nw = rw->w; X.rz_nh = rw->h;
+            X.rz_last_ms = 0;
+            swallow_drag = 1;
+            prev_btn1 = btn1;
+            X.btn_state = 0;
+            rfb_set_cursor(s, resize_cursor(e));
             return;
         }
         XWindow *top = toplevel_at(x, y);
@@ -2334,6 +2679,11 @@ static void on_pointer(rfb_server *s, int buttons, int x, int y) {
             }
         }
         int shape = (w && !on_chrome) ? cursor_for(w) : RFB_CUR_DEFAULT;
+        if (!buttons) {                   /* resize zones beat everything */
+            XWindow *rw;
+            int e = resize_edges_at(x, y, &rw);
+            if (e) shape = resize_cursor(e);
+        }
         if (xtrace && shape != X.cursor_shape) {
             X.cursor_shape = shape;
             printf("[xtiny] cursor: win=%#x own=%d -> shape=%d\n",
@@ -2421,6 +2771,15 @@ int main(void) {
     const char *tr = getenv("XTINY_TRACE");
     xtrace = tr && *tr == '1';
     for (int i = 0; i < MAX_XCLIENTS; i++) X.cl[i].fd = -1;
+    X.fbw = 1024; X.fbh = 768;
+    const char *geo = getenv("XTINY_GEOMETRY");
+    if (geo) {
+        int gw = 0, gh = 0;
+        if (sscanf(geo, "%dx%d", &gw, &gh) == 2) on_resize(NULL, &gw, &gh);
+    }
+    X.tb_hover = -1;
+    for (int i = 0; i < NLAUNCH; i++)
+        launch_ok[i] = access(LAUNCH[i].path, X_OK) == 0;
     X.ptr_x = FB_W / 2; X.ptr_y = FB_H / 2;
 
     /* root window entry */
@@ -2458,6 +2817,7 @@ int main(void) {
         .on_pointer = on_pointer,
         .on_key     = on_key,
         .on_idle    = on_idle,
+        .on_resize  = on_resize,
     };
     return rfb_run(&cfg);
 }

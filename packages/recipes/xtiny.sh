@@ -5,7 +5,9 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.0.3"   # 1.0.3: fixed-brk sysroot, heap no longer capped at ~60 MB
+VERSION="1.1.0"   # 1.1.0: theme pass — desktop follows the viewer size, AA UI font,
+                  # rounded/shadowed frames, edge resize, dark xterm defaults
+                  # 1.0.3: fixed-brk sysroot, heap no longer capped at ~60 MB
 DESCRIPTION="Tiny X11 server + desktop on :5900 for real X clients (xterm, xeyes, wolf3d); open the X display panel"
 SOURCE_URL="local:"
 DEPENDS="xterm xeyes"

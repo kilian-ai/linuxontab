@@ -4728,16 +4728,19 @@ class RfbClient {
       if (b.length < 24 + nameLen) return false;
       const name = new TextDecoder().decode(b.slice(24, 24 + nameLen));
       this._consume(24 + nameLen);
-      this._canvas.width  = this._w;
-      this._canvas.height = this._h;
-      const back = document.createElement('canvas');
-      back.width = this._w; back.height = this._h;
-      this._ctx = back.getContext('2d');
-      this._back = back;
-      this._dirty = null;
-      $('x-status').textContent = 'connected — ' + this._w + '×' + this._h + ' "' + name + '"';
+      this._name = name;
+      this._resizeFb(this._w, this._h);
       xDbg('server-init ' + this._w + 'x' + this._h + ' name=' + JSON.stringify(name));
       $('x-disconnect').disabled = false;
+      // Encodings we understand, in preference order. -308/-223 are the
+      // desktop-size pseudo-encodings: a server that can resize answers
+      // with an ExtendedDesktopSize rect, and only then do we send
+      // SetDesktopSize (servers that can't never see that message).
+      this._send(new Uint8Array([2, 0, 0, 4,
+                                 0, 0, 0, 2,                 // RRE
+                                 0, 0, 0, 0,                 // Raw
+                                 0xff, 0xff, 0xfe, 0xcc,     // -308 ExtendedDesktopSize
+                                 0xff, 0xff, 0xff, 0x21]));  // -223 DesktopSize
       this._sendFbReq(false);
       this._state = 'msg';
       return true;
@@ -4811,6 +4814,12 @@ class RfbClient {
         this._state = 'raw-pixels';
       } else if (enc === 2) {
         this._state = 'rre-hdr';
+      } else if (enc === -308) {
+        this._state = 'eds';
+      } else if (enc === -223) {      // DesktopSize: the rect IS the new size
+        this._resizeFb(this._rawW, this._rawH);
+        this._rectsLeft--;
+        this._state = this._rectsLeft > 0 ? 'rect-hdr' : 'msg-done';
       } else {
         console.warn('[rfb] unsupported encoding', enc, '— skipping');
         this._rectsLeft--;
@@ -4837,6 +4846,28 @@ class RfbClient {
       this._consume(8 + n * 12);
       this._markDirty(this._rawX, this._rawY, this._rawW, this._rawH);
       this._state = 'rre-done';
+      return true;
+    }
+
+    case 'eds': {
+      // ExtendedDesktopSize: x = reason (0 server, 1 our request, 2 other
+      // client), y = status (0 ok), w/h = framebuffer; then the screens.
+      if (b.length < 4) return false;
+      const ns = b[0];
+      if (b.length < 4 + ns * 16) return false;
+      this._consume(4 + ns * 16);
+      const reason = this._rawX, status = this._rawY;
+      if (status === 0) {
+        if (this._rawW !== this._w || this._rawH !== this._h) this._resizeFb(this._rawW, this._rawH);
+      } else if (reason === 1) {
+        this._edsRefused = true;      // server can't resize: stop asking
+      }
+      xDbg('desktop size ' + this._rawW + 'x' + this._rawH + ' reason=' + reason + ' status=' + status);
+      const first = !this._edsOk;
+      this._edsOk = true;
+      this._rectsLeft--;
+      this._state = this._rectsLeft > 0 ? 'rect-hdr' : 'msg-done';
+      if (first) setTimeout(() => xRequestDesktopSize(), 0);
       return true;
     }
 
@@ -4896,6 +4927,35 @@ class RfbClient {
     this._dirty = null;
     const w = d.x1 - d.x0, h = d.y1 - d.y0;
     if (w > 0 && h > 0) this._vctx.drawImage(this._back, d.x0, d.y0, w, h, d.x0, d.y0, w, h);
+  }
+
+  // (Re)size the framebuffer: the visible canvas and its back buffer. The
+  // server follows a size change with a full frame.
+  _resizeFb(w, h) {
+    this._w = w; this._h = h;
+    this._canvas.width  = w;
+    this._canvas.height = h;
+    const back = document.createElement('canvas');
+    back.width = w; back.height = h;
+    this._ctx = back.getContext('2d');
+    this._back = back;
+    this._dirty = null;
+    $('x-status').textContent = 'connected — ' + w + '×' + h + ' "' + (this._name || '') + '"';
+  }
+
+  // Ask the server for a w×h desktop (only after it announced support).
+  requestSize(w, h) {
+    if (!this._edsOk || this._edsRefused || !w || !h) return;
+    if ((w === this._w && h === this._h) || (w === this._reqW && h === this._reqH)) return;
+    this._reqW = w; this._reqH = h;
+    const m = new Uint8Array(24);
+    m[0] = 251;
+    m[2] = w >> 8; m[3] = w & 0xff;
+    m[4] = h >> 8; m[5] = h & 0xff;
+    m[6] = 1;                                   // one screen, id 0 at 0,0
+    m[16] = w >> 8; m[17] = w & 0xff;
+    m[18] = h >> 8; m[19] = h & 0xff;
+    this._send(m);
   }
 
   _sendFbReq(incremental) {
@@ -5684,7 +5744,20 @@ function xFitCanvas() {
   // neighbour drops whole rows of small text.
   c.style.imageRendering = scale >= 1 ? 'pixelated' : 'auto';
 }
-new ResizeObserver(xFitCanvas).observe($('x-canvas-wrap'));
+// Make the guest desktop exactly the panel's size (CSS pixels), so it fills
+// the view 1:1 instead of sitting letterboxed. Debounced: a window drag-
+// resize fires many observations, and each request makes xtiny reallocate
+// its framebuffer and send a full frame.
+let xSizeTimer = null;
+function xRequestDesktopSize() {
+  clearTimeout(xSizeTimer);
+  xSizeTimer = setTimeout(() => {
+    const wrap = $('x-canvas-wrap');
+    if (!xRfbClient || $('x-view').hidden || !wrap.clientWidth || !wrap.clientHeight) return;
+    xRfbClient.requestSize(Math.floor(wrap.clientWidth), Math.floor(wrap.clientHeight));
+  }, 250);
+}
+new ResizeObserver(() => { xFitCanvas(); xRequestDesktopSize(); }).observe($('x-canvas-wrap'));
 // The RFB server resizes the framebuffer (640x480 placeholder -> 800x600).
 new MutationObserver(xFitCanvas).observe($('x-canvas'), { attributes: true, attributeFilter: ['width', 'height'] });
 
