@@ -191,7 +191,7 @@ setInterval(renderContainers, 1000);
 const BUILTINS = ['lean', 'redis', 'python3', 'nodejs', 'jq', 'nano', 'tmux', 'htop', 'vitetris'];
 // Builtins that start a program at the shell's first prompt (?cmd=), after
 // the image's package is installed.
-const BUILTIN_CMDS = { vitetris: 'tetris' };
+const BUILTIN_CMDS = { vitetris: 'tetris', htop: 'htop' };
 // Web demos: the container installs + starts the server (lot-services.conf),
 // and the tab opens straight on the page it serves, menu hidden (?web + ?kiosk).
 const WEBDEMOS = [
