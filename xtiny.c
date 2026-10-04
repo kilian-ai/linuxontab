@@ -23,6 +23,7 @@
 #include "librfb.h"
 #include "xtiny_font.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
@@ -168,6 +169,8 @@ static struct {
 
     int fbw, fbh;               /* current screen size (see FB_W) */
     int tb_hover;               /* taskbar item under the pointer, -1 none */
+    int menu_open;              /* the Apps menu is showing */
+    int menu_hover;             /* menu row under the pointer / keyboard, -1 */
 
     /* Edge-drag resize of a top-level (see on_pointer). */
     uint32_t rz_win;
@@ -2146,38 +2149,193 @@ static void restore_window(XWindow *w) {
     if (X.srv) rfb_damage_full(X.srv);
 }
 
-/* ── launcher ─────────────────────────────────────────────────────────────── */
-/* Apps appear on the taskbar only while installed (apk add netsurf → a
- * Browser button shows up within a few seconds). */
-static const struct {
-    const char *label;
-    const char *path;
-    const char *argv[8];
-} LAUNCH[] = {
-    { "Terminal", "/usr/bin/xterm",
-      { "xterm", "-fn", "fixed", "-e", "/bin/sh", NULL } },
-    { "Browser",  "/usr/local/bin/netsurf", { "netsurf", NULL } },
-    { "Wolf3D",   "/usr/local/bin/wolf3d",  { "wolf3d", NULL } },
-    { "Eyes",     "/usr/bin/xeyes",         { "xeyes", NULL } },
-};
-#define NLAUNCH ((int)(sizeof LAUNCH / sizeof LAUNCH[0]))
-static int launch_ok[NLAUNCH];
+/* ── applications ─────────────────────────────────────────────────────────── */
+/* What the Apps menu and the pinned taskbar buttons offer. Built-in entries
+ * cover the X apps and the terminal apps worth a window; packages can add
+ * their own as freedesktop .desktop files in /usr/share/applications
+ * (Name, Comment, Exec, Terminal, NoDisplay, plus X-LinuxOnTab-Package =
+ * the apk package that installs it); a file named like a built-in id
+ * replaces that entry. An app whose command is missing still shows when it
+ * names a package: picking it installs the package in a terminal first. */
+#define MAX_APPS 32
+typedef struct {
+    char id[32];                /* desktop-file id (basename) */
+    char name[40];
+    char comment[64];
+    char exec[160];             /* command line (simple quoting) */
+    char pkg[32];               /* apk package that provides it */
+    int terminal;               /* run inside an xterm */
+    uint32_t color;             /* icon tile, 0xRRGGBB */
+    int pinned;                 /* also a taskbar button */
+    int installed;              /* command found on PATH (refresh_apps) */
+} App;
 
-static void refresh_launchers(void) {
-    static uint64_t last;
-    uint64_t now = rfb_now_ms();
-    if (last && now - last < 3000) return;
-    last = now;
-    int changed = 0;
-    for (int i = 0; i < NLAUNCH; i++) {
-        int ok = access(LAUNCH[i].path, X_OK) == 0;
-        if (ok != launch_ok[i]) { launch_ok[i] = ok; changed = 1; }
+static const App BUILTIN_APPS[] = {
+    { "xterm",   "Terminal",       "A shell in a window",          "xterm -fn fixed -e /bin/sh", "xterm",    0, 0x3B4252, 1, 0 },
+    { "netsurf", "Browser",        "NetSurf web browser",          "netsurf",                    "netsurf",  0, 0x2F6FD0, 1, 0 },
+    { "htop",    "System Monitor", "Processes and memory (htop)",  "htop",                       "htop",     1, 0x2E8B57, 0, 0 },
+    { "mc",      "Files",          "Midnight Commander",           "mc",                         "mc",       1, 0x00838F, 0, 0 },
+    { "nano",    "Text Editor",    "nano, small and friendly",     "nano",                       "nano",     1, 0x7B3FA0, 0, 0 },
+    { "python3", "Python",         "Python 3.11 interpreter",      "python3",                    "python3",  1, 0x3776AB, 0, 0 },
+    { "wolf3d",  "Wolfenstein 3D", "Shareware episode 1",          "wolf3d",                     "wolf3d",   0, 0x9B1C1C, 0, 0 },
+    { "tetris",  "Tetris",         "vitetris, in colour",          "tetris",                     "vitetris", 1, 0xC77700, 0, 0 },
+    { "xeyes",   "Eyes",           "Eyes that follow the pointer", "xeyes",                      "xeyes",    0, 0x5A5F69, 0, 0 },
+};
+#define NBUILTIN ((int)(sizeof BUILTIN_APPS / sizeof BUILTIN_APPS[0]))
+
+static App apps[MAX_APPS];
+static int napps;
+
+/* Is the program (first word of cmd) executable somewhere on PATH? */
+static int on_path(const char *cmd) {
+    char prog[96];
+    int n = 0;
+    while (cmd[n] && cmd[n] != ' ' && n < (int)sizeof prog - 1) { prog[n] = cmd[n]; n++; }
+    prog[n] = 0;
+    if (!n) return 0;
+    if (strchr(prog, '/')) return access(prog, X_OK) == 0;
+    const char *path = getenv("PATH");
+    if (!path || !*path) path = "/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin";
+    char buf[256];
+    for (const char *p = path; *p; ) {
+        const char *e = strchr(p, ':');
+        int dl = e ? (int)(e - p) : (int)strlen(p);
+        if (dl > 0 && dl + 1 + n < (int)sizeof buf) {
+            memcpy(buf, p, dl); buf[dl] = '/'; memcpy(buf + dl + 1, prog, n + 1);
+            if (access(buf, X_OK) == 0) return 1;
+        }
+        if (!e) break;
+        p = e + 1;
     }
-    if (changed && X.srv) rfb_damage(X.srv, 0, WORK_H, FB_W, TASKBAR_H);
+    return 0;
 }
 
-static void spawn(int idx) {
-    if (idx < 0 || idx >= NLAUNCH) return;
+static void copy_field(char *dst, size_t cap, const char *src) {
+    size_t n = strlen(src);
+    while (n && (src[n-1] == '\n' || src[n-1] == '\r' || src[n-1] == ' ')) n--;
+    if (n >= cap) n = cap - 1;
+    memcpy(dst, src, n);
+    dst[n] = 0;
+}
+
+/* Parse one .desktop file into *a (keeps built-in defaults for missing
+ * keys). Returns 0 for NoDisplay/Hidden entries or files without Exec. */
+static int parse_desktop(const char *path, App *a) {
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    char line[256];
+    int in_entry = 0, hidden = 0;
+    while (fgets(line, sizeof line, f)) {
+        if (line[0] == '[') { in_entry = !strncmp(line, "[Desktop Entry]", 15); continue; }
+        if (!in_entry) continue;
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = 0;
+        const char *k = line, *v = eq + 1;
+        if      (!strcmp(k, "Name"))    copy_field(a->name, sizeof a->name, v);
+        else if (!strcmp(k, "Comment")) copy_field(a->comment, sizeof a->comment, v);
+        else if (!strcmp(k, "Terminal")) a->terminal = !strncmp(v, "true", 4);
+        else if (!strcmp(k, "NoDisplay") || !strcmp(k, "Hidden")) hidden |= !strncmp(v, "true", 4);
+        else if (!strcmp(k, "X-LinuxOnTab-Package")) copy_field(a->pkg, sizeof a->pkg, v);
+        else if (!strcmp(k, "X-LinuxOnTab-Color")) a->color = (uint32_t)strtoul(v + (*v == '#'), NULL, 16);
+        else if (!strcmp(k, "Exec")) {
+            /* drop field codes (%f %U ...) — nothing is ever passed */
+            char out[160]; int o = 0;
+            for (const char *q = v; *q && *q != '\n' && o < (int)sizeof out - 1; q++) {
+                if (q[0] == '%' && q[1]) { q++; continue; }
+                out[o++] = *q;
+            }
+            out[o] = 0;
+            copy_field(a->exec, sizeof a->exec, out);
+        }
+    }
+    fclose(f);
+    return !hidden && a->exec[0] && a->name[0];
+}
+
+/* Rebuild the list: built-ins, then .desktop files (re-read only when the
+ * directory changes), then resolve which commands are installed. Cheap
+ * enough to run every few seconds from on_idle, so `apk add` while the
+ * desktop is up shows its app without a restart. */
+static void refresh_apps(int force) {
+    static uint64_t last;
+    static long dir_mtime = -1;
+    uint64_t now = rfb_now_ms();
+    if (!force && last && now - last < 3000) return;
+    last = now;
+
+    struct stat st;
+    long mt = stat("/usr/share/applications", &st) == 0 ? (long)st.st_mtime : 0;
+    int rebuild = force || mt != dir_mtime || napps == 0;
+    dir_mtime = mt;
+    int changed = 0;
+    if (rebuild) {
+        napps = 0;
+        for (int i = 0; i < NBUILTIN && napps < MAX_APPS; i++) apps[napps++] = BUILTIN_APPS[i];
+        DIR *d = mt ? opendir("/usr/share/applications") : NULL;
+        struct dirent *de;
+        while (d && (de = readdir(d))) {
+            size_t l = strlen(de->d_name);
+            if (l < 9 || strcmp(de->d_name + l - 8, ".desktop")) continue;
+            char id[32];
+            size_t il = l - 8 < sizeof id - 1 ? l - 8 : sizeof id - 1;
+            memcpy(id, de->d_name, il); id[il] = 0;
+            int slot = -1;
+            for (int i = 0; i < napps; i++) if (!strcmp(apps[i].id, id)) slot = i;
+            App a;
+            if (slot >= 0) a = apps[slot];
+            else {
+                memset(&a, 0, sizeof a);
+                snprintf(a.id, sizeof a.id, "%s", id);
+                a.color = 0x4C566A;
+            }
+            char path[320];
+            snprintf(path, sizeof path, "/usr/share/applications/%s", de->d_name);
+            int ok = parse_desktop(path, &a);
+            if (slot >= 0) {
+                if (ok) apps[slot] = a;
+                else { memmove(&apps[slot], &apps[slot + 1], (size_t)(napps - slot - 1) * sizeof(App)); napps--; }
+            } else if (ok && napps < MAX_APPS) {
+                apps[napps++] = a;
+            }
+        }
+        if (d) closedir(d);
+        changed = 1;
+    }
+    for (int i = 0; i < napps; i++) {
+        int ok = on_path(apps[i].exec);
+        if (ok != apps[i].installed) { apps[i].installed = ok; changed = 1; }
+    }
+    if (changed && X.srv) rfb_damage_full(X.srv);
+}
+
+/* Offered at all: runnable now, or installable. */
+static int app_visible(const App *a) { return a->installed || a->pkg[0]; }
+
+/* Split a command line into argv (whitespace, "double" or 'single' quotes).
+ * Writes into buf; returns argc. */
+static int split_cmd(const char *cmd, char *buf, size_t cap, char **argv, int maxv) {
+    int argc = 0;
+    size_t o = 0;
+    const char *p = cmd;
+    while (*p && argc < maxv - 1) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        argv[argc++] = buf + o;
+        char q = 0;
+        while (*p && (q || (*p != ' ' && *p != '\t'))) {
+            if (!q && (*p == '"' || *p == '\'')) { q = *p++; continue; }
+            if (q && *p == q) { q = 0; p++; continue; }
+            if (o < cap - 1) buf[o++] = *p;
+            p++;
+        }
+        if (o < cap - 1) buf[o++] = 0;
+    }
+    argv[argc] = NULL;
+    return argc;
+}
+
+static void spawn_argv(char *const *argv) {
     pid_t p = fork();
     if (p != 0) {                         /* parent (or fork failure) */
         if (p < 0) perror("[xtiny] fork");
@@ -2192,24 +2350,143 @@ static void spawn(int idx) {
         dup2(devnull, 0);
         if (devnull > 2) close(devnull);
     }
-    execv(LAUNCH[idx].path, (char *const *)LAUNCH[idx].argv);
+    execvp(argv[0], argv);
     _exit(127);
+}
+
+/* Start an app: directly, in a terminal, or — not installed yet — in a
+ * terminal that runs `apk add` first, so the download is visible. */
+static void launch_app(const App *a) {
+    char buf[512], script[400];
+    char *argv[24];
+    if (a->installed && !a->terminal) {
+        split_cmd(a->exec, buf, sizeof buf, argv, 24);
+    } else if (a->installed) {
+        int n = 0;
+        argv[n++] = "xterm"; argv[n++] = "-T"; argv[n++] = (char *)a->name;
+        argv[n++] = "-fn"; argv[n++] = "fixed"; argv[n++] = "-e";
+        split_cmd(a->exec, buf, sizeof buf, argv + n, 24 - n);
+    } else {
+        /* GUI apps detach (setsid) so closing the installer keeps them */
+        if (a->terminal)
+            snprintf(script, sizeof script,
+                     "apk add %s && exec %s; echo; echo 'Install failed - press Enter to close.'; read x",
+                     a->pkg, a->exec);
+        else
+            snprintf(script, sizeof script,
+                     "apk add %s && { setsid %s </dev/null >/dev/null 2>&1 & sleep 2; exit 0; }; "
+                     "echo; echo 'Install failed - press Enter to close.'; read x",
+                     a->pkg, a->exec);
+        snprintf(buf, sizeof buf, "Installing %s", a->name);
+        int n = 0;
+        argv[n++] = "xterm"; argv[n++] = "-T"; argv[n++] = buf;
+        argv[n++] = "-fn"; argv[n++] = "fixed"; argv[n++] = "-e";
+        argv[n++] = "/bin/sh"; argv[n++] = "-c"; argv[n++] = script;
+        argv[n] = NULL;
+    }
+    printf("[xtiny] launch %s%s\n", a->id, a->installed ? "" : " (install first)");
+    fflush(stdout);
+    spawn_argv(argv);
+}
+
+/* An app's icon: a rounded colour tile with its initial. */
+static void draw_app_tile(rfb_server *s, int x, int y, int sz, const App *a) {
+    uint8_t r = (uint8_t)(a->color >> 16), g = (uint8_t)(a->color >> 8), b = (uint8_t)a->color;
+    rfb_fill_rrect(s, x, y, sz, sz, sz / 4, b, g, r);
+    char ini[2] = { a->name[0] ? a->name[0] : '?', 0 };
+    int tw = rfb_label_width(ini);
+    rfb_draw_label(s, x + (sz - tw) / 2, y + sz / 2 - 1, 0, ini, 0xFF, 0xFF, 0xFF);
+}
+
+/* ── Apps menu ────────────────────────────────────────────────────────────── */
+#define MENU_W      300
+#define MENU_ROW_H  46
+#define MENU_HEAD_H 34
+#define MENU_PAD    6
+
+typedef struct { int x, y, w, h, n; int idx[MAX_APPS]; } MenuLayout;
+
+static void menu_layout(MenuLayout *m) {
+    m->n = 0;
+    for (int i = 0; i < napps; i++) if (app_visible(&apps[i])) m->idx[m->n++] = i;
+    int maxrows = (WORK_H - 16 - MENU_HEAD_H - 2*MENU_PAD) / MENU_ROW_H;
+    if (maxrows < 1) maxrows = 1;
+    if (m->n > maxrows) m->n = maxrows;
+    m->w = MENU_W;
+    if (m->w > FB_W - 16) m->w = FB_W - 16;
+    m->h = MENU_HEAD_H + m->n * MENU_ROW_H + 2*MENU_PAD;
+    m->x = 8;
+    m->y = WORK_H - 8 - m->h;
+}
+
+static int menu_row_at(const MenuLayout *m, int x, int y) {
+    if (x < m->x || x >= m->x + m->w) return -1;
+    int ry = y - (m->y + MENU_PAD + MENU_HEAD_H);
+    if (ry < 0) return -1;
+    int r = ry / MENU_ROW_H;
+    return r < m->n ? r : -1;
+}
+
+static void menu_damage(rfb_server *s) {
+    MenuLayout m; menu_layout(&m);
+    rfb_damage(s, m.x - 16, m.y - 16, m.w + 32, m.h + 40);
+}
+
+static void menu_set(rfb_server *s, int open) {
+    if (X.menu_open == open) return;
+    if (!open) menu_damage(s);           /* old extent, before it goes */
+    X.menu_open = open;
+    X.menu_hover = -1;
+    if (open) { refresh_apps(1); menu_damage(s); }
+}
+
+static void draw_menu(rfb_server *s) {
+    MenuLayout m; menu_layout(&m);
+    rfb_drop_shadow(s, m.x, m.y, m.w, m.h, 140);
+    rfb_fill_rrect(s, m.x, m.y, m.w, m.h, 10, 0x4A, 0x45, 0x40);            /* rim  */
+    rfb_fill_rrect(s, m.x + 1, m.y + 1, m.w - 2, m.h - 2, 9, 0x2E, 0x2A, 0x26);  /* body */
+    rfb_draw_label(s, m.x + 14, m.y + MENU_PAD + MENU_HEAD_H / 2, 0, "Applications",
+                   0x9A, 0x96, 0x92);
+    for (int r = 0; r < m.n; r++) {
+        const App *a = &apps[m.idx[r]];
+        int ry = m.y + MENU_PAD + MENU_HEAD_H + r * MENU_ROW_H;
+        if (r == X.menu_hover)
+            rfb_fill_rrect(s, m.x + MENU_PAD, ry + 2, m.w - 2*MENU_PAD, MENU_ROW_H - 4, 7,
+                           0x4A, 0x44, 0x3E);
+        draw_app_tile(s, m.x + 14, ry + (MENU_ROW_H - 30) / 2, 30, a);
+        int tx = m.x + 56, tw = m.w - 56 - 14;
+        int badge = 0;
+        if (!a->installed) {                 /* "Install" tag on the right */
+            const char *t = "Install";
+            badge = rfb_label_width(t) + 16;
+            int bx = m.x + m.w - 14 - badge;
+            rfb_fill_rrect(s, bx, ry + MENU_ROW_H/2 - 10, badge, 20, 10, 0x5C, 0x4A, 0x2E);
+            rfb_draw_label(s, bx + 8, ry + MENU_ROW_H/2 - 1, 0, t, 0xFF, 0xC8, 0x8A);
+            tw -= badge + 8;
+        }
+        rfb_draw_label(s, tx, ry + 15, tw, a->name, 0xF0, 0xED, 0xEA);
+        rfb_draw_label(s, tx, ry + 31, tw, a->comment, 0x9A, 0x96, 0x92);
+    }
 }
 
 /* ── taskbar ──────────────────────────────────────────────────────────────── */
 /* One layout routine feeds both drawing and hit-testing, so a button can
  * never be drawn somewhere it cannot be clicked. */
-enum { TB_NONE = 0, TB_LAUNCH, TB_WINDOW };
+enum { TB_NONE = 0, TB_MENU, TB_LAUNCH, TB_WINDOW };
 typedef struct { int x, w, kind, arg; uint32_t win; } TbItem;
 
 #define TB_PAD    5                       /* button inset from the bar edge */
 #define TB_CLOCK_W 64
+#define TB_MENU_W  78
 
 static int taskbar_layout(TbItem *it, int max) {
-    int n = 0, x = 8;
-    for (int i = 0; i < NLAUNCH && n < max; i++) {
-        if (!launch_ok[i]) continue;
-        int bw = rfb_label_width(LAUNCH[i].label) + 24;
+    int n = 0, x = 6;
+    it[n].x = x; it[n].w = TB_MENU_W; it[n].kind = TB_MENU; it[n].arg = 0; it[n].win = 0;
+    x += TB_MENU_W + 6;
+    n++;
+    for (int i = 0; i < napps && n < max; i++) {
+        if (!apps[i].pinned || !apps[i].installed) continue;
+        int bw = rfb_label_width(apps[i].name) + 24;
         it[n].x = x; it[n].w = bw; it[n].kind = TB_LAUNCH;
         it[n].arg = i; it[n].win = 0;
         x += bw + 4;
@@ -2258,11 +2535,21 @@ static void draw_taskbar(rfb_server *s) {
     int n = taskbar_layout(it, 24);
     for (int i = 0; i < n; i++) {
         int hov = (i == X.tb_hover);
-        if (it[i].kind == TB_LAUNCH) {
+        if (it[i].kind == TB_MENU) {
+            /* accent pill with a 3x3 dot grid */
+            int on = X.menu_open || hov;
+            rfb_fill_rrect(s, it[i].x, by, it[i].w, bh, 7,
+                           on ? 0xFF : 0xE8, on ? 0xA8 : 0x90, on ? 0x6A : 0x4E);
+            for (int gy = 0; gy < 3; gy++)
+                for (int gx = 0; gx < 3; gx++)
+                    rfb_fill_circle_aa(s, it[i].x + 13.5f + gx * 5, cy - 4.5f + gy * 5, 1.6f,
+                                       0xFF, 0xFF, 0xFF, 255);
+            rfb_draw_label(s, it[i].x + 32, cy, 0, "Apps", 0xFF, 0xFF, 0xFF);
+        } else if (it[i].kind == TB_LAUNCH) {
             uint8_t v = hov ? 0x3A : 0x2C;
             rfb_fill_rrect(s, it[i].x, by, it[i].w, bh, 6, v, (uint8_t)(v-2), (uint8_t)(v-4));
             rfb_draw_label(s, it[i].x + 12, cy, it[i].w - 20,
-                           LAUNCH[it[i].arg].label, 0xE0,0xDD,0xDA);
+                           apps[it[i].arg].name, 0xE0,0xDD,0xDA);
         } else {
             XWindow *w = find_win(it[i].win);
             if (!w) continue;
@@ -2297,8 +2584,14 @@ static int taskbar_click(rfb_server *s, int x, int y) {
     int n = taskbar_layout(it, 24);
     for (int i = 0; i < n; i++) {
         if (x < it[i].x || x >= it[i].x + it[i].w) continue;
+        if (it[i].kind == TB_MENU) {
+            menu_set(s, !X.menu_open);
+            rfb_damage(s, 0, WORK_H, FB_W, TASKBAR_H);
+            return 1;
+        }
+        menu_set(s, 0);
         if (it[i].kind == TB_LAUNCH) {
-            spawn(it[i].arg);
+            launch_app(&apps[it[i].arg]);
         } else {
             XWindow *w = find_win(it[i].win);
             if (!w) return 1;
@@ -2308,7 +2601,58 @@ static int taskbar_click(rfb_server *s, int x, int y) {
         }
         return 1;
     }
+    menu_set(s, 0);
     return 1;      /* bare taskbar — still ours, don't leak it to a window */
+}
+
+/* Pointer while the menu is open: hover rows, launch on press, close on a
+ * press anywhere else. Returns 1 if the event was the menu's. */
+static int menu_pointer(rfb_server *s, int buttons, int x, int y, int pressed) {
+    if (!X.menu_open) return 0;
+    MenuLayout m; menu_layout(&m);
+    int row = menu_row_at(&m, x, y);
+    if (row != X.menu_hover) { X.menu_hover = row; menu_damage(s); }
+    int inside = x >= m.x && x < m.x + m.w && y >= m.y && y < m.y + m.h;
+    if (pressed) {
+        if (row >= 0) {
+            const App *a = &apps[m.idx[row]];
+            menu_set(s, 0);
+            rfb_damage(s, 0, WORK_H, FB_W, TASKBAR_H);
+            launch_app(a);
+            return 1;
+        }
+        if (inside) return 1;             /* header / padding: stay open */
+        if (y >= WORK_H) return 0;        /* the taskbar handles its own */
+        menu_set(s, 0);
+        rfb_damage(s, 0, WORK_H, FB_W, TASKBAR_H);
+        return 1;                         /* a dismissing click goes nowhere */
+    }
+    (void)buttons;
+    rfb_set_cursor(s, RFB_CUR_DEFAULT);
+    return inside;
+}
+
+/* Keys while the menu is open: arrows move, Enter launches, Esc closes. */
+static int menu_key(rfb_server *s, uint32_t ks, int down) {
+    if (!X.menu_open) return 0;
+    if (!down) return 1;
+    MenuLayout m; menu_layout(&m);
+    if (ks == 0xff1b) {                                   /* Escape */
+        menu_set(s, 0);
+        rfb_damage(s, 0, WORK_H, FB_W, TASKBAR_H);
+    } else if (ks == 0xff52 || ks == 0xff54) {            /* Up / Down */
+        int h = X.menu_hover;
+        if (ks == 0xff54) h = h < 0 ? 0 : (h + 1) % (m.n ? m.n : 1);
+        else              h = h <= 0 ? m.n - 1 : h - 1;
+        X.menu_hover = h;
+        menu_damage(s);
+    } else if ((ks == 0xff0d || ks == 0xff8d) && X.menu_hover >= 0 && X.menu_hover < m.n) {
+        const App *a = &apps[m.idx[X.menu_hover]];
+        menu_set(s, 0);
+        rfb_damage(s, 0, WORK_H, FB_W, TASKBAR_H);
+        launch_app(a);
+    }
+    return 1;
 }
 
 /* ── desktop ──────────────────────────────────────────────────────────────── */
@@ -2373,7 +2717,7 @@ static void on_idle(rfb_server *s) {
 
     /* Reap launched apps so they don't linger as zombies. */
     while (waitpid(-1, NULL, WNOHANG) > 0) { }
-    refresh_launchers();
+    refresh_apps(0);
 
     /* The clock only changes once a minute; damage it then, so an idle
      * desktop still sends the odd tiny update instead of a full frame. */
@@ -2442,6 +2786,7 @@ static void render(rfb_server *s) {
                     rfb_winframe_cy(&w->frame));
     }
     draw_taskbar(s);          /* always on top of the windows */
+    if (X.menu_open) draw_menu(s);
 }
 
 /* ── edge resize ──────────────────────────────────────────────────────────── */
@@ -2503,6 +2848,17 @@ static void on_pointer(rfb_server *s, int buttons, int x, int y) {
     X.ptr_x = x; X.ptr_y = y;
     static int prev_btn1 = 0;
     static int swallow_drag = 0;      /* press consumed by a button/taskbar */
+
+    /* The Apps menu sits above everything and owns the pointer while open
+     * (a press on the taskbar falls through so the Apps button toggles). */
+    {
+        int pressed = (buttons & 1) && !prev_btn1;
+        if (menu_pointer(s, buttons, x, y, pressed)) {
+            if (pressed) swallow_drag = 1;
+            prev_btn1 = buttons & 1;
+            return;
+        }
+    }
 
     /* Hover feedback: taskbar buttons, and the window-button glyphs of the
      * front-most window under the pointer. Only the strips that changed
@@ -2709,6 +3065,7 @@ static void on_key(rfb_server *s, uint32_t ks, int down) {
         if (down) X.mod_state |= mbit;
         else      X.mod_state &= (uint16_t)~mbit;
     }
+    if (menu_key(s, ks, down)) return;
     uint8_t code = keysym_to_keycode(ks);
     if (!code) return;
 
@@ -2778,8 +3135,8 @@ int main(void) {
         if (sscanf(geo, "%dx%d", &gw, &gh) == 2) on_resize(NULL, &gw, &gh);
     }
     X.tb_hover = -1;
-    for (int i = 0; i < NLAUNCH; i++)
-        launch_ok[i] = access(LAUNCH[i].path, X_OK) == 0;
+    X.menu_hover = -1;
+    refresh_apps(1);
     X.ptr_x = FB_W / 2; X.ptr_y = FB_H / 2;
 
     /* root window entry */

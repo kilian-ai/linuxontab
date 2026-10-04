@@ -120,6 +120,8 @@ void rfb_draw_winframe(rfb_server *s, const rfb_winframe *wf);
  * geometry in one place instead of duplicating it in every app. */
 enum { RFB_BTN_NONE = 0, RFB_BTN_CLOSE, RFB_BTN_MIN, RFB_BTN_MAX };
 int  rfb_winframe_button_at(const rfb_winframe *wf, int x, int y);
+/* Soft drop shadow for a w×h box at x,y (menus, popups); strength 0..255. */
+void rfb_drop_shadow(rfb_server *s, int x, int y, int w, int h, int strength);
 /* 1 if the point is over the button group (drives wf->hover). */
 int  rfb_winframe_over_buttons(const rfb_winframe *wf, int x, int y);
 /* Title-bar strip, for damaging just the chrome (hover changes). */

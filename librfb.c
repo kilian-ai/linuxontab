@@ -440,6 +440,10 @@ static void draw_shadow(rfb_server *s, int x, int y, int fw, int fh, int strengt
     }
 }
 
+void rfb_drop_shadow(rfb_server *s, int x, int y, int w, int h, int strength) {
+    draw_shadow(s, x, y, w, h, strength);
+}
+
 void rfb_draw_winframe(rfb_server *s, const rfb_winframe *wf) {
     int fw = wf->w + 2*RFB_BORDER;
     int fh = RFB_TITLE_H + wf->h + RFB_BORDER;
