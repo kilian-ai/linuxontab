@@ -1,0 +1,3 @@
+#!/bin/sh
+. /opt/x86/x86-env
+exec /opt/x86/blink /opt/x86/root/usr/bin/node /opt/x86/root/usr/lib/node_modules/npm/bin/npx-cli.js "$@"

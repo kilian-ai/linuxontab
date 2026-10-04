@@ -25,6 +25,10 @@
 #             keys are "$IMAGE.<slot>.part-*" + "$IMAGE.manifest", e.g.
 #             IMAGE=x86-chromium.ext4 for the Chromium spike's extra disk
 #             (served by functions/linux-dist/x86-chromium.ext4.js)
+#   GZIP=1    store a gzip stream of the image instead (manifest gets
+#             encoding/csize; lib/r2image.js serves it with x-lot-encoding and
+#             the page inflates it). Only for the ?xdisk= images — the
+#             rootfs.ext4 Function serves raw parts.
 set -eu
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -49,8 +53,13 @@ CUR_SLOT=$(npx --yes wrangler r2 object get "$BUCKET/$IMAGE.manifest" --pipe --r
 if [ "$CUR_SLOT" = "a" ]; then SLOT="b"; else SLOT="a"; fi
 echo "live slot: '${CUR_SLOT:-none}' → uploading to slot '$SLOT'"
 
-echo "splitting $(du -h "$SRC" | cut -f1) into ${PART_MB} MiB parts…"
-split -b "${PART_MB}m" "$SRC" "$WORK/$IMAGE.part-"
+PARTSRC="$SRC"
+if [ -n "${GZIP:-}" ]; then
+  echo "compressing $(du -h "$SRC" | cut -f1)…"
+  gzip -9 -c "$SRC" > "$WORK/$IMAGE.gz"; PARTSRC="$WORK/$IMAGE.gz"
+fi
+echo "splitting $(du -h "$PARTSRC" | cut -f1) into ${PART_MB} MiB parts…"
+split -b "${PART_MB}m" "$PARTSRC" "$WORK/$IMAGE.part-"
 TOTAL=$(ls "$WORK"/"$IMAGE".part-* | wc -l | tr -d ' ')
 
 put() { # key file
@@ -84,7 +93,12 @@ done
 SIZE=$(wc -c < "$SRC" | tr -d ' ')
 SHA=$(shasum -a 256 "$SRC" | awk '{print $1}')
 KEYS=$(ls "$WORK"/"$IMAGE".part-* | sed 's#.*/##' | sed "s/^$IMAGE./\"$IMAGE.${SLOT}./; s/\$/\"/" | paste -sd, -)
-printf '{"slot":"%s","parts":[%s],"size":%s,"sha256":"%s"}' "$SLOT" "$KEYS" "$SIZE" "$SHA" > "$WORK/manifest.json"
+if [ -n "${GZIP:-}" ]; then
+  CSIZE=$(wc -c < "$PARTSRC" | tr -d ' ')
+  printf '{"slot":"%s","parts":[%s],"size":%s,"sha256":"%s","encoding":"gzip","csize":%s}' "$SLOT" "$KEYS" "$SIZE" "$SHA" "$CSIZE" > "$WORK/manifest.json"
+else
+  printf '{"slot":"%s","parts":[%s],"size":%s,"sha256":"%s"}' "$SLOT" "$KEYS" "$SIZE" "$SHA" > "$WORK/manifest.json"
+fi
 printf 'uploading manifest (%d parts, %s bytes) … ' "$TOTAL" "$SIZE"
 put "$IMAGE.manifest" "$WORK/manifest.json" application/json || { echo "FAILED"; exit 1; }
 echo ok

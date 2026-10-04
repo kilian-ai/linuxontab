@@ -3216,11 +3216,20 @@ async function doBoat() {
           : cacheKey + (cacheKey.includes('?') ? '&' : '?') + '_r=' + attempt + Date.now().toString(36);
         const resp = await fetch(url, { cache: 'no-store' });
         if (!resp.ok) throw new Error('HTTP ' + resp.status + ' for ' + path);
-        const total = +(resp.headers.get('content-length') || 0);
+        let total = +(resp.headers.get('content-length') || 0);
+        let body = resp.body;
+        // x-lot-encoding: gzip — the server sends a gzip stream of the image
+        // (the big ?xdisk= images; see cloudflare/lib/r2image.js) and
+        // x-lot-size is the inflated length the checks below expect
+        if (resp.headers.get('x-lot-encoding') === 'gzip') {
+          if (typeof DecompressionStream !== 'function') throw new Error('this browser cannot inflate ' + path);
+          total = +(resp.headers.get('x-lot-size') || 0);
+          body = resp.body.pipeThrough(new DecompressionStream('gzip'));
+        }
         let buf;
-        if (total > 0 && resp.body && resp.body.getReader) {
+        if (total > 0 && body && body.getReader) {
           const out = new Uint8Array(total);
-          const reader = resp.body.getReader();
+          const reader = body.getReader();
           let off = 0;
           for (;;) {
             const { done, value } = await reader.read();
@@ -3232,7 +3241,7 @@ async function doBoat() {
           if (off !== total) throw new Error('short read ' + off + '/' + total + ' for ' + path);
           buf = out.buffer;
         } else {
-          buf = await resp.arrayBuffer();
+          buf = await new Response(body).arrayBuffer();
           setDlProgress('downloading ' + label, buf.byteLength, buf.byteLength);
         }
         validateFn(new Uint8Array(buf));

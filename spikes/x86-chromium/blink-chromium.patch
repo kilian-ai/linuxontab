@@ -397,6 +397,46 @@ index 464beef..4722dc2 100644
  int SyncVirtual(struct System *s, i64 virt, i64 size, int sysflags) {
    int rc;
    u8 *mi;
+diff --git a/blink/overlays.c b/blink/overlays.c
+index b0a407b..b9fca7f 100644
+--- a/blink/overlays.c
++++ b/blink/overlays.c
+@@ -274,12 +274,14 @@ static ssize_t OverlaysGeneric(int dirfd, const char *path, void *args,
+       if ((rc = fgenericat(AT_FDCWD, path, args)) != -1) {
+         return rc;
+       }
++      // this layer's own answer (e.g. EEXIST) beats an earlier layer's
++      // ENOENT: mkdir -p of a dir that exists only here looped forever
++      if (errno != ENOENT && errno != ENOTDIR) {
++        return -1;
++      }
+       if (err == -1) {
+         err = errno;
+       }
+-      if (err != ENOENT && err != ENOTDIR) {
+-        return -1;
+-      }
+     } else {
+       dirfd = open(g_overlays[i], O_RDONLY | O_DIRECTORY | O_CLOEXEC, 0);
+       if (dirfd == -1) {
+@@ -294,11 +296,15 @@ static ssize_t OverlaysGeneric(int dirfd, const char *path, void *args,
+         unassert(!close(dirfd));
+         return rc;
+       }
++      rc = errno;
+       if (err == -1) {
+-        err = errno;
++        err = rc;
+       }
+       unassert(!close(dirfd));
+-      if (errno != ENOENT && errno != ENOTDIR) {
++      // a read-only layer (e.g. a root image mounted ro) can't take writes:
++      // let the next layer try (mkdir /tmp got EROFS instead of EEXIST)
++      if (rc != ENOENT && rc != ENOTDIR && rc != EROFS) {
++        errno = rc;
+         return -1;
+       }
+     }
 diff --git a/blink/ssefloat.c b/blink/ssefloat.c
 index cf239ff..0a45885 100644
 --- a/blink/ssefloat.c
@@ -468,7 +508,7 @@ index cf239ff..0a45885 100644
      Write32(p + 1 * 4, x[1].i);
      Write32(p + 2 * 4, x[2].i);
 diff --git a/blink/syscall.c b/blink/syscall.c
-index 7ccfa52..1e76250 100644
+index 7ccfa52..75e214a 100644
 --- a/blink/syscall.c
 +++ b/blink/syscall.c
 @@ -369,6 +369,13 @@ _Noreturn void SysExitGroup(struct Machine *m, int rc) {
@@ -631,7 +671,43 @@ index 7ccfa52..1e76250 100644
    LOGF("%s %d not supported yet", "socket type", x);
    return einval();
  }
-@@ -4063,11 +4138,13 @@ static int SysPrlimit(struct Machine *m, i32 pid, i32 resource,
+@@ -3656,14 +3731,35 @@ static int SysFcntl(struct Machine *m, i32 fildes, i32 cmd, i64 arg) {
+   return rc;
+ }
+ 
++// /proc/self/exe names the emulated program, not Blink: programs that
++// re-exec themselves (Node: process.execPath, child_process.fork) would
++// otherwise launch Blink with their own flags ("illegal option").
++static bool IsOwnExeLink(struct Machine *m, const char *p) {
++  char own[40];
++  if (!strcmp(p, "/proc/self/exe") || !strcmp(p, "/proc/thread-self/exe")) {
++    return true;
++  }
++  snprintf(own, sizeof(own), "/proc/%d/exe", m->system->pid);
++  return !strcmp(p, own);
++}
++
+ static ssize_t SysReadlinkat(struct Machine *m, int dirfd, i64 path,
+                              i64 bufaddr, i64 bufsiz) {
+   char *buf;
+   ssize_t rc;
++  const char *p;
+   // This system call raises EINVAL when "bufsiz is not positive."
+   // ──Quoth the Linux Programmer's Manual § readlink(2). Some libc
+   // implementations (e.g. Musl) consider it to be posixly incorrect.
+   if (bufsiz <= 0) return einval();
++  if ((p = LoadStr(m, path)) && IsOwnExeLink(m, p) && m->system->elf.execfn) {
++    char abs[PATH_MAX];
++    const char *exe = m->system->elf.execfn;
++    if (exe[0] != '/' && realpath(exe, abs)) exe = abs;
++    rc = MIN((ssize_t)strlen(exe), (ssize_t)bufsiz);
++    if (CopyToUserWrite(m, bufaddr, exe, rc) == -1) rc = -1;
++    return rc;
++  }
+   if (!(buf = (char *)AddToFreeList(m, malloc(bufsiz)))) return -1;
+   if ((rc = VfsReadlink(GetDirFildes(dirfd), LoadStr(m, path), buf, bufsiz)) !=
+       -1) {
+@@ -4063,11 +4159,13 @@ static int SysPrlimit(struct Machine *m, i32 pid, i32 resource,
  #ifndef TINY
    if ((old_rlimit_addr &&
         !IsValidMemory(m, old_rlimit_addr, sizeof(struct rlimit_linux),

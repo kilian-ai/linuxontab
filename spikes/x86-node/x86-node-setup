@@ -1,0 +1,24 @@
+#!/bin/sh
+# Put node/npm/npx (x86-64 Node 24 under Blink) on PATH:
+#   mkdir -p /opt/x86 && mount -t ext4 -o ro /dev/vdc /opt/x86 && /opt/x86/x86-node-setup
+mkdir -p /opt/npm
+grep -q " /opt/npm " /proc/mounts || mount -t tmpfs -o size=1536m tmpfs /opt/npm
+mkdir -p /opt/npm/bin /opt/npm/lib /opt/npm/cache /usr/local/bin
+for c in node npm npx; do ln -sf /opt/x86/$c /usr/local/bin/$c; done
+# commands baked into the disk (e.g. openclaw)
+if [ -f /opt/x86/baked-bins ]; then
+  while read c; do ln -sf /opt/x86/$c /usr/local/bin/$c; done < /opt/x86/baked-bins
+fi
+# npm -g puts bins in /opt/npm/bin as symlinks to x86 JS files; a host-side
+# shim per bin runs them through the wrapper (x86 node via Blink)
+cat > /usr/local/bin/x86-npm-bins <<'EOS'
+#!/bin/sh
+for f in /opt/npm/bin/*; do
+  [ -e "$f" ] || continue
+  n=${f##*/}
+  printf '#!/bin/sh\nexec /opt/x86/node /opt/npm/bin/%s "$@"\n' "$n" > /usr/local/bin/$n
+  chmod 755 /usr/local/bin/$n
+done
+EOS
+chmod 755 /usr/local/bin/x86-npm-bins
+echo "[x86-node] node/npm/npx ready (x86-64 Node 24 under Blink; first start ~1 min)"
