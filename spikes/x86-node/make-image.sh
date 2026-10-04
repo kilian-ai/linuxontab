@@ -20,6 +20,7 @@ REPO="$(cd "$HERE/../.." && pwd)"
 W="${1:-/tmp/lot-build/x86-node}"; [ $# -gt 0 ] && shift
 NAME="${NAME:-x86-node}"   # NAME=x86-openclaw PRE_NPM=openclaw for the baked variant
 BLINK="${BLINK:-/tmp/lot-build/blink-chromium/blink}"
+BLINK_DBG="${BLINK_DBG:-}"   # optional debug Blink (MODE= build.sh) -> /opt/x86/blink-dbg
 MKE2FS=/opt/homebrew/opt/e2fsprogs/sbin/mke2fs
 E2FSCK=/opt/homebrew/opt/e2fsprogs/sbin/e2fsck
 RESIZE2FS=/opt/homebrew/opt/e2fsprogs/sbin/resize2fs
@@ -57,6 +58,7 @@ fi
 rm -rf "$W/stage" && mkdir -p "$W/stage"
 cp -a "$W/root" "$W/stage/root"
 cp "$BLINK" "$W/stage/blink"
+[ -n "$BLINK_DBG" ] && cp "$BLINK_DBG" "$W/stage/blink-dbg" && chmod 755 "$W/stage/blink-dbg"
 cp "$HERE/x86-env" "$HERE/node" "$HERE/npm" "$HERE/npx" "$HERE/x86-node-setup" "$W/stage/"
 chmod 755 "$W/stage/blink" "$W/stage/node" "$W/stage/npm" "$W/stage/npx" "$W/stage/x86-node-setup"
 # one host-side wrapper per baked npm bin (x86-node-setup links them to PATH)
