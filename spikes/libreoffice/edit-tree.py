@@ -127,4 +127,34 @@ edit('external/icu/ExternalProject_icu.mk', [("""		&& $(MAKE) $(if $(CROSS_COMPI
 edit('sc/source/core/tool/math.cxx', [("""#ifndef __EMSCRIPTEN__
         || (((math_errhandling & MATH_ERREXCEPT) != 0)""","""#if !defined __EMSCRIPTEN__ && !defined __wasm__
         || (((math_errhandling & MATH_ERREXCEPT) != 0)""")])
+# argon2's Makefile archives with a hardcoded `ar` (GNU binutils), which
+# can't read wasm objects and writes no symbol index; wasm-ld then never
+# pulls ref.o and silently binds core.o's fill_segment call to function 0 (a
+# module V8 rejects: "Exec format error" in the guest). Index it afterwards.
+edit('external/argon2/ExternalProject_argon2.mk', [("""			OPTTARGET=$(if $(filter X86_64,$(CPUNAME)),x86-64,forcefail) \\
+""","""			OPTTARGET=$(if $(filter X86_64,$(CPUNAME)),x86-64,forcefail) \\
+		$(if $(filter WASM32,$(CPUNAME)),&& llvm-ranlib libargon2.a) \\
+""")])
+# No dladdr in a static wasm module: every address is the executable's, so
+# the module URL (cppuhelper's get_this_libpath -> unorc, fundamentalrc)
+# is /proc/self/exe; otherwise bootstrap throws "URI  is expected to
+# contain a slash"
+edit('sal/osl/unx/module.cxx', [("""    bool result = false;
+#if HAVE_UNIX_DLAPI
+    Dl_info dl_info;""","""    bool result = false;
+#if defined __wasm__
+    (void) address;
+    char buf[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
+    if (n > 0)
+    {
+        buf[n] = '\\0';
+        rtl_string_newFromStr(path, buf);
+        result = true;
+    }
+#elif HAVE_UNIX_DLAPI
+    Dl_info dl_info;"""), ('''#include <limits.h>
+#include "file_url.hxx"''', '''#include <limits.h>
+#include <unistd.h>
+#include "file_url.hxx"''')])
 print("tree: ok")

@@ -17,6 +17,11 @@ llvm-ar rcs $OUT/libforkenosys.a $OUT/wasm_fork_enosys.o
 $CC -c /lot/sysroot/wasm_syscall_cp.c -o $OUT/wasm_syscall_cp.o
 $CC -c /lot/sysroot/wasm_cxa_thread_atexit.c -o $OUT/wasm_cxa_thread_atexit.o
 $CC -mllvm -wasm-enable-sjlj -c /lot/sysroot/sjlj_rt_wasmeh.c -o $OUT/sjlj_rt.o
+# -Wl,--wrap=__main_argc_argv: report a C++ exception that escapes main (wasm EH would
+# otherwise unwind out of _start with no type or message)
+clang++ --target=wasm32-unknown-unknown --sysroot=$SYSROOT -O2 -matomics -mbulk-memory -fwasm-exceptions \
+  -nostdinc++ -isystem $SYSROOT/include/c++/v1 -c /lot/sysroot/wasm_uncaught_main.cpp -o $OUT/wasm_uncaught_main.o
+rm -f $OUT/libuncaughtmain.a; llvm-ar rcs $OUT/libuncaughtmain.a $OUT/wasm_uncaught_main.o
 # worker.ts keeps the module's declared maximum memory only if it exports this
 printf '__attribute__((export_name("__lot_big_memory"))) void __lot_big_memory(void) {}\n' > $OUT/lot_big_memory.c
 $CC -c $OUT/lot_big_memory.c -o $OUT/lot_big_memory.o

@@ -21,6 +21,13 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 RUN for t in clang clang++ lld wasm-ld llvm-ar llvm-ranlib llvm-nm llvm-objcopy llvm-strip; do \
       ln -sf /usr/bin/$t-19 /usr/local/bin/$t 2>/dev/null || true; done; \
     ln -sf /usr/lib/llvm-19/bin/wasm-ld /usr/local/bin/wasm-ld
+# bin/wasm-cc links with wasm-ld 20: 19 binds a global reference to a
+# same-named *static* in another archive member (silently, to function 0)
+RUN curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key -o /etc/apt/keyrings/llvm.asc \
+ && echo "deb [signed-by=/etc/apt/keyrings/llvm.asc] http://apt.llvm.org/trixie/ llvm-toolchain-trixie-20 main" \
+      > /etc/apt/sources.list.d/llvm20.list \
+ && apt-get update && apt-get install -y --no-install-recommends lld-20 \
+ && rm -rf /var/lib/apt/lists/*
 RUN useradd -m -u 501 lo
 USER lo
 WORKDIR /work
