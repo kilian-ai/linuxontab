@@ -987,6 +987,18 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
             w->mapped = 1;
             if (w->toplevel) {           /* newly shown windows come to front
                                           * and take the keyboard */
+                /* A client that asks for a user-specified position
+                 * (WM_NORMAL_HINTS flags & USPosition, as `-geometry +x+y`
+                 * or the date dialog above the clock do) gets it; everything
+                 * else keeps the cascade. PPosition is ignored: toolkits set
+                 * it with whatever x/y they happened to create at. */
+                for (int i = 0; i < w->nprops; i++) {
+                    if (w->props[i].atom != 40 || w->props[i].fmt != 32 || w->props[i].n < 3) continue;
+                    if (g32(w->props[i].data, 0) & 1) {      /* USPosition */
+                        w->frame.x = (int)(int32_t)g32(w->props[i].data, 4);
+                        w->frame.y = (int)(int32_t)g32(w->props[i].data, 8);
+                    }
+                }
                 keep_on_screen(w);
                 stack_add(w->id);
                 stack_raise(w->id);
@@ -2175,7 +2187,9 @@ static const App BUILTIN_APPS[] = {
     { "netsurf", "Browser",        "NetSurf web browser",          "netsurf",                    "netsurf",  0, 0x2F6FD0, 1, 0 },
     { "htop",    "System Monitor", "Processes and memory (htop)",  "htop",                       "htop",     1, 0x2E8B57, 0, 0 },
     { "mc",      "Files",          "Midnight Commander",           "mc",                         "mc",       1, 0x00838F, 0, 0 },
-    { "nano",    "Text Editor",    "nano, small and friendly",     "nano",                       "nano",     1, 0x7B3FA0, 0, 0 },
+    { "textedit","Text Editor",    "Edit text files in a window",  "lot-textedit",               "xtiny-apps", 0, 0x7B3FA0, 1, 0 },
+    { "calc",    "Calculator",     "A pocket calculator",          "lot-calc",                   "xtiny-apps", 0, 0x4A6FA5, 0, 0 },
+    { "nano",    "nano",           "Text editor in a terminal",    "nano",                       "nano",     1, 0x5E3A80, 0, 0 },
     { "python3", "Python",         "Python 3.11 interpreter",      "python3",                    "python3",  1, 0x3776AB, 0, 0 },
     { "wolf3d",  "Wolfenstein 3D", "Shareware episode 1",          "wolf3d",                     "wolf3d",   0, 0x9B1C1C, 0, 0 },
     { "tetris",  "Tetris",         "vitetris, in colour",          "tetris",                     "vitetris", 1, 0xC77700, 0, 0 },
@@ -2577,9 +2591,37 @@ static void draw_taskbar(rfb_server *s) {
     }
 }
 
+/* The date & time dialog (lot-calendar, package xtiny-apps): open it, or
+ * close it if it is already showing — a double-click on the clock toggles. */
+#define CALENDAR_TITLE "Date & Time"
+static void toggle_calendar(void) {
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        XWindow *w = &X.win[i];
+        if (w->id && w->toplevel && w->mapped && !strcmp(w->title, CALENDAR_TITLE)) {
+            close_window(w);
+            return;
+        }
+    }
+    App a;
+    memset(&a, 0, sizeof a);
+    snprintf(a.id, sizeof a.id, "calendar");
+    snprintf(a.name, sizeof a.name, "%s", CALENDAR_TITLE);
+    snprintf(a.exec, sizeof a.exec, "lot-calendar");
+    snprintf(a.pkg, sizeof a.pkg, "xtiny-apps");
+    a.installed = on_path(a.exec);
+    launch_app(&a);
+}
+
 /* Returns 1 if the click was consumed by the taskbar. */
 static int taskbar_click(rfb_server *s, int x, int y) {
     if (y < WORK_H) return 0;
+    if (x >= FB_W - TB_CLOCK_W - 8) {    /* the clock: double-click = dialog */
+        static uint64_t last;
+        uint64_t now = rfb_now_ms();
+        if (last && now - last < 450) { last = 0; menu_set(s, 0); toggle_calendar(); }
+        else last = now;
+        return 1;
+    }
     TbItem it[24];
     int n = taskbar_layout(it, 24);
     for (int i = 0; i < n; i++) {

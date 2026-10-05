@@ -5,14 +5,17 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.2.0"   # 1.2.0: Apps menu (built-ins + /usr/share/applications/*.desktop,
+VERSION="1.3.0"   # 1.3.0: Text Editor + Calculator apps, date & time dialog on a
+                  # double-click of the clock (package xtiny-apps); honours
+                  # USPosition (WM_NORMAL_HINTS) for client-placed windows
+                  # 1.2.0: Apps menu (built-ins + /usr/share/applications/*.desktop,
                   # install-on-launch via apk in a terminal)
                   # 1.1.0: theme pass — desktop follows the viewer size, AA UI font,
                   # rounded/shadowed frames, edge resize, dark xterm defaults
                   # 1.0.3: fixed-brk sysroot, heap no longer capped at ~60 MB
 DESCRIPTION="Tiny X11 server + desktop on :5900 for real X clients (xterm, netsurf, wolf3d) with an Apps menu; open the X display panel"
 SOURCE_URL="local:"
-DEPENDS="xterm xeyes"
+DEPENDS="xterm xeyes xtiny-apps"
 
 build() {
     cd "$REPO_ROOT"

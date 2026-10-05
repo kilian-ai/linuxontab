@@ -827,17 +827,18 @@
       "status": "available"
     },
     "xtiny": {
-      "version": "1.2.0",
+      "version": "1.3.0",
       "description": "Tiny X11 server + desktop on :5900 for real X clients (xterm, netsurf, wolf3d) with an Apps menu; open the X display panel",
-      "url": "https://linuxontab.com/packages/xtiny-1.2.0.tar.gz",
-      "size": 88370,
-      "sha256": "ff30b0cf2a26ec8059a33bcab8124d6c6615eba9d57d6916a612affdcfb7b905",
+      "url": "https://linuxontab.com/packages/xtiny-1.3.0.tar.gz",
+      "size": 88974,
+      "sha256": "2dbed2d0a859ff43617a7727b0d78117a9d08e66d2bba01cec82ada3e1d9a37f",
       "bins": [
         "xtiny"
       ],
       "depends": [
         "xterm",
-        "xeyes"
+        "xeyes",
+        "xtiny-apps"
       ],
       "status": "available"
     },
@@ -893,6 +894,20 @@
       "sha256": "03c2066ae98fdf24f5f485909134c65e5468d21b68bcf2c74e5d95b3cf2b8ed2",
       "bins": [
         "zsh"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "xtiny-apps": {
+      "version": "1.0.0",
+      "description": "Text editor, calculator and date/time dialog for the xtiny desktop",
+      "url": "https://linuxontab.com/packages/xtiny-apps-1.0.0.tar.gz",
+      "size": 295242,
+      "sha256": "77770483b5234abe432203c8432cfd2cdf016d138808e2188a23f107e96f7027",
+      "bins": [
+        "lot-textedit",
+        "lot-calc",
+        "lot-calendar"
       ],
       "depends": [],
       "status": "available"
