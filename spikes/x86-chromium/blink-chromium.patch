@@ -18,7 +18,7 @@ index 05f3f47..9c1deee 100644
    if (Lock(rde)) UnlockBus(p);
  }
 diff --git a/blink/blink.c b/blink/blink.c
-index 3571b61..3d36496 100644
+index 3571b61..7f4e3c1 100644
 --- a/blink/blink.c
 +++ b/blink/blink.c
 @@ -141,20 +141,21 @@ static void OnSigSys(int sig) {
@@ -60,7 +60,7 @@ index 3571b61..3d36496 100644
    if ((syssig = XlatSignal(sig)) == -1) syssig = SIGKILL;
    FreeMachine(m);
  #ifdef HAVE_JIT
-@@ -202,6 +207,36 @@ static void ProgramLimit(struct System *s, int hresource, int gresource) {
+@@ -202,6 +207,87 @@ static void ProgramLimit(struct System *s, int hresource, int gresource) {
    }
  }
  
@@ -94,13 +94,65 @@ index 3571b61..3d36496 100644
 +  return 0;
 +}
 +
++// LinuxOnTab: BLINK_BREAK=<hex addr>[,<hex addr>...] prints registers, the
++// qwords at rsi/rsp and a guest backtrace (to stderr) each time execution
++// reaches one of those guest addresses (first BLINK_BREAK_MAX hits, default
++// 20). For catching a guest's own decision points (e.g. a runtime function)
++// without a debugger.
++u64 g_lot_break[8];
++int g_lot_nbreak;
++static int g_lot_break_left = 20;
++
++static void LotBreakInit(void) {
++  const char *p = getenv("BLINK_BREAK");
++  char *end;
++  if (!p) return;
++  if (getenv("BLINK_BREAK_MAX")) g_lot_break_left = atoi(getenv("BLINK_BREAK_MAX"));
++  while (*p && g_lot_nbreak < 8) {
++    g_lot_break[g_lot_nbreak++] = strtoull(p, &end, 16);
++    if (*end != ',') break;
++    p = end + 1;
++  }
++}
++
++void LotBreakHit(struct Machine *m, u64 pc) {
++  char buf[8192];
++  int n = 0;
++  u8 *q;
++  if (g_lot_break_left <= 0) return;
++  --g_lot_break_left;
++  n += snprintf(buf + n, sizeof(buf) - n,
++                "BREAK %#llx tid=%d rdi=%#llx rsi=%#llx rdx=%#llx rcx=%#llx "
++                "rax=%#llx rbx=%#llx rsp=%#llx rbp=%#llx r13=%#llx\n",
++                (unsigned long long)pc, m->tid,
++                (unsigned long long)Get64(m->di), (unsigned long long)Get64(m->si),
++                (unsigned long long)Get64(m->dx), (unsigned long long)Get64(m->cx),
++                (unsigned long long)Get64(m->ax), (unsigned long long)Get64(m->bx),
++                (unsigned long long)Get64(m->sp), (unsigned long long)Get64(m->bp),
++                (unsigned long long)Get64(m->r13));
++  for (int w = 0; w < 2; ++w) {
++    u64 base = w ? Get64(m->sp) : Get64(m->si) - 16;
++    n += snprintf(buf + n, sizeof(buf) - n, "  [%s] ", w ? "rsp" : "rsi-16");
++    for (int i = 0; i < 6; ++i) {
++      if ((q = SpyAddress(m, base + i * 8))) {
++        n += snprintf(buf + n, sizeof(buf) - n, "%#llx ", (unsigned long long)Read64(q));
++      }
++    }
++    n += snprintf(buf + n, sizeof(buf) - n, "\n");
++  }
++  n += snprintf(buf + n, sizeof(buf) - n, "%s\n", GetBacktrace(m));
++  if (n > (int)sizeof(buf)) n = sizeof(buf);
++  (void)!write(2, buf, n);
++}
++
  static int Exec(char *execfn, char *prog, char **argv, char **envp) {
    int i;
    sigset_t oldmask;
-@@ -220,6 +255,10 @@ static int Exec(char *execfn, char *prog, char **argv, char **envp) {
+@@ -220,6 +306,11 @@ static int Exec(char *execfn, char *prog, char **argv, char **envp) {
        AddStdFd(&m->system->fds, i);
      }
      ProgramLimit(m->system, RLIMIT_NOFILE, RLIMIT_NOFILE_LINUX);
++    LotBreakInit();
 +    if (getenv("BLINK_DUMP")) {
 +      pthread_t th;
 +      pthread_create(&th, 0, DumpThreads, m->system);
@@ -125,6 +177,212 @@ index 3458213..2380f3c 100644
  #define CAN_64BIT 1
  #elif LONG_BIT >= 64
  #define CAN_64BIT 1
+diff --git a/blink/cvt.c b/blink/cvt.c
+index 42d47b9..86372a3 100644
+--- a/blink/cvt.c
++++ b/blink/cvt.c
+@@ -36,6 +36,20 @@
+ #define kOpCvt0f5b  16
+ #define kOpCvt0fE6  20
+ 
++
++// LinuxOnTab: x86 float->int conversions give the "integer indefinite" value
++// (INT_MIN of the width) for NaN and out-of-range inputs; a C cast is UB
++// there (arm64 saturates, wasm32 differs again). V8's JIT tests for exactly
++// that value (TruncateDoubleToI), so compiled JS computed wrong numbers.
++static i32 X86ToI32(double x) {  // x truncates toward zero
++  return (x > -2147483649.0 && x < 2147483648.0) ? (i32)x : (i32)0x80000000u;
++}
++static i64 X86ToI64(double x) {
++  return (x >= -9223372036854775808.0 && x < 9223372036854775808.0)
++             ? (i64)x
++             : (i64)0x8000000000000000ull;
++}
++
+ static double SseRoundDouble(struct Machine *m, double x) {
+   switch ((m->mxcsr & kMxcsrRc) >> 13) {
+     case 0:
+@@ -55,8 +69,7 @@ static void OpGdqpWssCvttss2si(P) {
+   i64 n;
+   union FloatPun f;
+   f.i = Read32(GetModrmRegisterXmmPointerRead4(A));
+-  n = f.f;
+-  if (!Rexw(rde)) n &= 0xffffffff;
++  n = Rexw(rde) ? X86ToI64(f.f) : (u32)X86ToI32(f.f);
+   Put64(RegRexrReg(m, rde), n);
+ }
+ 
+@@ -64,8 +77,7 @@ static void OpGdqpWsdCvttsd2si(P) {
+   i64 n;
+   union DoublePun d;
+   d.i = Read64(GetModrmRegisterXmmPointerRead8(A));
+-  n = d.f;
+-  if (!Rexw(rde)) n &= 0xffffffff;
++  n = Rexw(rde) ? X86ToI64(d.f) : (u32)X86ToI32(d.f);
+   Put64(RegRexrReg(m, rde), n);
+ }
+ 
+@@ -73,8 +85,8 @@ static void OpGdqpWssCvtss2si(P) {
+   i64 n;
+   union FloatPun f;
+   f.i = Read32(GetModrmRegisterXmmPointerRead4(A));
+-  n = rintf(f.f);
+-  if (!Rexw(rde)) n &= 0xffffffff;
++  n = Rexw(rde) ? X86ToI64(SseRoundDouble(m, f.f))
++                : (u32)X86ToI32(SseRoundDouble(m, f.f));
+   Put64(RegRexrReg(m, rde), n);
+ }
+ 
+@@ -82,8 +94,8 @@ static void OpGdqpWsdCvtsd2si(P) {
+   i64 n;
+   union DoublePun d;
+   d.i = Read64(GetModrmRegisterXmmPointerRead8(A));
+-  n = SseRoundDouble(m, d.f);
+-  if (!Rexw(rde)) n &= 0xffffffff;
++  n = Rexw(rde) ? X86ToI64(SseRoundDouble(m, d.f))
++                : (u32)X86ToI32(SseRoundDouble(m, d.f));
+   Put64(RegRexrReg(m, rde), n);
+ }
+ 
+@@ -183,16 +195,16 @@ static void OpPpiWpsqCvtps2pi(P) {
+   f[1].i = Read32(p + 1 * 4);
+   switch ((m->mxcsr & kMxcsrRc) >> 13) {
+     case 0:
+-      for (i = 0; i < 2; ++i) n[i] = rintf(f[i].f);
++      for (i = 0; i < 2; ++i) n[i] = X86ToI32(rintf(f[i].f));
+       break;
+     case 1:
+-      for (i = 0; i < 2; ++i) n[i] = floorf(f[i].f);
++      for (i = 0; i < 2; ++i) n[i] = X86ToI32(floorf(f[i].f));
+       break;
+     case 2:
+-      for (i = 0; i < 2; ++i) n[i] = ceilf(f[i].f);
++      for (i = 0; i < 2; ++i) n[i] = X86ToI32(ceilf(f[i].f));
+       break;
+     case 3:
+-      for (i = 0; i < 2; ++i) n[i] = truncf(f[i].f);
++      for (i = 0; i < 2; ++i) n[i] = X86ToI32(truncf(f[i].f));
+       break;
+     default:
+       __builtin_unreachable();
+@@ -208,8 +220,8 @@ static void OpPpiWpsqCvttps2pi(P) {
+   p = GetModrmRegisterXmmPointerRead8(A);
+   f[0].i = Read32(p + 0);
+   f[1].i = Read32(p + 4);
+-  n[0] = f[0].f;
+-  n[1] = f[1].f;
++  n[0] = X86ToI32(f[0].f);
++  n[1] = X86ToI32(f[1].f);
+   Put32(MmReg(m, rde) + 0, n[0]);
+   Put32(MmReg(m, rde) + 4, n[1]);
+ }
+@@ -222,7 +234,7 @@ static void OpPpiWpdCvtpd2pi(P) {
+   p = GetModrmRegisterXmmPointerRead16(A);
+   d[0].i = Read64(p + 0);
+   d[1].i = Read64(p + 8);
+-  for (i = 0; i < 2; ++i) n[i] = SseRoundDouble(m, d[i].f);
++  for (i = 0; i < 2; ++i) n[i] = X86ToI32(SseRoundDouble(m, d[i].f));
+   Put32(MmReg(m, rde) + 0, n[0]);
+   Put32(MmReg(m, rde) + 4, n[1]);
+ }
+@@ -234,8 +246,8 @@ static void OpPpiWpdCvttpd2pi(P) {
+   p = GetModrmRegisterXmmPointerRead16(A);
+   d[0].i = Read64(p + 0);
+   d[1].i = Read64(p + 8);
+-  n[0] = d[0].f;
+-  n[1] = d[1].f;
++  n[0] = X86ToI32(d[0].f);
++  n[1] = X86ToI32(d[1].f);
+   Put32(MmReg(m, rde) + 0, n[0]);
+   Put32(MmReg(m, rde) + 4, n[1]);
+ }
+@@ -264,6 +276,7 @@ static void OpVpsWpdCvtpd2ps(P) {
+   f[1].f = d[1].f;
+   Put32(XmmRexrReg(m, rde) + 0, f[0].i);
+   Put32(XmmRexrReg(m, rde) + 4, f[1].i);
++  Put64(XmmRexrReg(m, rde) + 8, 0);  // upper half is zeroed
+ }
+ 
+ static void OpVssWsdCvtsd2ss(P) {
+@@ -323,10 +336,10 @@ static void OpVdqWpsCvttps2dq(P) {
+   f[1].i = Read32(p + 1 * 4);
+   f[2].i = Read32(p + 2 * 4);
+   f[3].i = Read32(p + 3 * 4);
+-  n[0] = f[0].f;
+-  n[1] = f[1].f;
+-  n[2] = f[2].f;
+-  n[3] = f[3].f;
++  n[0] = X86ToI32(f[0].f);
++  n[1] = X86ToI32(f[1].f);
++  n[2] = X86ToI32(f[2].f);
++  n[3] = X86ToI32(f[3].f);
+   Put32(XmmRexrReg(m, rde) + 0 * 4, n[0]);
+   Put32(XmmRexrReg(m, rde) + 1 * 4, n[1]);
+   Put32(XmmRexrReg(m, rde) + 2 * 4, n[2]);
+@@ -345,16 +358,16 @@ static void OpVdqWpsCvtps2dq(P) {
+   f[3].i = Read32(p + 3 * 4);
+   switch ((m->mxcsr & kMxcsrRc) >> 13) {
+     case 0:
+-      for (i = 0; i < 4; ++i) n[i] = rintf(f[i].f);
++      for (i = 0; i < 4; ++i) n[i] = X86ToI32(rintf(f[i].f));
+       break;
+     case 1:
+-      for (i = 0; i < 4; ++i) n[i] = floorf(f[i].f);
++      for (i = 0; i < 4; ++i) n[i] = X86ToI32(floorf(f[i].f));
+       break;
+     case 2:
+-      for (i = 0; i < 4; ++i) n[i] = ceilf(f[i].f);
++      for (i = 0; i < 4; ++i) n[i] = X86ToI32(ceilf(f[i].f));
+       break;
+     case 3:
+-      for (i = 0; i < 4; ++i) n[i] = truncf(f[i].f);
++      for (i = 0; i < 4; ++i) n[i] = X86ToI32(truncf(f[i].f));
+       break;
+     default:
+       __builtin_unreachable();
+@@ -372,10 +385,11 @@ static void OpVdqWpdCvttpd2dq(P) {
+   p = GetModrmRegisterXmmPointerRead16(A);
+   d[0].i = Read64(p + 0);
+   d[1].i = Read64(p + 8);
+-  n[0] = d[0].f;
+-  n[1] = d[1].f;
++  n[0] = X86ToI32(d[0].f);
++  n[1] = X86ToI32(d[1].f);
+   Put32(XmmRexrReg(m, rde) + 0, n[0]);
+   Put32(XmmRexrReg(m, rde) + 4, n[1]);
++  Put64(XmmRexrReg(m, rde) + 8, 0);  // upper half is zeroed
+ }
+ 
+ static void OpVdqWpdCvtpd2dq(P) {
+@@ -386,9 +400,10 @@ static void OpVdqWpdCvtpd2dq(P) {
+   p = GetModrmRegisterXmmPointerRead16(A);
+   d[0].i = Read64(p + 0);
+   d[1].i = Read64(p + 8);
+-  for (i = 0; i < 2; ++i) n[i] = SseRoundDouble(m, d[i].f);
++  for (i = 0; i < 2; ++i) n[i] = X86ToI32(SseRoundDouble(m, d[i].f));
+   Put32(XmmRexrReg(m, rde) + 0, n[0]);
+   Put32(XmmRexrReg(m, rde) + 4, n[1]);
++  Put64(XmmRexrReg(m, rde) + 8, 0);  // upper half is zeroed
+ }
+ 
+ static void OpCvt(P, unsigned long op) {
+@@ -451,12 +466,12 @@ static void OpCvt(P, unsigned long op) {
+     case kOpCvt0f5b + 3:
+       OpVdqWpsCvttps2dq(A);
+       break;
+-    case kOpCvt0fE6 + 1:
+-      OpVdqWpdCvtpd2dq(A);
+-      break;
+-    case kOpCvt0fE6 + 2:
++    case kOpCvt0fE6 + 1:  // 66 0F E6 is CVTTPD2DQ (truncating)
+       OpVdqWpdCvttpd2dq(A);
+       break;
++    case kOpCvt0fE6 + 2:  // F2 0F E6 is CVTPD2DQ (rounding); they were swapped
++      OpVdqWpdCvtpd2dq(A);
++      break;
+     case kOpCvt0fE6 + 3:
+       OpVpdWdqCvtdq2pd(A);
+       break;
 diff --git a/blink/demangle.c b/blink/demangle.c
 index 387d589..bc4ffc9 100644
 --- a/blink/demangle.c
@@ -169,6 +427,44 @@ index bfffb2c..5d3efa8 100644
    unassert(!pthread_setcancelstate(cs, 0));
  #endif
    return rc;
+diff --git a/blink/instruction.c b/blink/instruction.c
+index c9a6607..d7bbb56 100644
+--- a/blink/instruction.c
++++ b/blink/instruction.c
+@@ -73,14 +73,33 @@ static int LoadInstructionSlow(struct Machine *m, u64 ip) {
+   }
+ }
+ 
++extern u64 g_lot_break[8];
++extern int g_lot_nbreak;
++void LotBreakHit(struct Machine *, u64);
++
+ int LoadInstruction2(struct Machine *m, u64 pc) {
+   unsigned key;
+   u8 *addr, *page;
++  if (__builtin_expect(g_lot_nbreak, 0)) {
++    for (int i = 0; i < g_lot_nbreak; ++i) {
++      if (pc == g_lot_break[i]) LotBreakHit(m, pc);
++    }
++  }
+   if (atomic_load_explicit(&m->opcache->invalidated, memory_order_acquire)) {
+     ResetInstructionCache(m);
+     atomic_store_explicit(&m->opcache->invalidated, false,
+                           memory_order_relaxed);
+   }
++  // LinuxOnTab: the fetch path below caches the host page of the current code
++  // page (codevirt/codehost) and never consulted the TLB invalidation that
++  // mmap/munmap/mprotect raise. When a JIT (V8) unmapped a code page and
++  // mapped new code at the same address, this thread kept fetching from the
++  // old host page: freed, stale code (spurious "Maximum call stack size
++  // exceeded" and worse under V8's optimizing tiers).
++  if (atomic_load_explicit(&m->invalidated, memory_order_acquire)) {
++    ResetTlb(m);
++    atomic_store_explicit(&m->invalidated, false, memory_order_relaxed);
++  }
+   key = pc & (ARRAYLEN(m->opcache->icache) - 1);
+   m->xedd = (struct XedDecodedInst *)m->opcache->icache[key];
+   if ((pc & 4095) + 15 <= 4096) {
 diff --git a/blink/linux.h b/blink/linux.h
 index 51973e2..a08cc6e 100644
 --- a/blink/linux.h
@@ -620,10 +916,49 @@ index b0a407b..b9fca7f 100644
        }
      }
 diff --git a/blink/ssefloat.c b/blink/ssefloat.c
-index cf239ff..0a45885 100644
+index cf239ff..4acd2ff 100644
 --- a/blink/ssefloat.c
 +++ b/blink/ssefloat.c
-@@ -594,9 +594,9 @@ static int Cmps(int imm, float x, float y) {
+@@ -106,8 +106,8 @@ void OpUnpckhpsd(P) {
+   a = XmmRexrReg(m, rde);
+   b = GetModrmRegisterXmmPointerRead16(A);
+   IGNORE_RACES_START();
+-  if (Osz(rde)) {
+-    memcpy(a + 0, b + 8, 8);
++  if (Osz(rde)) {  // unpckhpd: dst = {dst.hi, src.hi}
++    memcpy(a + 0, a + 8, 8);
+     memcpy(a + 8, b + 8, 8);
+   } else {
+     memcpy(a + 4 * 0, a + 4 * 2, 4);
+@@ -122,7 +122,9 @@ void OpPextrwGdqpUdqIb(P) {
+   u8 i;
+   i = uimm0;
+   i &= Osz(rde) ? 7 : 3;
+-  Put16(RegRexrReg(m, rde), Get16(XmmRexbRm(m, rde) + i * 2));
++  // the word is zero-extended into the whole destination register (Put16
++  // kept the old upper bits: an index of 0x5f460000 in SQLite, compiled code)
++  Put64(RegRexrReg(m, rde), Get16(XmmRexbRm(m, rde) + i * 2));
+ }
+ 
+ void OpPinsrwVdqEwIb(P) {
+@@ -276,12 +278,12 @@ void OpSqrtpsd(P) {
+       u8 *p;
+       union DoublePun u[2];
+       p = GetModrmRegisterXmmPointerRead16(A);
+-      u[0].i = Read32(p + 0 * 8);
+-      u[1].i = Read32(p + 1 * 8);
++      u[0].i = Read64(p + 0 * 8);  // sqrtpd: 64-bit lanes (was Read32)
++      u[1].i = Read64(p + 1 * 8);
+       for (i = 0; i < 2; ++i) u[i].f = sqrt(u[i].f);
+       p = XmmRexrReg(m, rde);
+-      Write32(p + 0 * 8, u[0].i);
+-      Write32(p + 1 * 8, u[1].i);
++      Write64(p + 0 * 8, u[0].i);
++      Write64(p + 1 * 8, u[1].i);
+       break;
+     }
+     case 2: {
+@@ -594,9 +596,9 @@ static int Cmps(int imm, float x, float y) {
      case 4:
        return x != y ? -1 : 0;
      case 5:
@@ -635,7 +970,7 @@ index cf239ff..0a45885 100644
      case 7:
        return !(isnan(x) || isnan(y)) ? -1 : 0;
      default:
-@@ -617,9 +617,9 @@ static i32 Cmpd(int imm, double x, double y) {
+@@ -617,9 +619,9 @@ static i32 Cmpd(int imm, double x, double y) {
      case 4:
        return x != y ? -1 : 0;
      case 5:
@@ -647,7 +982,7 @@ index cf239ff..0a45885 100644
      case 7:
        return !(isnan(x) || isnan(y)) ? -1 : 0;
      default:
-@@ -634,13 +634,13 @@ void OpCmppsd(P) {
+@@ -634,13 +636,13 @@ void OpCmppsd(P) {
      union DoublePun x, y;
      y.i = Read64(GetModrmRegisterXmmPointerRead8(A));
      x.i = Read64(XmmRexrReg(m, rde));
@@ -663,7 +998,7 @@ index cf239ff..0a45885 100644
      Write32(XmmRexrReg(m, rde), x.i);
    } else if (Osz(rde)) {
      u8 *p;
-@@ -651,8 +651,8 @@ void OpCmppsd(P) {
+@@ -651,8 +653,8 @@ void OpCmppsd(P) {
      p = XmmRexrReg(m, rde);
      x[0].i = Read64(p + 0 * 8);
      x[1].i = Read64(p + 1 * 8);
@@ -674,7 +1009,7 @@ index cf239ff..0a45885 100644
      Write64(p + 0 * 8, x[0].i);
      Write64(p + 1 * 8, x[1].i);
    } else {
-@@ -668,10 +668,10 @@ void OpCmppsd(P) {
+@@ -668,10 +670,10 @@ void OpCmppsd(P) {
      x[1].i = Read32(p + 1 * 4);
      x[2].i = Read32(p + 2 * 4);
      x[3].i = Read32(p + 3 * 4);
