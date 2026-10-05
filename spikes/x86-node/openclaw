@@ -1,0 +1,11 @@
+#!/bin/sh
+# openclaw (baked into x86-openclaw.ext4) under Blink.
+# No --require preload: openclaw turns its dist ESM resolve fast path off
+# whenever NODE_OPTIONS has --require/--import. The V8 tier flags go on the
+# command line instead (spawned children inherit them via execArgv).
+X86_NODE_NO_PRELOAD=1
+. /opt/x86/x86-env
+# openclaw re-spawns itself only to add this warning flag: pass it and skip
+# the second Node start.
+export OPENCLAW_NO_RESPAWN=1
+exec /opt/x86/blink /opt/x86/root/usr/bin/node $NODE_FLAGS --disable-warning=ExperimentalWarning /opt/x86/root/usr/bin/openclaw "$@"

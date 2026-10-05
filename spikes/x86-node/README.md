@@ -70,12 +70,26 @@ faster to start: TurboFan/Maglev compile time is emulated as well.
   (default_trigger_async_id) >= (0)` on the first TLS connect); `-j` fixes it.
   The wasm build has no JIT. (Unrelated to V8's JIT, which works.)
 
-## Open
+## openclaw start-up
 
-- `openclaw onboard` (interactive setup) loads ~1200+ modules twice (it
-  re-spawns itself): > 10 min under native Blink, much longer in the guest.
-  Node's compile cache would help but openclaw's modules never go through it
-  under Blink (the cache works for a plain module) — not yet understood.
+`openclaw onboard` loads ~2700 modules (24 MB of JS) before its first prompt;
+under Blink parsing/compiling and Node's ESM loader dominate. What the image
+does about it:
+
+- **Pre-built compile cache** (`bake-ccache.sh` → `NODE_CCACHE=` for
+  make-image.sh → `/opt/x86/node-compile-cache`, linked under
+  `/tmp/node-compile-cache` by x86-node-setup, read-only). openclaw enables
+  Node's compile cache there itself; entries are keyed by path + content,
+  Node version and V8 flags, so it's baked with the wrapper's exact flags
+  and paths. Native Blink, to the first prompt: 1851 CPU-s warm vs > 2932
+  cold.
+- **Own wrapper** (`openclaw`): no `--require` preload (openclaw switches its
+  dist ESM resolve fast path off when NODE_OPTIONS has --require/--import),
+  V8 tier flags on the command line, and `OPENCLAW_NO_RESPAWN=1` +
+  `--disable-warning=ExperimentalWarning` (its self-respawn only adds that
+  flag).
+- Tried: an esbuild bundle of the entry graph (code-split) halves the module
+  count and saved ~17% cold; not used yet (needs its own cache bake).
 - The 32-bit native harness (`blink32m`) now dies 24 instructions into
   ld-musl (`mov 8(%rdi,%rax,8),%r8` with a bogus fault address); the wasm
   build is fine.

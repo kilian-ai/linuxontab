@@ -15,6 +15,9 @@ case "${X86_NODE_V8:-sparkplug}" in
   full)    NODE_FLAGS=""; _o="" ;;
   *)       NODE_FLAGS="--no-maglev --no-turbofan"; _o="--require /opt/x86/v8-sparkplug.js" ;;
 esac
+# X86_NODE_NO_PRELOAD=1: flags on the command line only (openclaw's wrapper:
+# a --require in NODE_OPTIONS turns its ESM resolve fast path off).
+[ -n "${X86_NODE_NO_PRELOAD:-}" ] && [ "$_o" != "--jitless" ] && _o=""
 export NODE_OPTIONS="$_o${NODE_OPTIONS:+ $NODE_OPTIONS}"
 [ "${HOME:-/}" = / ] && HOME=/root
 export HOME

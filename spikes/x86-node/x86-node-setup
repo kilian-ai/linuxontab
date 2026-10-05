@@ -9,6 +9,15 @@ for c in node npm npx; do ln -sf /opt/x86/$c /usr/local/bin/$c; done
 if [ -f /opt/x86/baked-bins ]; then
   while read c; do ln -sf /opt/x86/$c /usr/local/bin/$c; done < /opt/x86/baked-bins
 fi
+# pre-built V8 code cache for the baked packages (read-only; Node and
+# openclaw look under $TMPDIR/node-compile-cache): skips parsing ~24 MB of JS
+if [ -d /opt/x86/node-compile-cache ]; then
+  mkdir -p /tmp/node-compile-cache
+  for d in /opt/x86/node-compile-cache/*; do
+    n=$(basename "$d")
+    [ -e "/tmp/node-compile-cache/$n" ] || ln -s "$d" "/tmp/node-compile-cache/$n"
+  done
+fi
 # npm -g puts bins in /opt/npm/bin as symlinks to x86 JS files; a host-side
 # shim per bin runs them through the wrapper (x86 node via Blink)
 cat > /usr/local/bin/x86-npm-bins <<'EOS'
