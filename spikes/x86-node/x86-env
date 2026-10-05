@@ -4,9 +4,18 @@
 # searches that root's library dirs (etc/ld-musl-x86_64.path), so host libs
 # with the same names are never picked up.
 export BLINK_OVERLAYS=/opt/x86/root:
-# V8 can't generate code for an emulated CPU fast enough to pay off; every
-# node npm spawns inherits this.
-export NODE_OPTIONS="--jitless${NODE_OPTIONS:+ $NODE_OPTIONS}"
+# V8 tiers (X86_NODE_V8=sparkplug|jitless|full). Under Blink the optimizing
+# compilers (Maglev, TurboFan) cost more to run than they save on start-up
+# bound tools, while Sparkplug's baseline code beats the interpreter:
+# openclaw --version 51 s vs 137 s jitless (native Blink). NODE_FLAGS go on
+# the wrappers' command line; NODE_OPTIONS reaches every node npm spawns
+# (--no-maglev isn't allowed there, so a preload sets it).
+case "${X86_NODE_V8:-sparkplug}" in
+  jitless) NODE_FLAGS="--jitless"; _o="--jitless" ;;
+  full)    NODE_FLAGS=""; _o="" ;;
+  *)       NODE_FLAGS="--no-maglev --no-turbofan"; _o="--require /opt/x86/v8-sparkplug.js" ;;
+esac
+export NODE_OPTIONS="$_o${NODE_OPTIONS:+ $NODE_OPTIONS}"
 [ "${HOME:-/}" = / ] && HOME=/root
 export HOME
 # npm's writable state lives in /opt/npm (the x86 disk is read-only and the

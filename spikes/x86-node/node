@@ -1,3 +1,3 @@
 #!/bin/sh
 . /opt/x86/x86-env
-exec /opt/x86/blink /opt/x86/root/usr/bin/node "$@"
+exec /opt/x86/blink /opt/x86/root/usr/bin/node $NODE_FLAGS "$@"

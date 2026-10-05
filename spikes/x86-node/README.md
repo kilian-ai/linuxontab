@@ -16,7 +16,24 @@ Boot `wasm.html?disk=full&xdisk=linux-dist/x86-node.ext4`, then:
 `x86-node-setup` mounts a tmpfs on /opt/npm (npm prefix + cache: the disk is
 read-only and the rootfs nearly full) and links node/npm/npx (and baked bins
 such as `openclaw`) into /usr/local/bin. The wrappers (`x86-env`) set
-`BLINK_OVERLAYS=/opt/x86/root:` and `NODE_OPTIONS=--jitless`.
+`BLINK_OVERLAYS=/opt/x86/root:` and pick V8's tiers.
+
+## V8 tiers
+
+Default: interpreter + Sparkplug, no Maglev/TurboFan (`X86_NODE_V8=sparkplug`;
+also `jitless` and `full`). The wrappers pass `--no-maglev --no-turbofan`, and
+`NODE_OPTIONS=--require /opt/x86/v8-sparkplug.js` carries it to every node a
+tool spawns (NODE_OPTIONS rejects those flags). Native Blink, same host:
+
+| mode      | `openclaw --version` | loop bench |
+|-----------|----------------------|------------|
+| jitless   | 137 s                | 189 s      |
+| sparkplug | 51 s                 | 64 s       |
+
+The full JIT works too (the SSE fixes in ../x86-chromium/blink-chromium.patch:
+before them V8's optimized code hit a spurious "Maximum call stack size
+exceeded"). It's ~3x faster than jitless on a hot loop in the guest but no
+faster to start: TurboFan/Maglev compile time is emulated as well.
 
 ## Measured (guest, wasm Blink)
 
@@ -49,9 +66,9 @@ such as `openclaw`) into /usr/local/bin. The wrappers (`x86-env`) set
     layer's ENOENT, and a read-only first layer answered EROFS instead of
     falling through → Node's `mkdir -p /tmp/node-compile-cache/...` looped
     forever (43k mkdirs in 2 min).
-- Native Blink's JIT miscomputes something in V8 (`Assertion failed:
+- Native Blink's own JIT miscomputes something in V8 (`Assertion failed:
   (default_trigger_async_id) >= (0)` on the first TLS connect); `-j` fixes it.
-  The wasm build has no JIT.
+  The wasm build has no JIT. (Unrelated to V8's JIT, which works.)
 
 ## Open
 

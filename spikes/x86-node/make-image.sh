@@ -2,7 +2,7 @@
 # Build the read-only "x86 Node" disk: x86-64 Node 24 + npm (Alpine 3.23)
 # under the wasm Blink from ../x86-chromium (4 GiB, all fixes).
 #   /opt/x86/blink                 wasm Blink
-#   /opt/x86/{node,npm,npx}        wrappers (x86-env: overlay, --jitless, npm dirs)
+#   /opt/x86/{node,npm,npx}        wrappers (x86-env: overlay, V8 tiers, npm dirs)
 #   /opt/x86/x86-node-setup        tmpfs /opt/npm + PATH links
 #   /opt/x86/root                  Alpine x86_64 root (nodejs npm + deps)
 #
@@ -59,11 +59,11 @@ rm -rf "$W/stage" && mkdir -p "$W/stage"
 cp -a "$W/root" "$W/stage/root"
 cp "$BLINK" "$W/stage/blink"
 [ -n "$BLINK_DBG" ] && cp "$BLINK_DBG" "$W/stage/blink-dbg" && chmod 755 "$W/stage/blink-dbg"
-cp "$HERE/x86-env" "$HERE/node" "$HERE/npm" "$HERE/npx" "$HERE/x86-node-setup" "$W/stage/"
+cp "$HERE/x86-env" "$HERE/v8-sparkplug.js" "$HERE/node" "$HERE/npm" "$HERE/npx" "$HERE/x86-node-setup" "$W/stage/"
 chmod 755 "$W/stage/blink" "$W/stage/node" "$W/stage/npm" "$W/stage/npx" "$W/stage/x86-node-setup"
 # one host-side wrapper per baked npm bin (x86-node-setup links them to PATH)
 for b in $(ls "$W/bins" 2>/dev/null); do
-  printf '#!/bin/sh\n. /opt/x86/x86-env\nexec /opt/x86/blink /opt/x86/root/usr/bin/node /opt/x86/root/usr/bin/%s "$@"\n' "$b" > "$W/stage/$b"
+  printf '#!/bin/sh\n. /opt/x86/x86-env\nexec /opt/x86/blink /opt/x86/root/usr/bin/node $NODE_FLAGS /opt/x86/root/usr/bin/%s "$@"\n' "$b" > "$W/stage/$b"
   chmod 755 "$W/stage/$b"; echo "$b" >> "$W/stage/baked-bins"
 done
 SIZE_MB=$(( $(du -sm "$W/stage" | cut -f1) * 115 / 100 + 16 ))
