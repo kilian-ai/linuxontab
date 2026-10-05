@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generated": "2026-10-04",
+  "generated": "2026-10-05",
   "packages": {
     "busybox": {
       "version": "1.37.0",
@@ -814,11 +814,11 @@
       "status": "available"
     },
     "xtiny": {
-      "version": "1.7.0",
+      "version": "1.8.0",
       "description": "Tiny X11 server + desktop on :5900 for real X clients (xterm, netsurf, wolf3d) with an Apps menu; open the X display panel",
-      "url": "https://linuxontab.com/packages/xtiny-1.7.0.tar.gz",
-      "size": 99342,
-      "sha256": "c4c87a3ab9790662141c372c30f636d57e07375f2c5062d889fbf2cd03d39bee",
+      "url": "https://linuxontab.com/packages/xtiny-1.8.0.tar.gz",
+      "size": 99464,
+      "sha256": "2be9a3261c57d5850689e8450cd1f6578dc88279b6f8676fe1b8c98075586a53",
       "bins": [
         "xtiny"
       ],
