@@ -2575,6 +2575,11 @@ static void spawn_argv(char *const *argv) {
      * console busy-reads it one byte at a time and pegs the single CPU
      * (the documented Xvfb spin). Sockets are CLOEXEC, so exec drops them. */
     setenv("DISPLAY", ":1", 1);
+    /* Started by /etc/rc (?image=xtiny), xtiny inherits init's HOME=/, and
+     * every app it launches would keep its config and history in / (claw's
+     * key file, shell/python history, ...). Guest apps run as root. */
+    const char *home = getenv("HOME");
+    if (!home || !*home || !strcmp(home, "/")) setenv("HOME", "/root", 1);
     int devnull = open("/dev/null", O_RDWR);
     if (devnull >= 0) {
         dup2(devnull, 0);

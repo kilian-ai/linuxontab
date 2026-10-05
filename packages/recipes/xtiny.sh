@@ -5,7 +5,8 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.8.0"   # 1.8.0: Apps menu — AI Assistant (claw, in a terminal)
+VERSION="1.8.0"   # 1.8.0: Apps menu — AI Assistant (claw, in a terminal); launched
+                  # apps get HOME=/root instead of init's HOME=/
                   # 1.7.0: Apps menu — File Manager (xfe, pinned), Chromium (when the x86
                   # disk is mounted), Rust IDE, tmux, Node.js; menu flows into columns;
                   # installs refresh a stale package index once (apk update) and retry
