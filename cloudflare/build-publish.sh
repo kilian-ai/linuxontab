@@ -43,12 +43,14 @@ cp "$SRC/xterm-addon-fit.js"  "$PUB/xterm-addon-fit.js"
 cp "$SRC/wisp-transport.js"   "$PUB/wisp-transport.js"   # openWispTransport (loaded by wasm.html)
 
 # Kernel + userland: the dist/ JS, the vmlinux .wasm, initramfs — everything
-# under linux-dist EXCEPT the big rootfs (R2), editor backups, and source maps.
+# under linux-dist EXCEPT disk images, editor backups, and source maps. No
+# .ext4 ever ships through Pages: rootfs.ext4 and the ?xdisk= images
+# (x86-*.ext4, ...) are served from R2, rootfs-lean.ext4 ships as its
+# .data/.manifest pair, and anything else is a local work disk (a stray
+# 400 MB libreoffice.ext4 once failed the 25 MiB check below).
 rsync -a \
-  --exclude='rootfs.ext4' \
+  --exclude='*.ext4' \
   --exclude='rootfs.ext4?*' \
-  --exclude='rootfs-lean.ext4' \
-  --exclude='x86-*.ext4' \
   --exclude='*.bak' \
   --exclude='*.map' \
   "$SRC/linux-dist/" "$PUB/linux-dist/"
