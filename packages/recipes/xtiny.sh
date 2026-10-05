@@ -5,7 +5,10 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.6.0"   # 1.6.0: sound server — /tmp/.lot-audio (s16le stereo 48 kHz) forwarded
+VERSION="1.7.0"   # 1.7.0: Apps menu — File Manager (xfe, pinned), Chromium (when the x86
+                  # disk is mounted), Rust IDE, tmux, Node.js; menu flows into columns;
+                  # installs refresh a stale package index once (apk update) and retry
+                  # 1.6.0: sound server — /tmp/.lot-audio (s16le stereo 48 kHz) forwarded
                   # to the viewer over RFB (QEMU audio extension); lotplay plays sound
                   # 1.5.0: CopyPlane, GC clip masks, depth-1 PutImage, X selections +
                   # SendEvent (clipboard), 1024 windows/4096 pixmaps/512 GCs:

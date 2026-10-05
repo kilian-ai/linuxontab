@@ -2388,12 +2388,21 @@ typedef struct {
 static const App BUILTIN_APPS[] = {
     { "xterm",   "Terminal",       "A shell in a window",          "xterm -fn fixed -e /bin/sh", "xterm",    0, 0x3B4252, 1, 0 },
     { "netsurf", "Browser",        "NetSurf web browser",          "netsurf",                    "netsurf",  0, 0x2F6FD0, 1, 0 },
+    /* No package: lives on the x86 Chromium disk (console "chromium" row,
+     * ?xdisk=), so it shows only while that disk is mounted at /opt/x86. */
+    { "chromium","Chromium",       "Chromium 131 (x86-64, Blink)", "/opt/x86/chromium-desktop",  "",         0, 0x4285F4, 0, 0 },
     { "htop",    "System Monitor", "Processes and memory (htop)",  "htop",                       "htop",     1, 0x2E8B57, 0, 0 },
-    { "mc",      "Files",          "Midnight Commander",           "mc",                         "mc",       1, 0x00838F, 0, 0 },
+    /* matches the xfe package's own xfe.desktop, so the entry looks the same
+     * before and after install */
+    { "xfe",     "File Manager",   "Xfe, the X File Explorer",     "xfe",                        "xfe",      0, 0xC58A2A, 1, 0 },
+    { "mc",      "Midnight Commander", "Two-pane file manager",    "mc",                         "mc",       1, 0x006064, 0, 0 },
     { "textedit","Text Editor",    "Edit text files in a window",  "lot-textedit",               "xtiny-apps", 0, 0x7B3FA0, 1, 0 },
     { "calc",    "Calculator",     "A pocket calculator",          "lot-calc",                   "xtiny-apps", 0, 0x4A6FA5, 0, 0 },
     { "nano",    "nano",           "Text editor in a terminal",    "nano",                       "nano",     1, 0x5E3A80, 0, 0 },
     { "python3", "Python",         "Python 3.11 interpreter",      "python3",                    "python3",  1, 0x3776AB, 0, 0 },
+    { "node",    "Node.js",        "JavaScript REPL (QuickJS)",    "node",                       "nodejs",   1, 0x3C873A, 0, 0 },
+    { "trust",   "Rust IDE",       "TRUST: build and run Rust",    "trust",                      "trust",    1, 0xB7410E, 0, 0 },
+    { "tmux",    "tmux",           "Terminal multiplexer",         "tmux",                       "tmux",     1, 0x1BB91F, 0, 0 },
     { "lotplay", "Videos",         "Video player (ffmpeg)",        "lotplay",                    "lotplay",  0, 0xE63946, 0, 0 },
     { "wolf3d",  "Wolfenstein 3D", "Shareware episode 1",          "wolf3d",                     "wolf3d",   0, 0x9B1C1C, 0, 0 },
     { "tetris",  "Tetris",         "vitetris, in colour",          "tetris",                     "vitetris", 1, 0xC77700, 0, 0 },
@@ -2586,15 +2595,19 @@ static void launch_app(const App *a) {
         split_cmd(a->exec, buf, sizeof buf, argv + n, 24 - n);
     } else {
         /* GUI apps detach (setsid) so closing the installer keeps them */
+        /* A package newer than the image's baked index is "Unknown": refresh
+         * the index once and retry, rather than failing on a stale snapshot. */
         if (a->terminal)
             snprintf(script, sizeof script,
-                     "apk add %s && exec %s; echo; echo 'Install failed - press Enter to close.'; read x",
-                     a->pkg, a->exec);
+                     "{ apk add %s || { apk update && apk add %s; }; } && exec %s; "
+                     "echo; echo 'Install failed - press Enter to close.'; read x",
+                     a->pkg, a->pkg, a->exec);
         else
             snprintf(script, sizeof script,
-                     "apk add %s && { setsid %s </dev/null >/dev/null 2>&1 & sleep 2; exit 0; }; "
+                     "{ apk add %s || { apk update && apk add %s; }; } && "
+                     "{ setsid %s </dev/null >/dev/null 2>&1 & sleep 2; exit 0; }; "
                      "echo; echo 'Install failed - press Enter to close.'; read x",
-                     a->pkg, a->exec);
+                     a->pkg, a->pkg, a->exec);
         snprintf(buf, sizeof buf, "Installing %s", a->name);
         int n = 0;
         argv[n++] = "xterm"; argv[n++] = "-T"; argv[n++] = buf;
@@ -2621,18 +2634,29 @@ static void draw_app_tile(rfb_server *s, int x, int y, int sz, const App *a) {
 #define MENU_ROW_H  46
 #define MENU_HEAD_H 34
 #define MENU_PAD    6
+#define MENU_MIN_W  180     /* narrowest column before entries are dropped */
 
-typedef struct { int x, y, w, h, n; int idx[MAX_APPS]; } MenuLayout;
+/* Entries flow top-to-bottom into as many columns as the work area needs
+ * (no scrolling), each up to MENU_W wide and narrowed to fit the screen, so
+ * a short panel still reaches every app. */
+typedef struct { int x, y, w, h, n, rows, cols, colw; int idx[MAX_APPS]; } MenuLayout;
 
 static void menu_layout(MenuLayout *m) {
     m->n = 0;
     for (int i = 0; i < napps; i++) if (app_visible(&apps[i])) m->idx[m->n++] = i;
     int maxrows = (WORK_H - 16 - MENU_HEAD_H - 2*MENU_PAD) / MENU_ROW_H;
     if (maxrows < 1) maxrows = 1;
-    if (m->n > maxrows) m->n = maxrows;
-    m->w = MENU_W;
-    if (m->w > FB_W - 16) m->w = FB_W - 16;
-    m->h = MENU_HEAD_H + m->n * MENU_ROW_H + 2*MENU_PAD;
+    int maxcols = (FB_W - 16) / MENU_MIN_W;
+    if (maxcols < 1) maxcols = 1;
+    m->cols = (m->n + maxrows - 1) / maxrows;
+    if (m->cols < 1) m->cols = 1;
+    if (m->cols > maxcols) { m->cols = maxcols; if (m->n > maxcols * maxrows) m->n = maxcols * maxrows; }
+    m->rows = (m->n + m->cols - 1) / m->cols;       /* balance the columns */
+    if (m->rows < 1) m->rows = 1;
+    m->colw = MENU_W;                               /* narrow columns to fit */
+    if (m->cols * m->colw > FB_W - 16) m->colw = (FB_W - 16) / m->cols;
+    m->w = m->cols * m->colw;
+    m->h = MENU_HEAD_H + m->rows * MENU_ROW_H + 2*MENU_PAD;
     m->x = 8;
     m->y = WORK_H - 8 - m->h;
 }
@@ -2641,7 +2665,9 @@ static int menu_row_at(const MenuLayout *m, int x, int y) {
     if (x < m->x || x >= m->x + m->w) return -1;
     int ry = y - (m->y + MENU_PAD + MENU_HEAD_H);
     if (ry < 0) return -1;
-    int r = ry / MENU_ROW_H;
+    int row = ry / MENU_ROW_H, col = (x - m->x) / m->colw;
+    if (row >= m->rows || col >= m->cols) return -1;
+    int r = col * m->rows + row;
     return r < m->n ? r : -1;
 }
 
@@ -2667,17 +2693,18 @@ static void draw_menu(rfb_server *s) {
                    0x9A, 0x96, 0x92);
     for (int r = 0; r < m.n; r++) {
         const App *a = &apps[m.idx[r]];
-        int ry = m.y + MENU_PAD + MENU_HEAD_H + r * MENU_ROW_H;
+        int cx = m.x + (r / m.rows) * m.colw, cw = m.colw;
+        int ry = m.y + MENU_PAD + MENU_HEAD_H + (r % m.rows) * MENU_ROW_H;
         if (r == X.menu_hover)
-            rfb_fill_rrect(s, m.x + MENU_PAD, ry + 2, m.w - 2*MENU_PAD, MENU_ROW_H - 4, 7,
+            rfb_fill_rrect(s, cx + MENU_PAD, ry + 2, cw - 2*MENU_PAD, MENU_ROW_H - 4, 7,
                            0x4A, 0x44, 0x3E);
-        draw_app_tile(s, m.x + 14, ry + (MENU_ROW_H - 30) / 2, 30, a);
-        int tx = m.x + 56, tw = m.w - 56 - 14;
+        draw_app_tile(s, cx + 14, ry + (MENU_ROW_H - 30) / 2, 30, a);
+        int tx = cx + 56, tw = cw - 56 - 14;
         int badge = 0;
         if (!a->installed) {                 /* "Install" tag on the right */
             const char *t = "Install";
             badge = rfb_label_width(t) + 16;
-            int bx = m.x + m.w - 14 - badge;
+            int bx = cx + cw - 14 - badge;
             rfb_fill_rrect(s, bx, ry + MENU_ROW_H/2 - 10, badge, 20, 10, 0x5C, 0x4A, 0x2E);
             rfb_draw_label(s, bx + 8, ry + MENU_ROW_H/2 - 1, 0, t, 0xFF, 0xC8, 0x8A);
             tw -= badge + 8;
@@ -2890,6 +2917,12 @@ static int menu_key(rfb_server *s, uint32_t ks, int down) {
         int h = X.menu_hover;
         if (ks == 0xff54) h = h < 0 ? 0 : (h + 1) % (m.n ? m.n : 1);
         else              h = h <= 0 ? m.n - 1 : h - 1;
+        X.menu_hover = h;
+        menu_damage(s);
+    } else if ((ks == 0xff51 || ks == 0xff53) && m.cols > 1) {   /* Left / Right */
+        int h = X.menu_hover < 0 ? 0 : X.menu_hover;
+        int to = h + (ks == 0xff53 ? m.rows : -m.rows);
+        if (to >= 0 && to < m.n) h = to;             /* no cell there: stay */
         X.menu_hover = h;
         menu_damage(s);
     } else if ((ks == 0xff0d || ks == 0xff8d) && X.menu_hover >= 0 && X.menu_hover < m.n) {
