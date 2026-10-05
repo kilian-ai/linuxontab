@@ -5,7 +5,9 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.5.0"   # 1.5.0: CopyPlane, GC clip masks, depth-1 PutImage, X selections +
+VERSION="1.6.0"   # 1.6.0: sound server — /tmp/.lot-audio (s16le stereo 48 kHz) forwarded
+                  # to the viewer over RFB (QEMU audio extension); lotplay plays sound
+                  # 1.5.0: CopyPlane, GC clip masks, depth-1 PutImage, X selections +
                   # SendEvent (clipboard), 1024 windows/4096 pixmaps/512 GCs:
                   # what FOX/Xfe (the xfe package) needs
                   # 1.4.0: JPEG for video-like regions (librfb LJPG + lossless repair),

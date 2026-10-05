@@ -66,6 +66,12 @@ struct rfb_server {
     /* one write per update: coalesce the many small tile rects */
     int buffering;
     uint8_t *obuf; size_t olen, ocap;
+    /* audio (see rfb_audio_send) */
+    int audio_adv;        /* viewer advertised -259 (and the app has audio) */
+    int audio_ack;        /* -259 confirmation rect still to send */
+    int audio_on;         /* viewer sent "enable" */
+    int audio_fmt_ok;     /* its format request is ours (S16, 2 ch, 48 kHz) */
+    int audio_stream;     /* "stream begin" sent */
 };
 
 /* ── wire helpers ─────────────────────────────────────────────────────────── */
@@ -994,7 +1000,7 @@ static int send_update_ljpg(rfb_server *s, int full) {
             int h = y + TILE <= s->h ? TILE : s->h - y;
             cut_rect(s, x, y, w, h, 1);
         }
-    if (s->npc == 0 && !s->eds_pending) return 0;
+    if (s->npc == 0 && !s->eds_pending && !s->audio_ack) return 0;
 
     s->buffering = 1;
     s->olen = 0;
@@ -1014,8 +1020,15 @@ static int send_update_ljpg(rfb_server *s, int full) {
 
 static void send_fbu_hdr(rfb_server *s, int nrect) {
     if (s->eds_pending) nrect++;
+    if (s->audio_ack) nrect++;
     uint8_t hdr[4] = {0, 0, (uint8_t)(nrect >> 8), (uint8_t)nrect};
     write_all(s, hdr, 4);
+    if (s->audio_ack) {
+        /* QEMU audio pseudo-rect, no payload: "this server does audio" —
+         * the viewer only sends audio client messages after seeing it */
+        s->audio_ack = 0;
+        send_rect_hdr(s, 0, 0, 0, 0, (uint32_t)-259);
+    }
     if (!s->eds_pending) return;
     /* ExtendedDesktopSize pseudo-rect: x = reason, y = status, w/h = the
      * framebuffer size, then one screen covering all of it. */
@@ -1041,6 +1054,33 @@ static void send_fbu_full(rfb_server *s) {
         if (y + h > s->h) h = s->h - y;
         send_rect(s, 0, y, s->w, h);
     }
+}
+
+/* ── audio ─────────────────────────────────────────────────────────────────── */
+int rfb_audio_active(rfb_server *s) {
+    return s && s->cfd >= 0 && s->audio_adv && s->audio_on && s->audio_fmt_ok;
+}
+
+int rfb_audio_send(rfb_server *s, const void *pcm, size_t bytes) {
+    if (!rfb_audio_active(s) || !bytes) return 0;
+    if (!s->audio_stream) {
+        uint8_t begin[4] = {255, 1, 0, 1};
+        write_all(s, begin, 4);
+        s->audio_stream = 1;
+    }
+    uint8_t hdr[8] = {255, 1, 0, 2,
+                      (uint8_t)(bytes >> 24), (uint8_t)(bytes >> 16),
+                      (uint8_t)(bytes >> 8), (uint8_t)bytes};
+    write_all(s, hdr, 8);
+    write_all(s, pcm, bytes);
+    return 1;
+}
+
+void rfb_audio_flush(rfb_server *s) {
+    if (!s || s->cfd < 0 || !s->audio_stream) return;
+    uint8_t end[4] = {255, 1, 0, 0};
+    write_all(s, end, 4);
+    s->audio_stream = 0;
 }
 
 /* ── RFB 3.8 protocol ─────────────────────────────────────────────────────── */
@@ -1084,6 +1124,7 @@ static void serve_client(rfb_server *s) {
     s->eds_ok = 0;       /* re-announced if this viewer supports it */
     s->eds_pending = 0;
     s->ljpg_ok = 0;      /* ditto the JPEG path */
+    s->audio_adv = s->audio_ack = s->audio_on = s->audio_fmt_ok = s->audio_stream = 0;
     free(s->tlossy); s->tlossy = NULL;
     if (s->cfg.on_connect) s->cfg.on_connect(s);
 
@@ -1111,6 +1152,10 @@ static void serve_client(rfb_server *s) {
                  * is understood here. Only for apps that can resize — and
                  * never revoked: the Bell nudge answer is an empty list. */
                 if (enc == (int32_t)RFB_ENC_LJPG) s->ljpg_ok = 1;
+                if (enc == -259 && s->cfg.audio && !s->audio_adv) {
+                    s->audio_adv = 1;
+                    s->audio_ack = 1;
+                }
                 if (enc == -308 && s->cfg.on_resize && !s->eds_ok) {
                     s->eds_ok = 1;
                     s->eds_pending = 1;
@@ -1149,7 +1194,7 @@ static void serve_client(rfb_server *s) {
                 /* Nothing changed — legal empty update (or just the size
                  * announcement); the client's msg-done loop re-requests,
                  * so this sets the idle poll. */
-                sent = s->eds_pending;
+                sent = s->eds_pending || s->audio_ack;
                 send_fbu_hdr(s, 0);
             }
             /* Pacing + yield. The client re-requests the instant a response
@@ -1187,6 +1232,33 @@ static void serve_client(rfb_server *s) {
                 uint32_t ch = len < 256 ? len : 256;
                 if (!read_all(s, drain, ch)) return;
                 len -= ch;
+            }
+            break;
+        }
+        case 255: { /* QEMU client message */
+            uint8_t sub; if (!read_all(s, &sub, 1)) return;
+            if (sub == 0) {               /* extended key event: not used */
+                uint8_t skip[10]; if (!read_all(s, skip, 10)) return;
+                break;
+            }
+            if (sub != 1) {
+                fprintf(stderr, "[rfb] unknown QEMU submessage %u\n", sub);
+                return;
+            }
+            uint8_t op2[2]; if (!read_all(s, op2, 2)) return;
+            int op = (op2[0] << 8) | op2[1];
+            if (op == 0) {                /* enable */
+                s->audio_on = 1;
+            } else if (op == 1) {         /* disable */
+                s->audio_on = 0;
+                s->audio_stream = 0;
+            } else if (op == 2) {         /* set format */
+                uint8_t f[6]; if (!read_all(s, f, 6)) return;
+                uint32_t hz = ((uint32_t)f[2] << 24) | ((uint32_t)f[3] << 16) | ((uint32_t)f[4] << 8) | f[5];
+                s->audio_fmt_ok = f[0] == 3 && f[1] == RFB_AUDIO_CHANNELS && hz == RFB_AUDIO_RATE;
+            } else {
+                fprintf(stderr, "[rfb] unknown QEMU audio op %d\n", op);
+                return;
             }
             break;
         }

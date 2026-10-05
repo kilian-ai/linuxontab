@@ -5,9 +5,9 @@
 #   lotplay movie.mp4      # Space pause, ←/→ seek, Q quit
 #   lotplay                # the bundled sample, looped
 #
-# ffmpeg is built here as static libraries with a video-only component set
-# (common decoders, demuxers and parsers; no audio, filters, devices or
-# network) — same cross setup as recipes/ffmpeg.sh: no asm, no threads,
+# ffmpeg is built here as static libraries with a player-sized component
+# set (common video + audio decoders, demuxers and parsers, swresample; no
+# encoders, filters, devices or network) — same cross setup as recipes/ffmpeg.sh: no asm, no threads,
 # sbrk-only dlmalloc (frame buffers pass 128 KB, where musl mallocng needs
 # mmap and traps), and the binary128 long-double shim for printf.
 # Sample clip (packages/media/lotplay-sample.mp4) is generated — no
@@ -17,13 +17,18 @@
 #   ffmpeg -f lavfi -i "gradients=size=480x270:rate=24:speed=0.012:nb_colors=4:\
 #     c0=0x1d3557:c1=0x457b9d:c2=0xe63946:c3=0xf4a261:duration=20" \
 #     -f lavfi -i "testsrc2=size=160x90:rate=24:duration=20" -i title.png \
+#     -f lavfi -i "aevalsrc=exprs='ARP+0.07*sin(2*PI*110*t)+TICK|ARP*0.8+0.07*sin(2*PI*110.5*t)+TICK':s=48000:d=20" \
 #     -filter_complex "[0][1]overlay=x='(W-w)/2+130*sin(t*0.9)':y=H-h-22[a];\
-#       [a][2]overlay=0:0,format=yuv420p" -t 20 -c:v libx264 -profile:v baseline \
-#     -level 3.0 -preset slow -crf 23 -g 48 -movflags +faststart sample.mp4
+#       [a][2]overlay=0:0,format=yuv420p[v]" -map "[v]" -map 3:a -t 20 \
+#     -c:v libx264 -profile:v baseline -level 3.0 -preset slow -crf 23 -g 48 \
+#     -c:a aac -b:a 128k -ar 48000 -ac 2 -movflags +faststart sample.mp4
+#   ARP  = 0.16*sin(2*PI*220*pow(2,floor(2.5*mod(floor(t*4),5)+0.5)/12)*t)*exp(-12*mod(t,0.25))
+#   TICK = 0.30*sin(2*PI*1500*t)*exp(-70*mod(t,1))   (a tick on every whole second —
+#          compare it with the test card's timecode to judge A/V sync)
 # (baseline profile: no CABAC/B-frames, the cheapest H.264 to decode).
 NAME="lotplay"
-VERSION="1.0.0"
-DESCRIPTION="Video player for the X desktop (ffmpeg decode, video only) — Apps menu → Videos"
+VERSION="1.1.0"   # 1.1.0: sound (aac/mp3/vorbis/opus/flac/ac3 → xtiny's sound socket)
+DESCRIPTION="Video player for the X desktop (ffmpeg decode, with sound via xtiny) — Apps menu → Videos"
 FFMPEG_UPSTREAM="5.1.6"
 SOURCE_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_UPSTREAM}.tar.gz"
 SOURCE_SHA256=""
@@ -39,7 +44,7 @@ build() {
 
     # ── ffmpeg libraries, video only ─────────────────────────────────────
     cd "$SRC"
-    FFPREFIX="/tmp/lot-build/lotplay-ffmpeg"
+    FFPREFIX="/tmp/lot-build/lotplay-ffmpeg-2"   # bump when the component set changes
     if [ ! -f "$FFPREFIX/lib/libavcodec.a" ]; then
         ./configure \
             --prefix="$FFPREFIX" \
@@ -52,10 +57,14 @@ build() {
             --disable-autodetect --disable-doc --disable-debug \
             --disable-shared --enable-static --disable-programs \
             --disable-everything \
-            --disable-avdevice --disable-avfilter --disable-swresample --disable-postproc --disable-network \
+            --disable-avdevice --disable-avfilter --disable-postproc --disable-network \
+            --enable-swresample \
             --enable-decoder=h264,hevc,mpeg4,mpeg1video,mpeg2video,vp8,vp9,theora,mjpeg,h263,msmpeg4v3,flv,vp6f \
+            --enable-decoder=aac,aac_latm,mp3,mp3float,mp2,vorbis,opus,flac,ac3,eac3,alac,pcm_s16le,pcm_s16be,pcm_s24le,pcm_f32le,pcm_u8 \
             --enable-demuxer=mov,matroska,avi,mpegts,mpegps,ogg,flv,ivf,h264,hevc,m4v,mjpeg,mpegvideo \
+            --enable-demuxer=mp3,aac,wav,flac,ac3 \
             --enable-parser=h264,hevc,mpeg4video,mpegvideo,vp8,vp9,mjpeg,h263,vp3 \
+            --enable-parser=aac,aac_latm,mpegaudio,vorbis,opus,flac,ac3 \
             --enable-protocol=file,pipe \
             || { echo "==> configure failed; ffbuild/config.log tail:"; tail -40 ffbuild/config.log; exit 1; }
         make -j8 > make.log 2>&1 || { tail -30 make.log; exit 1; }
@@ -89,7 +98,7 @@ COMPAT
     $CC $CFLAGS -o "$SRC/lotplay" "$SRC/lotplay.o" "$SRC/lotplay_compat.o" \
         "$WEBDEPS_OBJS/wasm_dlmalloc.o" "$WEBDEPS_OBJS/wasm_ld128.o" \
         $LDFLAGS -Wl,-z,stack-size=8388608 -L"$FFPREFIX/lib" $XLIB \
-        -lavformat -lavcodec -lswscale -lavutil -lX11 -lxcb -lXau \
+        -lavformat -lavcodec -lswscale -lswresample -lavutil -lX11 -lxcb -lXau \
         $CRT1 -lc -lm $BUILTINS \
         || { echo "lotplay link failed" >&2; exit 1; }
 
@@ -100,7 +109,7 @@ COMPAT
 [Desktop Entry]
 Type=Application
 Name=Videos
-Comment=Video player (ffmpeg)
+Comment=Video player with sound (ffmpeg)
 Exec=lotplay
 Terminal=false
 X-LinuxOnTab-Package=lotplay

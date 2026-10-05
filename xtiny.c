@@ -142,6 +142,9 @@ typedef struct {
 
 static struct {
     int lfd;
+    int au_lfd, au_fd;          /* sound socket /tmp/.lot-audio (see audio_poll) */
+    uint8_t au_part[4];         /* a partial stereo frame carried to the next read */
+    int au_npart;
     XClient cl[MAX_XCLIENTS];
     XWindow win[MAX_WINDOWS];
     XPixmap pix[MAX_PIXMAPS];
@@ -2954,6 +2957,52 @@ static int on_resize(rfb_server *s, int *w, int *h) {
     return 1;
 }
 
+/* ── sound ────────────────────────────────────────────────────────────────── */
+/* /tmp/.lot-audio: the desktop's tiny sound server. One source at a time
+ * writes raw PCM (s16le, stereo, 48 kHz — RFB_AUDIO_*); it is forwarded to
+ * the viewer over the RFB connection (librfb's QEMU audio extension), so
+ * sound plays wherever the X display is open. A newer connection replaces
+ * the current one; a source closing its socket ends the stream, and the
+ * viewer drops what it still has queued (that is how lotplay flushes on
+ * pause and seek). Read even with no viewer, so a source never blocks. */
+#define AUDIO_SOCK "/tmp/.lot-audio"
+
+static void audio_close(rfb_server *s) {
+    if (X.au_fd >= 0) close(X.au_fd);
+    X.au_fd = -1;
+    X.au_npart = 0;
+    rfb_audio_flush(s);
+}
+
+static void audio_poll(rfb_server *s) {
+    if (X.au_lfd < 0) return;
+    int fd = accept(X.au_lfd, NULL, NULL);
+    if (fd >= 0) {
+        audio_close(s);                       /* the newest source wins */
+        int fl = fcntl(fd, F_GETFL, 0);
+        if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+        fcntl(fd, F_SETFD, FD_CLOEXEC);
+        X.au_fd = fd;
+    }
+    if (X.au_fd < 0) return;
+    uint8_t buf[16384 + 4];
+    for (int rounds = 0; rounds < 8; rounds++) {
+        memcpy(buf, X.au_part, (size_t)X.au_npart);
+        ssize_t r = read(X.au_fd, buf + X.au_npart, 16384);
+        if (r == 0) { audio_close(s); return; }
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            if (errno != EAGAIN && errno != EWOULDBLOCK) audio_close(s);
+            return;
+        }
+        size_t n = (size_t)X.au_npart + (size_t)r;
+        size_t whole = n & ~(size_t)3;           /* forward whole frames only */
+        X.au_npart = (int)(n - whole);
+        memcpy(X.au_part, buf + whole, (size_t)X.au_npart);
+        rfb_audio_send(s, buf, whole);           /* dropped if nobody listens */
+    }
+}
+
 /* ── librfb callbacks ─────────────────────────────────────────────────────── */
 static void on_idle(rfb_server *s) {
     X.srv = s;
@@ -2973,6 +3022,7 @@ static void on_idle(rfb_server *s) {
             rfb_damage(s, FB_W - TB_CLOCK_W - 8, WORK_H, TB_CLOCK_W + 8, TASKBAR_H);
         }
     }
+    audio_poll(s);
     /* accept new X clients */
     for (;;) {
         int fd = accept(X.lfd, NULL, NULL);
@@ -3405,6 +3455,26 @@ int main(void) {
     if (fl >= 0) fcntl(X.lfd, F_SETFL, fl | O_NONBLOCK);
     fcntl(X.lfd, F_SETFD, FD_CLOEXEC);
 
+    /* sound socket */
+    X.au_fd = -1;
+    unlink(AUDIO_SOCK);
+    X.au_lfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (X.au_lfd >= 0) {
+        struct sockaddr_un au;
+        memset(&au, 0, sizeof au);
+        au.sun_family = AF_UNIX;
+        strcpy(au.sun_path, AUDIO_SOCK);
+        if (bind(X.au_lfd, (struct sockaddr *)&au, sizeof au) < 0 || listen(X.au_lfd, 2) < 0) {
+            perror("[xtiny] audio socket");
+            close(X.au_lfd);
+            X.au_lfd = -1;
+        } else {
+            int afl = fcntl(X.au_lfd, F_GETFL, 0);
+            if (afl >= 0) fcntl(X.au_lfd, F_SETFL, afl | O_NONBLOCK);
+            fcntl(X.au_lfd, F_SETFD, FD_CLOEXEC);
+        }
+    }
+
     printf("[xtiny] X server on DISPLAY=:1 (/tmp/.X11-unix/X1)\n");
     fflush(stdout);
 
@@ -3418,6 +3488,7 @@ int main(void) {
         .on_key     = on_key,
         .on_idle    = on_idle,
         .on_resize  = on_resize,
+        .audio      = 1,
     };
     return rfb_run(&cfg);
 }

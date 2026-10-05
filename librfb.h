@@ -19,6 +19,7 @@
 #ifndef LIBRFB_H
 #define LIBRFB_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 typedef struct rfb_server rfb_server;
@@ -56,6 +57,10 @@ typedef struct rfb_config {
      * full frame — or return 0 to refuse. NULL = fixed size (the resize
      * capability is then never advertised). */
     int (*on_resize)(rfb_server *s, int *w, int *h);
+
+    /* 1 = the app may send audio (rfb_audio_send); the capability is then
+     * offered to viewers that ask for it (QEMU VNC audio extension). */
+    int audio;
 
     void *user;         /* app state, reachable via rfb_user() */
 } rfb_config;
@@ -168,6 +173,18 @@ enum {
 };
 /* Idempotent: repeats of the current shape cost nothing. */
 void rfb_set_cursor(rfb_server *s, int shape);
+
+/* ── audio (QEMU VNC audio extension: pseudo-encoding -259) ──────────────
+ * PCM goes to a viewer that negotiated it and enabled playback: signed
+ * 16-bit little-endian, interleaved stereo, 48 kHz. rfb_audio_send returns
+ * 1 when a viewer took the data, 0 when nobody is listening (dropped).
+ * rfb_audio_flush ends the stream: the viewer discards what it still has
+ * queued (pause, seek, a new source). Call from on_idle or callbacks. */
+#define RFB_AUDIO_RATE     48000
+#define RFB_AUDIO_CHANNELS 2
+int  rfb_audio_active(rfb_server *s);
+int  rfb_audio_send(rfb_server *s, const void *pcm, size_t bytes);
+void rfb_audio_flush(rfb_server *s);
 
 /* Serve forever (accept loop; one client at a time). Returns on fatal
  * socket errors only. */
