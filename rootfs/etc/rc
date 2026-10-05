@@ -89,6 +89,79 @@ EOF
 
 cat /etc/motd
 
+# Service autostart (tabs-as-containers): lot_svc=redis[,pkg...] on the
+# cmdline installs each package and, if /etc/lot-services.conf has a line
+# "name|command", starts the service in the background.
+case "$_CMDLINE" in
+*lot_svc=*)
+	_SVCS="${_CMDLINE##*lot_svc=}"
+	_SVCS="${_SVCS%% *}"
+	# NB: iterate WITHOUT a pipeline — `echo | tr | while read` runs the loop
+	# body in a subshell, pushing apk (and its awk children) one fork level
+	# deeper, where the asyncify fork-chain hang lives. It worked on desktop
+	# by timing luck and reliably stalled installs on iOS.
+	# Refresh the package index from the CDN first: the baked-in copy is a
+	# snapshot from this image's build, so a package republished since then
+	# would fail its checksum against the stale entry.
+	/usr/bin/apk update > /dev/null 2>&1 || true
+	_rest="$_SVCS,"
+	while [ -n "$_rest" ]; do
+		_svc="${_rest%%,*}"
+		_rest="${_rest#*,}"
+		[ -n "$_svc" ] || continue
+		echo "[lot] provisioning service: $_svc"
+		/usr/bin/apk add "$_svc" || continue
+		# flush the freshly extracted package before the service starts: pending
+		# writeback starves network wakeups (responses stall after 10 segments)
+		sync
+		_cmdline_svc=""
+		# registry line: name|command
+		grep "^$_svc|" /etc/lot-services.conf > /tmp/.lot-svc-cmd 2>/dev/null
+		read -r _cmdline_svc < /tmp/.lot-svc-cmd 2>/dev/null
+		rm -f /tmp/.lot-svc-cmd
+		_cmdline_svc="${_cmdline_svc#*|}"
+		case "$_cmdline_svc" in
+		tty:*)
+			# foreground terminal app (TUI): runs on the console once boot is
+			# done, before the interactive shell — see the shell loop below
+			echo "${_cmdline_svc#tty:}" > /tmp/.lot-autorun
+			;;
+		?*)
+			echo "[lot] starting: $_cmdline_svc"
+			sh -c "$_cmdline_svc" > "/tmp/svc-$_svc.log" 2>&1 &
+			;;
+		esac
+	done
+	;;
+esac
+
+# Service start WITHOUT install (lot_run=name[,name...]): for committed-image
+# boots (?image=@overlay) where the binaries are already in the filesystem —
+# no apk involved, just the registry command. Keeps the fragile install
+# machinery entirely off devices that only run prebuilt images (phones).
+case "$_CMDLINE" in
+*lot_run=*)
+	_RUNS="${_CMDLINE##*lot_run=}"
+	_RUNS="${_RUNS%% *}"
+	_rrest="$_RUNS,"
+	while [ -n "$_rrest" ]; do
+		_rsvc="${_rrest%%,*}"
+		_rrest="${_rrest#*,}"
+		[ -n "$_rsvc" ] || continue
+		_rcmd=""
+		grep "^$_rsvc|" /etc/lot-services.conf > /tmp/.lot-run-cmd 2>/dev/null
+		read -r _rcmd < /tmp/.lot-run-cmd 2>/dev/null
+		rm -f /tmp/.lot-run-cmd
+		_rcmd="${_rcmd#*|}"
+		case "$_rcmd" in tty:*) echo "${_rcmd#tty:}" > /tmp/.lot-autorun; _rcmd="";; esac
+		if [ -n "$_rcmd" ]; then
+			echo "[lot] starting: $_rcmd"
+			sh -c "$_rcmd" > "/tmp/svc-$_rsvc.log" 2>&1 &
+		fi
+	done
+	;;
+esac
+
 # Run OpenSSH. Default to sshd-session for compatibility.
 # If /etc/ssh/sshd-daemon.enabled exists (written by host rebuild script after
 # wasm import-memory verification), prefer native sshd daemon mode.
@@ -124,6 +197,17 @@ fi
 # as controlling tty, or ^C never reaches the foreground job (PID 1's
 # /dev/console can't be a ctty, so the line discipline has no pgrp to signal).
 # The loop also respawns the shell after ^D/exit instead of killing init.
+# A `tty:` registry command (?image=trust → trust) runs here in the
+# foreground with the console as its tty; the shell takes over when it exits.
+if [ -f /tmp/.lot-autorun ]; then
+	_app=""
+	read -r _app < /tmp/.lot-autorun
+	rm -f /tmp/.lot-autorun
+	if [ -n "$_app" ]; then
+		echo "[lot] starting on the console: $_app"
+		setsid cttyhack /bin/sh -c "cd /root && $_app"
+	fi
+fi
 while true; do
 	setsid cttyhack /bin/sh -i
 done

@@ -279,6 +279,7 @@ chmod +x "$STAGE/etc/rc"
 # ── Service registry (lot_svc autostart commands) ────────────────────────────
 # name|command — /etc/rc starts the command after `apk add name` when the tab
 # was opened with ?image=name. Packages without a line just get installed.
+# Keep in sync with rootfs/etc/lot-services.conf (the full image's copy).
 cat > "$STAGE/etc/lot-services.conf" << 'EOF'
 redis|redis-server --port 6379 --bind 0.0.0.0 --protected-mode no
 nginx|nginx-demo
