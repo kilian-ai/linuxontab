@@ -157,18 +157,40 @@ Later fixes (2026-09-29):
   declares 1 GiB and exports `__lot_big_memory`; worker.ts keeps the declared
   maximum for modules with that export (other C programs stay at 256 MiB).
 
-Result: `nodetest.js` passes **11/11 in the guest** (release: 3.7 s of JS
-time, async child_process included; the debug build too). Still open: an
-intermittent crash at the TCP step in the release build (1 of 2 runs): a guest
-access to unmapped memory, after which Blink hits `unassert(m->canhalt)` in
-HaltMachine (release builds turn that into a wasm `unreachable`). The debug
-build hasn't shown it, so it looks timing-dependent. Separately, the guest's
-hush does not reap a background job whose Blink process died (stays Z).
+Result: `nodetest.js` passes **11/11 in the guest**.
+
+### Intermittent crash: fork children corrupted the parent's heap (fixed)
+
+The release-build "crash at the TCP step" was heap corruption from fork().
+For a fork in a threaded guest, the copy-on-write above only made the stack
+window private; the child's Blink and guest code (libuv's child setup, errno,
+Blink's own structures) still wrote into the parent's shared heap. Whatever
+the parent touched next broke: a musl string routine read a garbage pointer
+(`movzx r8d, byte [rsi+rcx]`, rsi = 0xe4c20bc0de05cc), or a byte read hit
+unmapped 0x100000360. Timing and allocation decided which, hence "intermittent".
+The real fix is the full copy-on-write fork in blink-chromium.patch
+(72fa59f1, found by the Node 24 session): every page reads as read-only in the
+child and is copied on first write.
+
+Evidence (2026-10-04, guest, `runn.sh`, full nodetest.js unless noted): the
+old build (this directory's patch only, `LOT_OLD_BLINK=1 build.sh`) passed
+0/3; plus the HandlePageFault index fix 0/6; plus MADV_DONTNEED zeroing 0/5;
+the current build setup without blink-chromium.patch 0/4; plus only the CPU
+fixes (bit/cvt/ssefloat) 1/3; plus only map.c (48-bit layout, 4 KiB pages)
+1/4. Without the execSync step before it, the old build passed the TCP step
+3/3 and stopped at the next fork (async exec). The current build
+(spikes/x86-chromium/build.sh) passed nodetest.js **15/15**.
+
+Also found: our wasm musl has no working `longjmp`, so when Blink delivers a
+guest fault it traps (`unreachable` in longjmp, from HaltMachine) instead of
+reaching the guest's SIGSEGV handler. Harmless for correct programs; any real
+guest fault kills Blink outright. The guest's hush also never reaps a
+background Blink that died (it stays Z); `runn.sh` detects that.
 
 ## Not done / next
 
-- Node: the intermittent release-build crash (above), then a `node`
-  wrapper/package (always `--jitless`, BLINK_OVERLAYS, binfmt)
+- Node: continued in spikes/x86-node (Node 24, npm, wrappers)
+- Blink: a working longjmp (or sjlj build) so guest faults reach handlers
 - speed: a wasm32 "offset-linear" memory mode, asyncify only the syscall path,
   then a block JIT that compiles hot x86 code to wasm modules
 - packaging: blink as an apk package + binfmt registration in /etc/rc + an

@@ -7,6 +7,15 @@
 # Needs the same toolchain as packages/build-package.sh (Nix clang/lld 19,
 # toolchain/musl-sysroot-fixed, binaryen wasm-opt, gmake).
 set -eu
+# Superseded: the maintained Blink build is spikes/x86-chromium/build.sh (this
+# directory's blink-lot.patch + blink-chromium.patch: real copy-on-write fork,
+# MADV_DONTNEED, SSE and page-table fixes). This script alone builds the old
+# Blink, whose fork() children of threaded guests corrupt the parent's heap
+# (Node died at random later, see README "Intermittent crash"). It hands off
+# unless LOT_OLD_BLINK=1 asks for the old variant (A/B tests).
+if [ "${LOT_OLD_BLINK:-}" != 1 ]; then
+  exec sh "$(cd "$(dirname "$0")/.." && pwd)/x86-chromium/build.sh" "$@"
+fi
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 OUT="${1:-/tmp/lot-build/blink-spike}"
