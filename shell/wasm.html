@@ -4625,6 +4625,10 @@ class RfbClient {
       this._lastFrameTs = Date.now();  // pace the escape hatch itself
     }, 1000);
 
+    // Debug counters (window.__xStats): updates completed, bytes received.
+    this._stats = { updates: 0, bytes: 0, jpegs: 0 };
+    window.__xStats = this._stats;
+
     socket.onmessage = (e) => {
       try {
         const d = this._normalizeIncoming(e.data);
@@ -4632,20 +4636,9 @@ class RfbClient {
           this._rxEvents++;
           xDbg('rx chunk=' + d.length + ' state=' + this._state + ' bufBefore=' + this._buf.length);
         }
+        this._stats.bytes += d.length;
         this._append(d);
-        if (this._pumping) {
-          this._pumpPending = true;
-          return;
-        }
-        do {
-          this._pumpPending = false;
-          this._pumping = true;
-          try {
-            this._pump();
-          } finally {
-            this._pumping = false;
-          }
-        } while (this._pumpPending);
+        this._kick();
       } catch (err) {
         xDbg('pump exception state=' + this._state + ' err=' + (err && (err.stack || err.message) || String(err)));
         throw err;
@@ -4685,6 +4678,24 @@ class RfbClient {
   _send(d) { this._ws.send(d); }
 
   _pump() { while (this._step()) {} }
+
+  // Run the parser until it needs more bytes (or is waiting on a JPEG
+  // decode); re-entrancy safe — a nested kick just asks for another pass.
+  _kick() {
+    if (this._pumping) {
+      this._pumpPending = true;
+      return;
+    }
+    do {
+      this._pumpPending = false;
+      this._pumping = true;
+      try {
+        this._pump();
+      } finally {
+        this._pumping = false;
+      }
+    } while (this._pumpPending);
+  }
 
   _step() {
     const b = this._buf;
@@ -4736,7 +4747,10 @@ class RfbClient {
       // desktop-size pseudo-encodings: a server that can resize answers
       // with an ExtendedDesktopSize rect, and only then do we send
       // SetDesktopSize (servers that can't never see that message).
-      this._send(new Uint8Array([2, 0, 0, 4,
+      // LJPG is librfb's private JPEG rect (u32 length + JPEG) for video-like
+      // regions; servers that don't know it simply never send it.
+      this._send(new Uint8Array([2, 0, 0, 5,
+                                 0x4c, 0x4a, 0x50, 0x47,     // "LJPG"
                                  0, 0, 0, 2,                 // RRE
                                  0, 0, 0, 0,                 // Raw
                                  0xff, 0xff, 0xfe, 0xcc,     // -308 ExtendedDesktopSize
@@ -4792,6 +4806,7 @@ class RfbClient {
       }
 
     case 'msg-done':
+      this._stats.updates++;
       // Immediately request the next update — message-driven, no timer, so
       // background-tab timer throttling (setTimeout clamped to ≥1 s when
       // document.visibilityState is hidden) cannot slow the update loop.
@@ -4814,6 +4829,8 @@ class RfbClient {
         this._state = 'raw-pixels';
       } else if (enc === 2) {
         this._state = 'rre-hdr';
+      } else if (enc === 0x4c4a5047) {
+        this._state = 'ljpg';
       } else if (enc === -308) {
         this._state = 'eds';
       } else if (enc === -223) {      // DesktopSize: the rect IS the new size
@@ -4848,6 +4865,35 @@ class RfbClient {
       this._state = 'rre-done';
       return true;
     }
+
+    case 'ljpg': {
+      // LJPG: u32 length + a baseline JPEG for the rect. Decoding is async,
+      // so the parser parks in 'ljpg-wait' until the picture is drawn —
+      // later rects of the update must not overtake it.
+      if (b.length < 4) return false;
+      const n = this._u32(0);
+      if (b.length < 4 + n) return false;
+      const jpeg = b.slice(4, 4 + n);
+      this._consume(4 + n);
+      const x = this._rawX, y = this._rawY, w = this._rawW, h = this._rawH;
+      this._state = 'ljpg-wait';
+      const done = () => {
+        this._markDirty(x, y, w, h);
+        this._lastFrameTs = Date.now();
+        this._frames++;
+        this._stats.jpegs++;
+        this._rectsLeft--;
+        this._state = this._rectsLeft > 0 ? 'rect-hdr' : 'msg-done';
+        this._kick();
+      };
+      createImageBitmap(new Blob([jpeg], { type: 'image/jpeg' }))
+        .then((bmp) => { this._ctx.drawImage(bmp, x, y, w, h); bmp.close(); done(); })
+        .catch((err) => { xDbg('ljpg decode failed: ' + err); done(); });
+      return false;
+    }
+
+    case 'ljpg-wait':
+      return false;
 
     case 'eds': {
       // ExtendedDesktopSize: x = reason (0 server, 1 our request, 2 other

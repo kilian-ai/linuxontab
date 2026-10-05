@@ -5,7 +5,9 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.3.0"   # 1.3.0: Text Editor + Calculator apps, date & time dialog on a
+VERSION="1.4.0"   # 1.4.0: JPEG for video-like regions (librfb LJPG + lossless repair),
+                  # damage merging, _LOT_PUTIMAGE_SCALE, fast PutImage, Videos entry
+                  # 1.3.0: Text Editor + Calculator apps, date & time dialog on a
                   # double-click of the clock (package xtiny-apps); honours
                   # USPosition (WM_NORMAL_HINTS) for client-placed windows
                   # 1.2.0: Apps menu (built-ins + /usr/share/applications/*.desktop,

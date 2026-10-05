@@ -19,8 +19,27 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+/* Baseline JPEG encoder for photographic tiles (stb_image_write, public
+ * domain / MIT — see stb_image_write.h). Callback output only. */
+#define STBI_WRITE_NO_STDIO
+#define STB_IMAGE_WRITE_STATIC
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+
 #define FB_BPP 4
 #define RFB_MAX_DAMAGE 16
+
+/* Private encoding: u32 length + a baseline JPEG of the rect (possibly at a
+ * lower resolution — the viewer scales it to the rect). Only our
+ * viewer (shell/wasm.html) advertises it, so real VNC clients never see it —
+ * advertising standard Tight instead would invite x11vnc to send Tight's
+ * zlib subencodings, which the viewer doesn't speak. */
+#define RFB_ENC_LJPG   0x4C4A5047          /* "LJPG" */
+#define LJPG_QUALITY   70
+#define TILE           64                  /* classification / repair grid */
+#define REPAIR_MS      1000                /* lossy tile still this long → resend exact (must exceed a slow video frame interval, or the repair resends every frame raw) */
+
+typedef struct { int x, y, w, h, photo; } rfb_piece;
 
 struct rfb_server {
     rfb_config cfg;
@@ -38,6 +57,15 @@ struct rfb_server {
     int eds_ok;         /* viewer advertised the pseudo-encoding */
     int eds_pending;    /* send an ExtendedDesktopSize rect next update */
     int eds_reason, eds_status;
+    /* JPEG path (see send_update_ljpg) */
+    int ljpg_ok;        /* viewer advertised RFB_ENC_LJPG */
+    int tcols, trows;   /* tile grid for the current fb size */
+    uint8_t *tlossy;    /* per tile: last send was JPEG */
+    uint64_t *tdmg;     /* per tile: when it was last damaged */
+    rfb_piece *pcs; int npc, cpc;
+    /* one write per update: coalesce the many small tile rects */
+    int buffering;
+    uint8_t *obuf; size_t olen, ocap;
 };
 
 /* ── wire helpers ─────────────────────────────────────────────────────────── */
@@ -68,6 +96,18 @@ static void set_nonblock(int fd) {
 #define IO_STALL_LIMIT_US (30 * 1000 * 1000)
 
 static void write_all(rfb_server *s, const void *buf, size_t n) {
+    if (s->buffering) {
+        if (s->olen + n > s->ocap) {
+            size_t nc = s->ocap ? s->ocap : 65536;
+            while (nc < s->olen + n) nc *= 2;
+            uint8_t *nb = realloc(s->obuf, nc);
+            if (!nb) { s->buffering = 0; write_all(s, s->obuf, s->olen); s->olen = 0; write_all(s, buf, n); return; }
+            s->obuf = nb; s->ocap = nc;
+        }
+        memcpy(s->obuf + s->olen, buf, n);
+        s->olen += n;
+        return;
+    }
     const char *p = buf;
     long stalled = 0;
     while (n) {
@@ -177,7 +217,45 @@ void rfb_damage(rfb_server *s, int x, int y, int w, int h) {
     if (x + w > s->w) w = s->w - x;
     if (y + h > s->h) h = s->h - y;
     if (w <= 0 || h <= 0) return;
-    if (s->nrects >= RFB_MAX_DAMAGE) { rfb_damage_full(s); return; }
+    /* Drop exact repeats and rects inside one we already have, and absorb
+     * existing rects the new one covers: apps damage per request (xtiny per
+     * drawing call), so one video frame — Xlib splits a big PutImage into
+     * several requests — used to queue the same window rect many times,
+     * re-encoding it for each, and overflow into a full frame. */
+    for (int i = 0; i < s->nrects; i++) {
+        int rx = s->rects[i].x, ry = s->rects[i].y, rw = s->rects[i].w, rh = s->rects[i].h;
+        if (x >= rx && y >= ry && x + w <= rx + rw && y + h <= ry + rh) return;
+        if (rx >= x && ry >= y && rx + rw <= x + w && ry + rh <= y + h) {
+            s->rects[i] = s->rects[--s->nrects];
+            i--;
+        }
+    }
+    /* Union with a rect when that wastes nothing (stacked bands of one
+     * window: a big PutImage arrives as many row bands) or, once the list
+     * is full, with whichever rect the union wastes least on — a full
+     * frame would resend everything, exact. */
+    {
+        int best = -1;
+        long best_waste = 0;
+        for (int i = 0; i < s->nrects; i++) {
+            int rx = s->rects[i].x, ry = s->rects[i].y, rw = s->rects[i].w, rh = s->rects[i].h;
+            int ux = x < rx ? x : rx, uy = y < ry ? y : ry;
+            int ux1 = x + w > rx + rw ? x + w : rx + rw, uy1 = y + h > ry + rh ? y + h : ry + rh;
+            long waste = (long)(ux1 - ux) * (uy1 - uy) - (long)w * h - (long)rw * rh;
+            if (best < 0 || waste < best_waste) { best = i; best_waste = waste; }
+        }
+        if (best >= 0 && (best_waste <= 0 || s->nrects >= RFB_MAX_DAMAGE)) {
+            int rx = s->rects[best].x, ry = s->rects[best].y;
+            int rx1 = rx + s->rects[best].w, ry1 = ry + s->rects[best].h;
+            if (x < rx) rx = x;
+            if (y < ry) ry = y;
+            if (x + w > rx1) rx1 = x + w;
+            if (y + h > ry1) ry1 = y + h;
+            s->rects[best].x = rx; s->rects[best].y = ry;
+            s->rects[best].w = rx1 - rx; s->rects[best].h = ry1 - ry;
+            return;
+        }
+    }
     s->rects[s->nrects].x = x;
     s->rects[s->nrects].y = y;
     s->rects[s->nrects].w = w;
@@ -712,6 +790,228 @@ static void send_rect(rfb_server *s, int x, int y, int w, int h) {
     }
 }
 
+/* ── JPEG path ───────────────────────────────────────────────────────────── */
+static void send_fbu_hdr(rfb_server *s, int nrect);
+/* With a viewer that speaks LJPG, every update is cut on an absolute TILE
+ * grid. Each piece (tile ∩ damage rect) is classified by colour variety:
+ * photographic content (video, photos, 3D frames — hundreds of distinct
+ * colours) goes out as JPEG, everything else (text, chrome, the banded
+ * desktop) stays exact RRE/raw. Neighbouring pieces of the same kind merge
+ * into larger rects, so a video window is one JPEG, not forty. A tile sent
+ * as JPEG is remembered, and once it has been still for REPAIR_MS it is
+ * resent exactly (REPAIR_MS) — moving pictures stay cheap, anything that stops changing
+ * (a paused frame, chrome beside a video) sharpens. */
+static int is_photo(rfb_server *s, int x, int y, int w, int h) {
+    if (w * h < 2048) return 0;            /* not worth a JPEG header */
+    uint32_t set[1024];
+    memset(set, 0, sizeof set);
+    int n = 0, step = 1;
+    while ((w / step) * (h / step) > 1536) step++;
+    for (int yy = y; yy < y + h; yy += step) {
+        const uint8_t *row = s->fb + ((size_t)yy * s->w) * FB_BPP;
+        for (int xx = x; xx < x + w; xx += step) {
+            uint32_t px;
+            memcpy(&px, row + (size_t)xx * FB_BPP, 4);
+            uint32_t key = (px & 0xffffff) + 1;
+            uint32_t hsh = ((px & 0xffffff) * 2654435761u) >> 22;   /* 10 bits */
+            while (set[hsh] && set[hsh] != key) hsh = (hsh + 1) & 1023;
+            if (!set[hsh]) {
+                set[hsh] = key;
+                if (++n > 240) return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+typedef struct { uint8_t *p; size_t n, cap; } jpg_buf;
+static void jpg_write(void *ctx, void *data, int size) {
+    jpg_buf *b = ctx;
+    if (b->n + (size_t)size > b->cap) {
+        size_t nc = b->cap ? b->cap * 2 : 32768;
+        while (nc < b->n + (size_t)size) nc *= 2;
+        uint8_t *np = realloc(b->p, nc);
+        if (!np) return;
+        b->p = np; b->cap = nc;
+    }
+    memcpy(b->p + b->n, data, (size_t)size);
+    b->n += (size_t)size;
+}
+
+/* Big photo rects are encoded at 1/k resolution (box-filtered) and the
+ * viewer stretches the picture back over the rect: a maximised video is
+ * upscaled from a small source anyway, and encode time + bytes drop k². */
+#define LJPG_MAX_PIXELS (640 * 400)
+
+static int send_jpeg_rect(rfb_server *s, int x, int y, int w, int h) {
+    int k = 1;
+    while ((long)(w / k) * (h / k) > LJPG_MAX_PIXELS && k < 4) k++;
+    int jw = (w + k - 1) / k, jh = (h + k - 1) / k;
+    uint8_t *rgb = malloc((size_t)jw * jh * 3);
+    if (!rgb) return 0;
+    for (int j = 0; j < jh; j++) {
+        uint8_t *dst = rgb + (size_t)j * jw * 3;
+        for (int i = 0; i < jw; i++) {             /* BGRA → RGB, k×k average */
+            unsigned sb = 0, sg = 0, sr = 0, n = 0;
+            for (int v = 0; v < k && j * k + v < h; v++) {
+                const uint8_t *src = s->fb + ((size_t)(y + j * k + v) * s->w + x + i * k) * FB_BPP;
+                for (int u = 0; u < k && i * k + u < w; u++, n++) {
+                    sb += src[u*4]; sg += src[u*4+1]; sr += src[u*4+2];
+                }
+            }
+            dst[i*3] = (uint8_t)(sr / n); dst[i*3+1] = (uint8_t)(sg / n); dst[i*3+2] = (uint8_t)(sb / n);
+        }
+    }
+    jpg_buf b = {0};
+    int ok = stbi_write_jpg_to_func(jpg_write, &b, jw, jh, 3, rgb, LJPG_QUALITY);
+    free(rgb);
+    if (!ok || !b.n) { free(b.p); return 0; }
+    send_rect_hdr(s, x, y, w, h, RFB_ENC_LJPG);
+    uint32_t len = htonl((uint32_t)b.n);
+    write_all(s, &len, 4);
+    write_all(s, b.p, b.n);
+    free(b.p);
+    return 1;
+}
+
+static void tiles_alloc(rfb_server *s) {
+    free(s->tlossy); free(s->tdmg);
+    s->tcols = (s->w + TILE - 1) / TILE;
+    s->trows = (s->h + TILE - 1) / TILE;
+    s->tlossy = calloc((size_t)s->tcols * s->trows, 1);
+    s->tdmg = calloc((size_t)s->tcols * s->trows, sizeof(uint64_t));
+}
+
+static void piece_push(rfb_server *s, int x, int y, int w, int h, int photo) {
+    if (s->npc >= s->cpc) {
+        int nc = s->cpc ? s->cpc * 2 : 256;
+        rfb_piece *np = realloc(s->pcs, sizeof(rfb_piece) * (size_t)nc);
+        if (!np) return;
+        s->pcs = np; s->cpc = nc;
+    }
+    s->pcs[s->npc++] = (rfb_piece){ x, y, w, h, photo };
+}
+
+/* Cut rect (x,y,w,h) on the tile grid. Photo pieces of one tile row merge
+ * left-to-right, and a run joins a photo piece of an earlier row of the
+ * same rect when the spans match and it ends where this row starts. Exact
+ * pieces stay tile-sized: each picks RRE or raw on its own, so one tile of
+ * video can't push a whole merged band to raw. With force_exact every
+ * piece is lossless (full frames, repairs). */
+static void cut_rect(rfb_server *s, int x, int y, int w, int h, int force_exact) {
+    int rect0 = s->npc;
+    /* Judge the whole rect first: a video frame is photographic as a whole
+     * even where a single tile of smooth gradient isn't, and one JPEG beats
+     * a JPEG patchwork with raw tiles in between. Mixed rects (a web page
+     * with pictures) also land here; the repair pass sharpens them once
+     * they stop changing. */
+    if (!force_exact && is_photo(s, x, y, w, h)) {
+        piece_push(s, x, y, w, h, 1);
+        return;
+    }
+    for (int ty = y / TILE; ty * TILE < y + h; ty++) {
+        int py = ty * TILE > y ? ty * TILE : y;
+        int py1 = (ty + 1) * TILE < y + h ? (ty + 1) * TILE : y + h;
+        int row0 = s->npc;
+        for (int tx = x / TILE; tx * TILE < x + w; tx++) {
+            int px = tx * TILE > x ? tx * TILE : x;
+            int px1 = (tx + 1) * TILE < x + w ? (tx + 1) * TILE : x + w;
+            int photo = !force_exact && is_photo(s, px, py, px1 - px, py1 - py);
+            rfb_piece *last = s->npc > row0 ? &s->pcs[s->npc - 1] : NULL;
+            if (photo && last && last->photo && last->x + last->w == px)
+                last->w += px1 - px;
+            else
+                piece_push(s, px, py, px1 - px, py1 - py, photo);
+        }
+        int keep = row0;
+        for (int i = row0; i < s->npc; i++) {
+            rfb_piece c = s->pcs[i];
+            int merged = 0;
+            for (int j = rect0; j < row0; j++) {
+                rfb_piece *u = &s->pcs[j];
+                if (c.photo && u->photo && u->x == c.x && u->w == c.w && u->y + u->h == c.y) {
+                    u->h += c.h; merged = 1; break;
+                }
+            }
+            if (!merged) s->pcs[keep++] = c;
+        }
+        s->npc = keep;
+    }
+    /* Mostly photographic (a video frame, whose edge pieces are too thin to
+     * classify on their own)? Then the whole rect is one JPEG. */
+    if (!force_exact) {
+        long area = 0, photo = 0;
+        for (int i = rect0; i < s->npc; i++) {
+            long a = (long)s->pcs[i].w * s->pcs[i].h;
+            area += a;
+            if (s->pcs[i].photo) photo += a;
+        }
+        if (photo > 0 && photo * 10 >= area * 6) {
+            s->npc = rect0;
+            piece_push(s, x, y, w, h, 1);
+        }
+    }
+}
+
+static void tile_mark(rfb_server *s, int x, int y, int w, int h, int what, uint64_t now) {
+    for (int ty = y / TILE; ty * TILE < y + h && ty < s->trows; ty++)
+        for (int tx = x / TILE; tx * TILE < x + w && tx < s->tcols; tx++) {
+            size_t t = (size_t)ty * s->tcols + tx;
+            if (what == 0) s->tdmg[t] = now;                 /* damaged */
+            else if (what == 1) s->tlossy[t] = 1;            /* went out as JPEG */
+        }
+}
+
+/* Build + send one update on the JPEG path. full: whole fb is damaged. */
+static int send_update_ljpg(rfb_server *s, int full) {
+    if (!s->tlossy || s->tcols != (s->w + TILE - 1) / TILE || s->trows != (s->h + TILE - 1) / TILE)
+        tiles_alloc(s);
+    uint64_t now = rfb_now_ms();
+    s->npc = 0;
+    if (full) {
+        /* Full frames (connect, window drags, resizes) go out exact: on a
+         * full frame a tile can mix a video with the chrome beside it, and
+         * the video would keep "damaging" that tile, so its chrome would
+         * never get the quiet spell a repair waits for. The video turns
+         * lossy again with its next ordinary update. */
+        tile_mark(s, 0, 0, s->w, s->h, 0, now);
+        memset(s->tlossy, 0, (size_t)s->tcols * s->trows);
+        cut_rect(s, 0, 0, s->w, s->h, 1);
+    } else {
+        for (int i = 0; i < s->nrects; i++) {
+            tile_mark(s, s->rects[i].x, s->rects[i].y, s->rects[i].w, s->rects[i].h, 0, now);
+            cut_rect(s, s->rects[i].x, s->rects[i].y, s->rects[i].w, s->rects[i].h, 0);
+        }
+    }
+    /* repairs: lossy tiles that have been still long enough */
+    for (int ty = 0; ty < s->trows; ty++)
+        for (int tx = 0; tx < s->tcols; tx++) {
+            size_t t = (size_t)ty * s->tcols + tx;
+            if (!s->tlossy[t] || now - s->tdmg[t] < REPAIR_MS) continue;
+            s->tlossy[t] = 0;
+            int x = tx * TILE, y = ty * TILE;
+            int w = x + TILE <= s->w ? TILE : s->w - x;
+            int h = y + TILE <= s->h ? TILE : s->h - y;
+            cut_rect(s, x, y, w, h, 1);
+        }
+    if (s->npc == 0 && !s->eds_pending) return 0;
+
+    s->buffering = 1;
+    s->olen = 0;
+    send_fbu_hdr(s, s->npc);
+    for (int i = 0; i < s->npc; i++) {
+        rfb_piece *p = &s->pcs[i];
+        if (p->photo && send_jpeg_rect(s, p->x, p->y, p->w, p->h))
+            tile_mark(s, p->x, p->y, p->w, p->h, 1, now);
+        else
+            send_rect(s, p->x, p->y, p->w, p->h);
+    }
+    s->buffering = 0;
+    write_all(s, s->obuf, s->olen);
+    s->olen = 0;
+    return 1;
+}
+
 static void send_fbu_hdr(rfb_server *s, int nrect) {
     if (s->eds_pending) nrect++;
     uint8_t hdr[4] = {0, 0, (uint8_t)(nrect >> 8), (uint8_t)nrect};
@@ -783,6 +1083,8 @@ static void serve_client(rfb_server *s) {
     s->cursor = -1;      /* new viewer: next rfb_set_cursor really sends */
     s->eds_ok = 0;       /* re-announced if this viewer supports it */
     s->eds_pending = 0;
+    s->ljpg_ok = 0;      /* ditto the JPEG path */
+    free(s->tlossy); s->tlossy = NULL;
     if (s->cfg.on_connect) s->cfg.on_connect(s);
 
     s->saw_fbreq = 0;
@@ -808,6 +1110,7 @@ static void serve_client(rfb_server *s) {
                  * (reason 0); that is the viewer's cue that SetDesktopSize
                  * is understood here. Only for apps that can resize — and
                  * never revoked: the Bell nudge answer is an empty list. */
+                if (enc == (int32_t)RFB_ENC_LJPG) s->ljpg_ok = 1;
                 if (enc == -308 && s->cfg.on_resize && !s->eds_ok) {
                     s->eds_ok = 1;
                     s->eds_pending = 1;
@@ -824,7 +1127,15 @@ static void serve_client(rfb_server *s) {
              * then send only what changed. */
             if (s->cfg.render) s->cfg.render(s);
             int sent = 1;
-            if (!incr || s->full) {
+            if (s->ljpg_ok) {
+                sent = send_update_ljpg(s, !incr || s->full);
+                if (!sent) {                        /* legal empty update */
+                    uint8_t hdr[4] = {0, 0, 0, 0};
+                    write_all(s, hdr, 4);
+                }
+                s->full = 0;
+                s->nrects = 0;
+            } else if (!incr || s->full) {
                 send_fbu_full(s);
                 s->full = 0;
                 s->nrects = 0;

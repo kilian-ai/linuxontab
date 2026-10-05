@@ -107,6 +107,7 @@ typedef struct {
     rfb_winframe frame;
     char title[64];
     int creator;
+    int put_scale;              /* _LOT_PUTIMAGE_SCALE: PutImage pixels are k×k blocks */
     struct { uint32_t atom, type; uint8_t fmt; uint32_t n;
              uint8_t data[512]; } props[MAX_PROPS];
     int nprops;
@@ -374,6 +375,19 @@ static void damage_window(XWindow *w) {
     int ox, oy;
     win_origin(w, &ox, &oy);
     rfb_damage(X.srv, ox, oy, w->w, w->h);
+}
+
+/* Just part of a window (window coordinates). */
+static void damage_window_rect(XWindow *w, int x, int y, int rw, int rh) {
+    if (!X.srv || !win_visible(w)) return;
+    if (x < 0) { rw += x; x = 0; }
+    if (y < 0) { rh += y; y = 0; }
+    if (x + rw > w->w) rw = w->w - x;
+    if (y + rh > w->h) rh = w->h - y;
+    if (rw <= 0 || rh <= 0) return;
+    int ox, oy;
+    win_origin(w, &ox, &oy);
+    rfb_damage(X.srv, ox + x, oy + y, rw, rh);
 }
 
 /* ── drawables ────────────────────────────────────────────────────────────── */
@@ -841,6 +855,8 @@ static void set_prop(XWindow *w, uint32_t atom, uint32_t type, uint8_t fmt,
     w->nprops++;
 }
 
+static uint32_t atom_by_name(const char *name);
+
 /* Slide a top-level's frame back onto the screen. Toolkits create their
  * shell window at 1x1 and grow it before mapping (xterm does), so the
  * placement check at CreateWindow sees nothing to clamp — check again
@@ -1161,6 +1177,14 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
         uint8_t fmt = r[16];
         uint32_t n = g32(r, 20);
         set_prop(w, prop, type, fmt, r[1], r + 24, n);
+        /* _LOT_PUTIMAGE_SCALE (CARDINAL/32, k = 1..4): a video player sends
+         * frames at 1/k size and every pixel lands as a k×k block at window
+         * position (dst*k) — k² less data through the socket than an
+         * upscaled frame. xtiny-only; lotplay checks the server vendor. */
+        if (fmt == 32 && n >= 1 && prop == atom_by_name("_LOT_PUTIMAGE_SCALE")) {
+            int k = (int)g32(r, 24);
+            w->put_scale = k >= 1 && k <= 4 ? k : 1;
+        }
         if (prop == 39 && w->toplevel) {          /* WM_NAME → frame title */
             uint32_t bytes = n * (fmt / 8);
             if (bytes > sizeof w->title - 1) bytes = sizeof w->title - 1;
@@ -1635,12 +1659,41 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
         int dx = gs16(r, 16), dy = gs16(r, 18);
         int depth = r[21];
         if (format == 2 && (depth == 24 || depth == 32)) {
+            /* Clipped row copies: a video player pushes megabytes of these
+             * per second, so no per-pixel calls. Only the drawn rows are
+             * damaged — Xlib splits a big image into many requests, and
+             * damaging the whole window for each re-sent all of it. */
             int stride = w * 4;
-            for (int j = 0; j < h; j++)
-                for (int i = 0; i < w; i++)
-                    dput(&d, dx + i, dy + j,
-                         g32(r, 24 + j * stride + i * 4) & 0xffffff);
-            if (d.win) damage_window(d.win);
+            int k = d.win && d.win->put_scale > 1 ? d.win->put_scale : 1;
+            if (k > 1 && d.px) {                  /* scaled: k×k blocks */
+                for (int j = 0; j < h; j++) {
+                    const uint8_t *src = r + 24 + j * stride;
+                    for (int v = 0; v < k; v++) {
+                        int y = (dy + j) * k + v;
+                        if ((unsigned)y >= (unsigned)d.h) continue;
+                        uint32_t *row = d.px + (size_t)y * d.w;
+                        for (int i = 0; i < w; i++) {
+                            uint32_t px = (uint32_t)src[i*4] | (uint32_t)src[i*4+1] << 8 |
+                                          (uint32_t)src[i*4+2] << 16;
+                            int x = (dx + i) * k;
+                            for (int u = 0; u < k; u++)
+                                if ((unsigned)(x + u) < (unsigned)d.w) row[x + u] = px;
+                        }
+                    }
+                }
+                if (d.win) damage_window_rect(d.win, dx * k, dy * k, w * k, h * k);
+                break;
+            }
+            int i0 = dx < 0 ? -dx : 0, i1 = dx + w > d.w ? d.w - dx : w;
+            int j0 = dy < 0 ? -dy : 0, j1 = dy + h > d.h ? d.h - dy : h;
+            if (d.px && i0 < i1)
+                for (int j = j0; j < j1; j++) {
+                    const uint8_t *src = r + 24 + j * stride + i0 * 4;
+                    uint32_t *dst = d.px + (size_t)(dy + j) * d.w + dx + i0;
+                    for (int i = 0; i < i1 - i0; i++, src += 4)
+                        dst[i] = (uint32_t)src[0] | (uint32_t)src[1] << 8 | (uint32_t)src[2] << 16;
+                }
+            if (d.win) damage_window_rect(d.win, dx, dy, w, h);
         } else {
             printf("[xtiny] PutImage format=%d depth=%d ignored\n",
                    format, depth);
@@ -2191,6 +2244,7 @@ static const App BUILTIN_APPS[] = {
     { "calc",    "Calculator",     "A pocket calculator",          "lot-calc",                   "xtiny-apps", 0, 0x4A6FA5, 0, 0 },
     { "nano",    "nano",           "Text editor in a terminal",    "nano",                       "nano",     1, 0x5E3A80, 0, 0 },
     { "python3", "Python",         "Python 3.11 interpreter",      "python3",                    "python3",  1, 0x3776AB, 0, 0 },
+    { "lotplay", "Videos",         "Video player (ffmpeg)",        "lotplay",                    "lotplay",  0, 0xE63946, 0, 0 },
     { "wolf3d",  "Wolfenstein 3D", "Shareware episode 1",          "wolf3d",                     "wolf3d",   0, 0x9B1C1C, 0, 0 },
     { "tetris",  "Tetris",         "vitetris, in colour",          "tetris",                     "vitetris", 1, 0xC77700, 0, 0 },
     { "xeyes",   "Eyes",           "Eyes that follow the pointer", "xeyes",                      "xeyes",    0, 0x5A5F69, 0, 0 },

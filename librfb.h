@@ -5,8 +5,10 @@
  * framebuffer in render(), reports what changed via rfb_damage(), and
  * receives input through callbacks. The library owns everything else:
  * the RFB handshake and message loop, damage-rect delivery with RRE
- * compression, request pacing, and the nonblocking-I/O discipline the
- * WASM kernel needs (see librfb.c wire-helpers comment).
+ * compression (plus JPEG for video-like regions when the viewer is ours —
+ * see the JPEG path in librfb.c), desktop resizing, request pacing, and
+ * the nonblocking-I/O discipline the WASM kernel needs (see librfb.c
+ * wire-helpers comment).
  *
  * The browser side (shell/wasm.html "X display" panel) is a generic RFB
  * client — anything built on this library appears there unmodified.
