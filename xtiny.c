@@ -62,9 +62,11 @@ pid_t fork(void);
  * input buffer must hold it, or the request is rejected as malformed and the
  * client dropped. */
 #define MAX_REQ_BYTES (0xffff * 4)
-#define MAX_WINDOWS  64
-#define MAX_PIXMAPS  64
-#define MAX_GCS      64
+/* Toolkit apps are resource-hungry: FOX (Xfe) makes every widget an X
+ * window and gives each icon an image pixmap plus a shape bitmap. */
+#define MAX_WINDOWS  1024
+#define MAX_PIXMAPS  4096
+#define MAX_GCS      512
 #define MAX_DYNATOMS 256
 #define MAX_PROPS    12
 
@@ -118,12 +120,15 @@ typedef struct {
     int w, h;
     uint32_t *px;
     int creator;
+    int depth;                  /* 1: bitmap, px holds 0/1 */
 } XPixmap;
 
 typedef struct {
     uint32_t id;                /* 0 = free */
     uint32_t fg, bg;
     int creator;
+    uint32_t clip;              /* clip-mask bitmap, 0 = None */
+    int clip_x, clip_y;         /* clip origin */
 } XGC;
 
 typedef struct {
@@ -329,6 +334,16 @@ static uint32_t keycode_to_keysym(uint8_t code) {
     return 0;
 }
 
+/* ── selections ───────────────────────────────────────────────────────────── */
+typedef struct { uint32_t atom, owner; } Selection;
+static Selection selections[16];
+static Selection *sel_find(uint32_t atom, int create) {
+    for (int i = 0; i < 16; i++) if (selections[i].atom == atom && atom) return &selections[i];
+    if (!create) return NULL;
+    for (int i = 0; i < 16; i++) if (!selections[i].atom) { selections[i].atom = atom; return &selections[i]; }
+    return NULL;
+}
+
 /* ── resource lookup ──────────────────────────────────────────────────────── */
 static XWindow *find_win(uint32_t id) {
     if (!id) return NULL;
@@ -412,6 +427,17 @@ static void dput(Drawable *d, int x, int y, uint32_t pix) {
     if (!d->px || (unsigned)x >= (unsigned)d->w || (unsigned)y >= (unsigned)d->h)
         return;
     d->px[y * d->w + x] = pix;
+}
+/* GC clip mask (SetClipMask/clip origin): FOX draws icons with transparency
+ * as a CopyArea through their shape bitmap. Outside the mask = clipped. */
+static XPixmap *find_pix(uint32_t id);
+static int gc_clip_ok(const XGC *gc, int x, int y) {
+    if (!gc || !gc->clip) return 1;
+    XPixmap *m = find_pix(gc->clip);
+    if (!m || !m->px) return 1;
+    int mx = x - gc->clip_x, my = y - gc->clip_y;
+    if ((unsigned)mx >= (unsigned)m->w || (unsigned)my >= (unsigned)m->h) return 0;
+    return m->px[my * m->w + mx] != 0;
 }
 static void dfill_rect(Drawable *d, int x, int y, int w, int h, uint32_t pix) {
     for (int j = 0; j < h; j++)
@@ -1245,9 +1271,65 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
         break;
     }
 
+    /* Selections (clipboard, PRIMARY, drag and drop): track owners and
+     * route ConvertSelection to the owner as a SelectionRequest; the owner
+     * answers the requestor through SendEvent(SelectionNotify). */
+    case 22: { /* SetSelectionOwner */
+        uint32_t owner = g32(r, 4), atom = g32(r, 8), t = g32(r, 12);
+        Selection *sel = sel_find(atom, 1);
+        if (!sel) break;
+        XWindow *ow = find_win(owner);
+        if (sel->owner && sel->owner != owner) {          /* tell the old owner */
+            XWindow *old = find_win(sel->owner);
+            XClient *oc = old ? win_client(old) : NULL;
+            if (oc) {
+                uint8_t ev[32]; memset(ev, 0, sizeof ev);
+                ev[0] = 29;                               /* SelectionClear */
+                p32(ev, 4, t); p32(ev, 8, sel->owner); p32(ev, 12, atom);
+                send_event(oc, ev);
+            }
+        }
+        sel->owner = ow ? owner : 0;
+        if (!sel->owner) sel->atom = 0;
+        break;
+    }
     case 23: { /* GetSelectionOwner */
+        Selection *sel = sel_find(g32(r, 4), 0);
         uint8_t b[24]; memset(b, 0, sizeof b);
-        send_reply(c, 0, b, NULL, 0);             /* owner = None */
+        if (sel && find_win(sel->owner)) p32(b, 0, sel->owner);
+        send_reply(c, 0, b, NULL, 0);
+        break;
+    }
+    case 24: { /* ConvertSelection */
+        uint32_t req = g32(r, 4), atom = g32(r, 8), target = g32(r, 12), prop = g32(r, 16), t = g32(r, 20);
+        Selection *sel = sel_find(atom, 0);
+        XWindow *ow = sel ? find_win(sel->owner) : NULL;
+        XClient *oc = ow ? win_client(ow) : NULL;
+        uint8_t ev[32]; memset(ev, 0, sizeof ev);
+        if (oc) {
+            ev[0] = 30;                                   /* SelectionRequest */
+            p32(ev, 4, t); p32(ev, 8, sel->owner); p32(ev, 12, req);
+            p32(ev, 16, atom); p32(ev, 20, target); p32(ev, 24, prop);
+            send_event(oc, ev);
+        } else {
+            ev[0] = 31;                                   /* SelectionNotify: no owner */
+            p32(ev, 4, t); p32(ev, 8, req); p32(ev, 12, atom); p32(ev, 16, target);
+            send_event(c, ev);
+        }
+        break;
+    }
+    case 25: { /* SendEvent — deliver to the destination window's client
+                * (PointerWindow/InputFocus resolve to the focus window) */
+        uint32_t dest = g32(r, 4);
+        if (dest == 0 || dest == 1) dest = X.focus;
+        XWindow *w = find_win(dest);
+        XClient *dc = w ? win_client(w) : NULL;
+        if (dc) {
+            uint8_t ev[32];
+            memcpy(ev, r + 12, 32);
+            ev[0] |= 0x80;                                /* sent by SendEvent */
+            send_event(dc, ev);
+        }
         break;
     }
 
@@ -1436,6 +1518,7 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
         slot->id = pid; slot->w = w > 0 ? w : 1; slot->h = h > 0 ? h : 1;
         slot->px = calloc((size_t)slot->w * slot->h, 4);
         slot->creator = (int)(c - X.cl);
+        slot->depth = r[1];
         break;
     }
     case 54: { /* FreePixmap */
@@ -1459,6 +1542,9 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
             uint32_t v = g32(r, vo); vo += 4;
             if (bit == 2) slot->fg = v & 0xffffff;
             if (bit == 3) slot->bg = v & 0xffffff;
+            if (bit == 17) slot->clip_x = (int16_t)v;
+            if (bit == 18) slot->clip_y = (int16_t)v;
+            if (bit == 19) slot->clip = v;
         }
         break;
     }
@@ -1472,12 +1558,18 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
             uint32_t v = g32(r, vo); vo += 4;
             if (bit == 2) gc->fg = v & 0xffffff;
             if (bit == 3) gc->bg = v & 0xffffff;
+            if (bit == 17) gc->clip_x = (int16_t)v;
+            if (bit == 18) gc->clip_y = (int16_t)v;
+            if (bit == 19) gc->clip = v;
         }
         break;
     }
     case 57: { /* CopyGC */
         XGC *src = find_gc(g32(r, 4)), *dst = find_gc(g32(r, 8));
-        if (src && dst) { dst->fg = src->fg; dst->bg = src->bg; }
+        if (src && dst) {
+            dst->fg = src->fg; dst->bg = src->bg;
+            dst->clip = src->clip; dst->clip_x = src->clip_x; dst->clip_y = src->clip_y;
+        }
         break;
     }
     case 59: break; /* SetClipRectangles — ignore */
@@ -1532,9 +1624,11 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
                              (unsigned)fy < (unsigned)src.h)
                                 ? src.px[fy * src.w + fx] : 0;
                     }
+                XGC *gc = find_gc(g32(r, 12));
                 for (int j = 0; j < h; j++)
                     for (int i = 0; i < w; i++)
-                        dput(&dst, dx + i, dy + j, tmp[j * w + i]);
+                        if (gc_clip_ok(gc, dx + i, dy + j))
+                            dput(&dst, dx + i, dy + j, tmp[j * w + i]);
                 free(tmp);
             }
         }
@@ -1544,6 +1638,42 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
         ev[0] = 14;                                /* NoExpose */
         p32(ev, 4, g32(r, 8));
         ev[10] = 62;
+        send_event(c, ev);
+        break;
+    }
+
+    case 63: { /* CopyPlane — one bit-plane of src, as GC foreground/background
+                * (FOX draws bitmaps and check marks this way) */
+        Drawable src, dst;
+        XGC *gc = find_gc(g32(r, 12));
+        if (!resolve_drawable(g32(r, 4), &src) ||
+            !resolve_drawable(g32(r, 8), &dst)) { send_error(c, 9, 0, op); return; }
+        if (!gc) { send_error(c, 13, g32(r, 12), op); return; }
+        int sx = gs16(r, 16), sy = gs16(r, 18);
+        int dx = gs16(r, 20), dy = gs16(r, 22);
+        int w = g16(r, 24), h = g16(r, 26);
+        uint32_t plane = g32(r, 28);
+        if (src.px && w > 0 && h > 0) {
+            uint8_t *bits = malloc((size_t)w * h);     /* src may be dst */
+            if (bits) {
+                for (int j = 0; j < h; j++)
+                    for (int i = 0; i < w; i++) {
+                        int fx = sx + i, fy = sy + j;
+                        bits[j * w + i] = (unsigned)fx < (unsigned)src.w && (unsigned)fy < (unsigned)src.h &&
+                                          (src.px[fy * src.w + fx] & plane);
+                    }
+                for (int j = 0; j < h; j++)
+                    for (int i = 0; i < w; i++)
+                        if (gc_clip_ok(gc, dx + i, dy + j))
+                            dput(&dst, dx + i, dy + j, bits[j * w + i] ? gc->fg : gc->bg);
+                free(bits);
+            }
+        }
+        if (dst.win) damage_window(dst.win);
+        uint8_t ev[32]; memset(ev, 0, sizeof ev);
+        ev[0] = 14;                                /* NoExpose */
+        p32(ev, 4, g32(r, 8));
+        ev[10] = 63;
         send_event(c, ev);
         break;
     }
@@ -1693,6 +1823,23 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
                     for (int i = 0; i < i1 - i0; i++, src += 4)
                         dst[i] = (uint32_t)src[0] | (uint32_t)src[1] << 8 | (uint32_t)src[2] << 16;
                 }
+            if (d.win) damage_window_rect(d.win, dx, dy, w, h);
+        } else if (depth == 1 && format <= 2) {
+            /* Bitmaps: XYBitmap (format 0) paints GC fg/bg; XYPixmap and
+             * ZPixmap of depth 1 carry the pixel values 0/1 themselves (what
+             * depth-1 pixmaps — icon masks — store). LSB-first bit order,
+             * 32-bit scanline pad, as announced in the connection setup. */
+            XGC *gc = find_gc(g32(r, 8));
+            int left = r[20];
+            int stride = ((w + left + 31) / 32) * 4;
+            for (int j = 0; j < h; j++) {
+                const uint8_t *row = r + 24 + j * stride;
+                for (int i = 0; i < w; i++) {
+                    int b = (row[(i + left) >> 3] >> ((i + left) & 7)) & 1;
+                    uint32_t px = format == 0 ? (gc ? (b ? gc->fg : gc->bg) : (b ? 1u : 0u)) : (uint32_t)b;
+                    if (gc_clip_ok(gc, dx + i, dy + j)) dput(&d, dx + i, dy + j, px);
+                }
+            }
             if (d.win) damage_window_rect(d.win, dx, dy, w, h);
         } else {
             printf("[xtiny] PutImage format=%d depth=%d ignored\n",
