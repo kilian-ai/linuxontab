@@ -827,11 +827,11 @@
       "status": "available"
     },
     "xtiny": {
-      "version": "1.5.0",
+      "version": "1.6.0",
       "description": "Tiny X11 server + desktop on :5900 for real X clients (xterm, netsurf, wolf3d) with an Apps menu; open the X display panel",
-      "url": "https://linuxontab.com/packages/xtiny-1.5.0.tar.gz",
-      "size": 98826,
-      "sha256": "d383d1867f904ed29a55368e2cb295b40b818699c0defc3db3f8d0a7ac22614c",
+      "url": "https://linuxontab.com/packages/xtiny-1.6.0.tar.gz",
+      "size": 99837,
+      "sha256": "8f24c8729fceff18aecc96fee20d6fa626bb4db51de32b2a8cb0d695a0546eda",
       "bins": [
         "xtiny"
       ],
@@ -913,11 +913,11 @@
       "status": "available"
     },
     "lotplay": {
-      "version": "1.0.0",
-      "description": "Video player for the X desktop (ffmpeg decode, video only) \u2014 Apps menu \u2192 Videos",
-      "url": "https://linuxontab.com/packages/lotplay-1.0.0.tar.gz",
-      "size": 2243889,
-      "sha256": "8eec80b823e60b86a03256327456e715f80973f146039994bc49d65de814d83c",
+      "version": "1.1.0",
+      "description": "Video player for the X desktop (ffmpeg decode, with sound via xtiny) \u2014 Apps menu \u2192 Videos",
+      "url": "https://linuxontab.com/packages/lotplay-1.1.0.tar.gz",
+      "size": 2888051,
+      "sha256": "3987eb2d018a7a5ad8367bb5c91e3d6a09c86fa60862d8538677e2713948179d",
       "bins": [
         "lotplay"
       ],
