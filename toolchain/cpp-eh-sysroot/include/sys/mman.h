@@ -18,7 +18,7 @@ extern "C" {
 
 #define MAP_FAILED ((void *) -1)
 
-#ifndef __wasm__
+#if 1 /* cpp-eh-sysroot: mmap comes from sysroot/wasm_mmap.c */
 #define MAP_SHARED     0x01
 #define MAP_PRIVATE    0x02
 #define MAP_SHARED_VALIDATE 0x03

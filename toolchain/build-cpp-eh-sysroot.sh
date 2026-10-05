@@ -33,6 +33,12 @@ FLAGS="-O2 -matomics -mbulk-memory -fwasm-exceptions"
 # 1. start from the fixed musl sysroot (libc.a with the brk + alloc_meta fixes)
 rm -rf "$OUT"; mkdir -p "$OUT"
 cp -R "$HERE/musl-sysroot-fixed/include" "$HERE/musl-sysroot-fixed/lib" "$OUT/"
+# declare mmap & co. on wasm too (musl hides the whole API behind
+# #ifndef __wasm__): ports built here link sysroot/wasm_mmap.c, which
+# implements it in userspace
+sed -i.bak 's|^#ifndef __wasm__$|#if 1 /* cpp-eh-sysroot: mmap comes from sysroot/wasm_mmap.c */|' "$OUT/include/sys/mman.h"
+rm -f "$OUT/include/sys/mman.h.bak"
+grep -q "cpp-eh-sysroot: mmap" "$OUT/include/sys/mman.h" || { echo "ERROR: sys/mman.h guard not found"; exit 1; }
 
 # 2. libunwind: for wasm EH only Unwind-wasm.c is needed (the unwinding itself
 #    is done by the engine; this is the _Unwind_* glue libc++abi calls)

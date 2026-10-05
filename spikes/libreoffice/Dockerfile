@@ -13,7 +13,10 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
       libnss3-dev libcups2-dev libssl-dev zlib1g-dev libexpat1-dev \
       libjpeg-dev libpng-dev libicu-dev libboost-dev libltdl-dev \
       libx11-dev libxext-dev libxrender-dev libxrandr-dev libxinerama-dev libxt-dev \
-      libkrb5-dev ccache rsync file wabt binaryen \
+      libkrb5-dev ccache rsync file wabt binaryen procps \
+ && rm -rf /var/lib/apt/lists/*
+# the build side builds harfbuzz with meson + ninja
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ninja-build meson \
  && rm -rf /var/lib/apt/lists/*
 RUN for t in clang clang++ lld wasm-ld llvm-ar llvm-ranlib llvm-nm llvm-objcopy llvm-strip; do \
       ln -sf /usr/bin/$t-19 /usr/local/bin/$t 2>/dev/null || true; done; \

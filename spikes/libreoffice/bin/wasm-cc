@@ -1,0 +1,67 @@
+#!/bin/sh
+# C/C++ compiler driver for LibreOffice (and its stack) -> wasm32 on the
+# LinuxOnTab kernel. Installed as wasm-cc and wasm-c++ (the name picks the
+# language).
+#   compile: clang --target=wasm32 + toolchain/cpp-eh-sysroot, wasm exceptions,
+#            native wasm setjmp/longjmp, the Linux/Unix predefines clang does
+#            not set for an unknown-OS wasm target, the guest's X11 headers
+#   link:    crt1 + the sysroot shims (per-thread stacks/TLS, locked dlmalloc,
+#            userspace mmap, binary128 long double, setjmp runtime, 1 GiB+
+#            memory opt-in) + libc++/abi/unwind/libc
+SYSROOT="${LOT_SYSROOT:-/lot/toolchain/cpp-eh-sysroot}"
+SHIMS="${LOT_SHIMS:-/work/shims}"
+XPREFIX="${LOT_XPREFIX:-/work/xprefix}"
+case "$(basename "$0")" in *++) DRV=clang++ ;; *) DRV=clang ;; esac
+
+# Drop what a wasm32 target cannot take, for compiles and links alike:
+# ELF-only linker options that build systems add for "Linux" (rpaths, -z
+# origin, version scripts, sonames, --as-needed, --start/--end-group:
+# wasm-ld resolves archives regardless of order) and x86 SIMD flags.
+for a in "$@"; do
+  shift
+  case "$a" in
+    -Wl,--start-group|-Wl,--end-group|--start-group|--end-group) continue ;;
+    -Wl,*rpath*|-Wl,-z,origin|-Wl,-zorigin|-Wl,-z,defs|-Wl,-z,combreloc|-Wl,-z,relro|-Wl,-z,now|-Wl,-z,noexecstack) continue ;;
+    -Wl,--hash-style=*|-Wl,--as-needed|-Wl,--no-as-needed|-Wl,--version-script=*|-Wl,--version-script|-Wl,-soname,*|-Wl,-Bsymbolic*|-Wl,--no-undefined|-Wl,--enable-new-dtags|-Wl,--build-id*|-Wl,-O1|-Wl,--gc-sections) continue ;;
+    -mavx*|-mno-avx*|-msse*|-mno-sse*|-mssse3|-mpopcnt|-mfma|-mf16c|-mbmi*|-mlzcnt|-mfpmath=*|-march=*|-mtune=*|-mpclmul|-maes) continue ;;
+  esac
+  set -- "$@" "$a"
+done
+
+mode=link
+for a in "$@"; do
+  case "$a" in -c|-E|-S|-M|-MM|-fsyntax-only|--version|-v|-dumpversion|-dumpmachine|-print-*) mode=compile ;; esac
+done
+COMMON="--target=wasm32-unknown-unknown --sysroot=$SYSROOT -matomics -mbulk-memory -fwasm-exceptions -pthread"
+DEFS="-D__linux__ -D__linux -D__unix__ -D__unix -D__gnu_linux__"
+# the guest's X11 client headers, searched last, as /usr/include would be
+[ -d "$XPREFIX/include" ] && DEFS="$DEFS -idirafter $XPREFIX/include"
+if [ $mode = compile ]; then
+  exec $DRV $COMMON $DEFS -mllvm -wasm-enable-sjlj "$@"
+fi
+
+# No shared libraries on wasm: third-party makefiles that build a .so next to
+# the static library they are used for (argon2...) get an empty placeholder.
+for a in "$@"; do
+  if [ "$a" = "-shared" ]; then
+    out=; prev=
+    for b in "$@"; do [ "$prev" = "-o" ] && out="$b"; prev="$b"; done
+    echo "wasm-cc: no shared libraries on wasm32; writing an empty ${out:-a.out}" >&2
+    : > "${out:-a.out}"
+    exit 0
+  fi
+done
+# a compile-and-link in one step still needs the setjmp lowering for its sources
+SJLJ=
+for a in "$@"; do
+  case "$a" in *.c|*.cc|*.cpp|*.cxx|*.C|*.m|*.mm) SJLJ="-mllvm -wasm-enable-sjlj"; break ;; esac
+done
+BUILTINS="$SYSROOT/lib/clang/19/lib/wasm32-unknown-linux-musl/libclang_rt.builtins.a"
+exec $DRV $COMMON $DEFS $SJLJ -nostdlib -fuse-ld=lld \
+  -Wl,--import-memory -Wl,--export-memory -Wl,--export-table -Wl,--shared-memory \
+  -Wl,--export=__heap_base -Wl,--export=__data_end -Wl,--table-base=2 \
+  -Wl,--max-memory=${LOT_MAX_MEMORY:-2147483648} -Wl,-z,stack-size=${LOT_STACK:-8388608} \
+  "$SYSROOT/lib/crt1.o" -L"$XPREFIX/lib" "$@" \
+  "$SHIMS/wasm_dlmalloc_mt.o" "$SHIMS/wasm_clone.o" "$SHIMS/wasm_mmap.o" "$SHIMS/wasm_ld128.o" \
+  "$SHIMS/sjlj_rt.o" "$SHIMS/lot_big_memory.o" "$SHIMS/wasm_syscall_cp.o" \
+  -lc++ -lc++abi -lunwind -lc -lm "$SHIMS/libforkenosys.a" "$BUILTINS"

@@ -1,0 +1,715 @@
+diff --git a/Repository.mk b/Repository.mk
+index 3a9b342e6..fd5e18e38 100644
+--- a/Repository.mk
++++ b/Repository.mk
+@@ -33,7 +33,7 @@ $(eval $(call gb_Helper_register_executables,NONE, \
+ 	concat-deps \
+ 	cpp \
+ 	cppunittester \
+-	$(if $(or $(filter EMSCRIPTEN,$(BUILD_TYPE_FOR_HOST)),$(filter EMSCRIPTEN,$(OS))),embindmaker wasmbridgegen) \
++	$(if $(or $(filter EMSCRIPTEN WASM32_LINUX,$(BUILD_TYPE_FOR_HOST)),$(filter EMSCRIPTEN,$(OS)),$(filter WASM32,$(CPUNAME))),embindmaker wasmbridgegen) \
+ 	gbuildtojson \
+ 	$(if $(filter MSC,$(COM)), \
+ 		gcc-wrapper \
+diff --git a/RepositoryModule_build.mk b/RepositoryModule_build.mk
+index c39b65cf9..6a12be340 100644
+--- a/RepositoryModule_build.mk
++++ b/RepositoryModule_build.mk
+@@ -47,7 +47,7 @@ $(eval $(call gb_Module_add_moduledirs,cross_toolset,\
+ 	shell \
+ 	solenv \
+ 	soltools \
+-	$(if $(filter EMSCRIPTEN,$(BUILD_TYPE_FOR_HOST)),static) \
++	$(if $(filter EMSCRIPTEN WASM32_LINUX,$(BUILD_TYPE_FOR_HOST)),static) \
+ 	stoc \
+ 	store \
+ 	tools \
+diff --git a/bridges/CustomTarget_gcc3_wasm.mk b/bridges/CustomTarget_gcc3_wasm.mk
+index 15506e0d1..237dc3277 100644
+--- a/bridges/CustomTarget_gcc3_wasm.mk
++++ b/bridges/CustomTarget_gcc3_wasm.mk
+@@ -13,8 +13,14 @@ $(eval $(call gb_CustomTarget_register_targets,bridges/gcc3_wasm, \
+     generated-cxx.cxx \
+     generated-asm.s \
+     exports \
++    rtti-table.cxx \
+ ))
+ 
++$(gb_CustomTarget_workdir)/bridges/gcc3_wasm/rtti-table.cxx: \
++        $(gb_CustomTarget_workdir)/bridges/gcc3_wasm/exports \
++        $(SRCDIR)/bridges/source/cpp_uno/gcc3_wasm/make-rtti-table.sh
++	sh $(SRCDIR)/bridges/source/cpp_uno/gcc3_wasm/make-rtti-table.sh $< > $@
++
+ $(gb_CustomTarget_workdir)/bridges/gcc3_wasm/generated-asm.s \
+ $(gb_CustomTarget_workdir)/bridges/gcc3_wasm/generated-cxx.cxx \
+ $(gb_CustomTarget_workdir)/bridges/gcc3_wasm/exports: \
+diff --git a/bridges/Library_cpp_uno.mk b/bridges/Library_cpp_uno.mk
+index 94f17f014..7b0d99d0a 100644
+--- a/bridges/Library_cpp_uno.mk
++++ b/bridges/Library_cpp_uno.mk
+@@ -95,6 +95,23 @@ $(eval $(call gb_Library_use_static_libraries,$(CPPU_ENV)_uno, \
+ ))
+ endif
+ 
++else ifeq ($(CPUNAME),WASM32)
++
++# Linux on wasm32 (LinuxOnTab): the Emscripten wasm bridge, with RTTI found
++# through a generated table instead of JavaScript (see make-rtti-table.sh)
++bridges_SELECTED_BRIDGE := gcc3_wasm
++bridge_exception_objects := abi cpp2uno uno2cpp
++$(eval $(call gb_Library_add_generated_asmobjects,$(CPPU_ENV)_uno, \
++    CustomTarget/bridges/gcc3_wasm/generated-asm \
++))
++$(eval $(call gb_Library_add_generated_exception_objects,$(CPPU_ENV)_uno, \
++    CustomTarget/bridges/gcc3_wasm/generated-cxx \
++    CustomTarget/bridges/gcc3_wasm/rtti-table \
++))
++$(eval $(call gb_Library_use_static_libraries,$(CPPU_ENV)_uno, \
++    emscriptencxxabi \
++))
++
+ else ifeq ($(CPUNAME),M68K)
+ 
+ ifneq ($(filter DRAGONFLY FREEBSD LINUX NETBSD OPENBSD,$(OS)),)
+diff --git a/bridges/Module_bridges.mk b/bridges/Module_bridges.mk
+index a8a07c0e3..4fb22d636 100644
+--- a/bridges/Module_bridges.mk
++++ b/bridges/Module_bridges.mk
+@@ -21,7 +21,7 @@ $(eval $(call gb_Module_add_targets,bridges,\
+ 		$(if $(filter ANDROID LINUX,$(OS)),\
+ 			CustomTarget_gcc3_linux_arm) \
+ 	) \
+-	$(if $(filter EMSCRIPTEN,$(OS)), \
++	$(if $(or $(filter EMSCRIPTEN,$(OS)),$(filter WASM32,$(CPUNAME))), \
+ 	    CustomTarget_gcc3_wasm \
+ 	    StaticLibrary_emscriptencxxabi \
+ 	) \
+diff --git a/bridges/inc/vtablefactory.hxx b/bridges/inc/vtablefactory.hxx
+index 9afcb8370..ec19be3fa 100644
+--- a/bridges/inc/vtablefactory.hxx
++++ b/bridges/inc/vtablefactory.hxx
+@@ -32,8 +32,10 @@
+ #if defined(LINUX) || defined(OPENBSD) || defined(FREEBSD) \
+     || defined(NETBSD) || defined(DRAGONFLY) || defined (ANDROID) \
+     || defined(HAIKU)
++#if !defined __wasm__
+ #define USE_DOUBLE_MMAP
+ #endif
++#endif
+ 
+ namespace bridges::cpp_uno::shared {
+ 
+diff --git a/bridges/source/cpp_uno/gcc3_wasm/cpp2uno.cxx b/bridges/source/cpp_uno/gcc3_wasm/cpp2uno.cxx
+index 000a364e0..0ee648132 100644
+--- a/bridges/source/cpp_uno/gcc3_wasm/cpp2uno.cxx
++++ b/bridges/source/cpp_uno/gcc3_wasm/cpp2uno.cxx
+@@ -12,7 +12,9 @@
+ #include <cstring>
+ #include <typeinfo>
+ 
++#if defined __EMSCRIPTEN__
+ #include <emscripten.h>
++#endif
+ 
+ #include <com/sun/star/uno/RuntimeException.hpp>
+ #include <o3tl/string_view.hxx>
+@@ -29,6 +31,11 @@
+ 
+ #include "abi.hxx"
+ 
++#if !defined __EMSCRIPTEN__
++// Linux on wasm32: a table generated from wasmbridgegen's exports list
++extern "C" void* lo_wasm_getExportedSymbol(char const* name);
++static void* jsGetExportedSymbol(char const* name) { return lo_wasm_getExportedSymbol(name); }
++#else
+ EM_JS(void*, jsGetExportedSymbol, (char const* name),
+       // clang-format off
+ {
+@@ -37,6 +44,7 @@ EM_JS(void*, jsGetExportedSymbol, (char const* name),
+ }
+       // clang-format on
+ );
++#endif
+ 
+ using bridges::cpp_uno::shared::VtableFactory;
+ 
+diff --git a/bridges/source/cpp_uno/gcc3_wasm/make-rtti-table.sh b/bridges/source/cpp_uno/gcc3_wasm/make-rtti-table.sh
+new file mode 100644
+index 000000000..4688a3ef5
+--- /dev/null
++++ b/bridges/source/cpp_uno/gcc3_wasm/make-rtti-table.sh
+@@ -0,0 +1,27 @@
++#!/bin/sh
++# Generate the gcc3_wasm bridge's RTTI lookup table for Linux on wasm32.
++# The Emscripten build finds exception type_info objects by name through
++# JavaScript (EM_JS jsGetExportedSymbol over the module's exports); a plain
++# wasm module has no such lookup, so map the names wasmbridgegen lists in its
++# "exports" file to weak references to the symbols. The file uses Emscripten's
++# export spelling (an extra leading underscore: __ZTI...); the symbols and the
++# names the bridge looks up are _ZTI.... A type whose RTTI is not
++# linked in resolves to null, and the bridge then synthesizes one, exactly as
++# when the Emscripten lookup misses.
++#   sh make-rtti-table.sh <exports> > rtti-table.cxx
++set -eu
++echo '// generated by bridges/source/cpp_uno/gcc3_wasm/make-rtti-table.sh -- do not edit'
++echo '#include <cstring>'
++while read -r s; do
++  [ -n "$s" ] && echo "extern \"C\" __attribute__((weak)) char const ${s#_}[];"
++done < "$1"
++echo 'namespace { struct Entry { char const* name; void const* rtti; };'
++echo 'Entry const table[] = {'
++while read -r s; do
++  [ -n "$s" ] && echo "    { \"${s#_}\", ${s#_} },"
++done < "$1"
++echo '    { nullptr, nullptr } }; }'
++echo 'extern "C" void* lo_wasm_getExportedSymbol(char const* name) {'
++echo '    for (Entry const* e = table; e->name != nullptr; ++e)'
++echo '        if (std::strcmp(e->name, name) == 0) return const_cast<void*>(e->rtti);'
++echo '    return nullptr; }'
+diff --git a/configure.ac b/configure.ac
+index cfe03b87e..4509a2133 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -1049,6 +1049,18 @@ linux-gnu*|k*bsd*-gnu*|linux-musl*)
+     if test "$enable_fuzzers" = yes; then
+         test_system_freetype=no
+     fi
++    if test "$host_cpu" = wasm32; then
++        # Linux on WebAssembly (the LinuxOnTab kernel): one statically
++        # linked module, no dlopen, no fork; X11 through the guest's server.
++        usable_dlapi=no
++        build_skia=no
++        test_gdb_index=no
++        test_split_debug=no
++        test_system_freetype=no
++        enable_compiler_plugins=no
++        enable_customtarget_components=yes
++        with_system_zlib=no
++    fi
+     _os=Linux
+     ;;
+ 
+@@ -3542,8 +3554,8 @@ else
+     SCPDEFS="$SCPDEFS -DDISABLE_SCRIPTING"
+ fi
+ 
+-if test $_os = iOS -o $_os = Android -o $_os = Emscripten; then
+-    # Disable dynamic_loading always for iOS and Android
++if test $_os = iOS -o $_os = Android -o $_os = Emscripten -o "$host_cpu" = wasm32; then
++    # Disable dynamic_loading always for iOS, Android and WebAssembly
+     enable_dynamic_loading=no
+ elif test -z "$enable_dynamic_loading"; then
+     # Otherwise enable it unless specifically disabled
+@@ -3566,6 +3578,10 @@ else
+ fi
+ AC_SUBST(DISABLE_DYNLOADING)
+ 
++if test "$host_cpu" = wasm32 -a "$_os" = Linux; then
++    BUILD_TYPE="$BUILD_TYPE WASM32_LINUX"
++fi
++
+ ENABLE_CUSTOMTARGET_COMPONENTS=
+ if test "$enable_customtarget_components" = yes -a "$DISABLE_DYNLOADING" = TRUE; then
+     ENABLE_CUSTOMTARGET_COMPONENTS=TRUE
+@@ -5615,6 +5631,12 @@ linux-gnu*|linux-musl*)
+ 
+     case "$host_cpu" in
+ 
++    wasm32)
++        CPUNAME=WASM32
++        RTL_ARCH=WASM32
++        PLATFORMID=linux_wasm32
++        ;;
++
+     aarch64)
+         CPUNAME=AARCH64
+         PLATFORMID=linux_aarch64
+@@ -6307,7 +6329,7 @@ if test "$cross_compiling" = "yes"; then
+     test "$enable_wasm_strip" = "yes" && sub_conf_opts="$sub_conf_opts --enable-wasm-strip"
+     test "${with_system_lockfile+set}" = set && sub_conf_opts="$sub_conf_opts --with-system-lockfile=${with_system_lockfile}"
+     test "${enable_fuzzers}" = yes && sub_conf_opts="$sub_conf_opts --without-system-libxml"
+-    if test "$_os" = "Emscripten"; then
++    if test "$_os" = "Emscripten" -o "$host_cpu" = wasm32; then
+         sub_conf_opts="$sub_conf_opts --without-system-libxml --without-system-fontconfig --without-system-freetype --without-system-zlib"
+     fi
+     # windows uses full-internal python and that in turn relies on openssl, so also enable openssl
+@@ -14843,7 +14865,7 @@ if test "$USING_X11" = TRUE; then
+         XINERAMA_LINK=dynamic
+     elif test -e "$XINERAMALIB/libXinerama.a"; then
+         # static version
+-        if echo $host_cpu | $GREP -E 'i[[3456]]86' 2>/dev/null >/dev/null; then
++        if echo $host_cpu | $GREP -E 'i[[3456]]86|wasm32' 2>/dev/null >/dev/null; then
+             USE_XINERAMA=TRUE
+             XINERAMA_LINK=static
+         else
+diff --git a/external/cppunit/ExternalProject_cppunit.mk b/external/cppunit/ExternalProject_cppunit.mk
+index f0b4ff06a..c170bad9c 100644
+--- a/external/cppunit/ExternalProject_cppunit.mk
++++ b/external/cppunit/ExternalProject_cppunit.mk
+@@ -41,7 +41,7 @@ $(call gb_ExternalProject_get_state_target,cppunit,build) :
+ 	$(call gb_ExternalProject_run,build,\
+ 		$(gb_RUN_CONFIGURE) ./configure \
+ 			--disable-dependency-tracking \
+-			$(if $(filter TRUE,$(DISABLE_DYNLOADING)),--disable-shared,--disable-static) \
++			$(if $(filter TRUE,$(DISABLE_DYNLOADING)),--disable-shared,$(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static)) \
+ 			--disable-doxygen \
+ 			--disable-html-docs \
+ 			--disable-latex-docs \
+diff --git a/external/curl/ExternalProject_curl.mk b/external/curl/ExternalProject_curl.mk
+index f31c671bb..a4d39f0bf 100644
+--- a/external/curl/ExternalProject_curl.mk
++++ b/external/curl/ExternalProject_curl.mk
+@@ -55,7 +55,7 @@ $(call gb_ExternalProject_get_state_target,curl,build):
+ 			$(if $(filter iOS MACOSX,$(OS)),--with-apple-sectrust) \
+ 			$(if $(filter LINUX,$(OS)),--without-ca-bundle --without-ca-path) \
+ 			$(gb_CONFIGURE_PLATFORMS) \
+-			$(if $(filter TRUE,$(DISABLE_DYNLOADING)),--disable-shared,--disable-static) \
++			$(if $(filter TRUE,$(DISABLE_DYNLOADING)),--disable-shared,$(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static)) \
+ 			$(if $(ENABLE_DEBUG),--enable-debug) \
+ 			$(if $(verbose),--disable-silent-rules,--enable-silent-rules) \
+ 			$(if $(filter MACOSX,$(OS)),--prefix=/@.__________________________________________________OOO) \
+diff --git a/external/firebird/ExternalProject_firebird.mk b/external/firebird/ExternalProject_firebird.mk
+index 140a66244..fbe68ea4c 100644
+--- a/external/firebird/ExternalProject_firebird.mk
++++ b/external/firebird/ExternalProject_firebird.mk
+@@ -82,7 +82,7 @@ $(call gb_ExternalProject_get_state_target,firebird,build):
+ 			$(if $(DISABLE_DYNLOADING), \
+ 				--enable-static --disable-shared \
+ 			, \
+-				--enable-shared --disable-static \
++				--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static) \
+ 			) \
+ 			$(if $(HAVE_LIBCPP),CXX='$(CXX) -D_LIBCPP_ENABLE_CXX17_REMOVED_AUTO_PTR') \
+ 		&& LC_ALL=C $(MAKE) \
+diff --git a/external/fontconfig/ExternalProject_fontconfig.mk b/external/fontconfig/ExternalProject_fontconfig.mk
+index 6ac0b4691..417e94945 100644
+--- a/external/fontconfig/ExternalProject_fontconfig.mk
++++ b/external/fontconfig/ExternalProject_fontconfig.mk
+@@ -44,6 +44,7 @@ $(call gb_ExternalProject_get_state_target,fontconfig,build) :
+ 				--disable-shared \
+ 				ac_cv_va_copy=no \
+ 			) \
++			$(if $(filter WASM32,$(CPUNAME)),ac_cv_va_copy=C99) \
+ 			$(if $(filter EMSCRIPTEN,$(OS)), \
+ 				--disable-shared \
+ 			    --with-baseconfigdir=/instdir/share/fontconfig \
+@@ -55,7 +56,7 @@ $(call gb_ExternalProject_get_state_target,fontconfig,build) :
+ 			$(if $(filter FUZZERS,$(BUILD_TYPE)), \
+ 				--disable-shared, \
+ 				$(if $(filter LINUX,$(OS)), \
+-					--disable-static \
++					$(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static) \
+ 					--prefix=/ \
+ 					--with-add-fonts=$(fontconfig_add_fonts) \
+ 					--with-cache-dir=/usr/lib/fontconfig/cache \
+diff --git a/external/gpgmepp/ExternalProject_gpgmepp.mk b/external/gpgmepp/ExternalProject_gpgmepp.mk
+index d2733bf21..f9c396e5f 100644
+--- a/external/gpgmepp/ExternalProject_gpgmepp.mk
++++ b/external/gpgmepp/ExternalProject_gpgmepp.mk
+@@ -67,7 +67,7 @@ $(call gb_ExternalProject_get_state_target,gpgmepp,build):
+ 					-Wl$(COMMA)-rpath$(COMMA)\$$$$ORIGIN') \
+ 		   $(gb_CONFIGURE_PLATFORMS) \
+ 		   $(if $(filter MACOSX,$(OS)),--prefix=/@.__________________________________________________OOO) \
+-	           $(if $(filter TRUE,$(DISABLE_DYNLOADING)),--disable-shared,--disable-static) \
++	           $(if $(filter TRUE,$(DISABLE_DYNLOADING)),--disable-shared,$(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static)) \
+ 	  && $(MAKE) \
+ 	  $(if $(filter MACOSX,$(OS)),\
+ 		  && $(PERL) $(SRCDIR)/solenv/bin/macosx-change-install-names.pl shl OOO \
+diff --git a/external/icu/ExternalProject_icu.mk b/external/icu/ExternalProject_icu.mk
+index d7b45f4c0..b4f7d17f0 100644
+--- a/external/icu/ExternalProject_icu.mk
++++ b/external/icu/ExternalProject_icu.mk
+@@ -80,7 +80,7 @@ $(call gb_ExternalProject_get_state_target,icu,build) :
+ 			$(if $(filter SOLARIS,$(OS)),--disable-64bit-libs) \
+ 			$(if $(filter TRUE,$(DISABLE_DYNLOADING)),\
+ 				--with-data-packaging=static --enable-static --disable-shared --disable-dyload,\
+-				--disable-static --enable-shared $(if $(filter ANDROID,$(OS)),--with-library-suffix=lo)) \
++				$(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static) --enable-shared $(if $(filter ANDROID,$(OS)),--with-library-suffix=lo)) \
+ 			$(gb_CONFIGURE_PLATFORMS) \
+ 			$(if $(CROSS_COMPILING), \
+ 				--with-cross-build=$(WORKDIR_FOR_BUILD)/UnpackedTarball/icu/source \
+diff --git a/external/icu/UnpackedTarball_icu.mk b/external/icu/UnpackedTarball_icu.mk
+index 92777dd33..0d2ab7a7c 100644
+--- a/external/icu/UnpackedTarball_icu.mk
++++ b/external/icu/UnpackedTarball_icu.mk
+@@ -36,6 +36,7 @@ $(eval $(call gb_UnpackedTarball_add_patches,icu,\
+ 	external/icu/icu4c-windows-cygwin-cross.patch.1 \
+ 	external/icu/icu4c-emscripten-cross.patch.1 \
+ 	external/icu/icu4c-use-pkgdata-single-ccode-file-mode.patch.1 \
++	external/icu/icu4c-wasm32-linux.patch.1 \
+ 	external/icu/icu4c-khmerbreakengine.patch.1 \
+ 	external/icu/icu4c-$(if $(filter ANDROID,$(OS)),android,rpath).patch.1 \
+ 	$(if $(filter-out ANDROID,$(OS)),external/icu/icu4c-icudata-stdlibs.patch.1) \
+diff --git a/external/icu/icu4c-wasm32-linux.patch.1 b/external/icu/icu4c-wasm32-linux.patch.1
+new file mode 100644
+index 000000000..fb28bc96b
+--- /dev/null
++++ b/external/icu/icu4c-wasm32-linux.patch.1
+@@ -0,0 +1,12 @@
++--- icu/source/configure.ac
+++++ icu/source/configure.ac
++@@ -622,6 +622,9 @@
++ # Check to see if genccode can generate simple assembly.
++ GENCCODE_ASSEMBLY=
++ case "${host}" in
+++wasm32-*-linux*)
+++    # Linux on WebAssembly: no ELF assembler; genccode writes C instead
+++    ;;
++ *-linux*|*-kfreebsd*-gnu*|i*86-*-*bsd*|i*86-pc-gnu)
++     if test "$GCC" = yes; then
++         # We're using gcc, and the simple -a gcc command line works for genccode
+diff --git a/external/lcms2/ExternalProject_lcms2.mk b/external/lcms2/ExternalProject_lcms2.mk
+index 47d9089dc..faa5080f7 100644
+--- a/external/lcms2/ExternalProject_lcms2.mk
++++ b/external/lcms2/ExternalProject_lcms2.mk
+@@ -35,7 +35,7 @@ $(call gb_ExternalProject_get_state_target,lcms2,build):
+ 			$(if $(DISABLE_DYNLOADING), \
+ 				--enable-static --disable-shared \
+ 			, \
+-				--enable-shared --disable-static \
++				--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static) \
+ 			) \
+ 			$(if $(filter MACOSX,$(OS)),--prefix=/@.__________________________________________________OOO) \
+ 		&& cd src \
+diff --git a/external/libassuan/ExternalProject_libassuan.mk b/external/libassuan/ExternalProject_libassuan.mk
+index 364deeb71..e62a3bcf9 100644
+--- a/external/libassuan/ExternalProject_libassuan.mk
++++ b/external/libassuan/ExternalProject_libassuan.mk
+@@ -54,7 +54,7 @@ $(call gb_ExternalProject_get_state_target,libassuan,build):
+ 					-Wl$(COMMA)-rpath$(COMMA)\$$$$ORIGIN') \
+ 		   $(gb_CONFIGURE_PLATFORMS) \
+ 		   $(if $(filter MACOSX,$(OS)),--prefix=/@.__________________________________________________OOO) \
+-	           $(if $(filter TRUE,$(DISABLE_DYNLOADING)),--disable-shared,--disable-static) \
++	           $(if $(filter TRUE,$(DISABLE_DYNLOADING)),--disable-shared,$(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static)) \
+ 	  && $(MAKE) \
+ 	  $(if $(filter MACOSX,$(OS)),\
+ 		  && $(PERL) $(SRCDIR)/solenv/bin/macosx-change-install-names.pl shl OOO \
+diff --git a/external/libetonyek/ExternalProject_libetonyek.mk b/external/libetonyek/ExternalProject_libetonyek.mk
+index e0f2f3e08..69c5734dd 100644
+--- a/external/libetonyek/ExternalProject_libetonyek.mk
++++ b/external/libetonyek/ExternalProject_libetonyek.mk
+@@ -34,7 +34,7 @@ $(call gb_ExternalProject_get_state_target,libetonyek,build) :
+ 			$(if $(DISABLE_DYNLOADING), \
+ 				--enable-static --disable-shared \
+ 			, \
+-				--enable-shared --disable-static \
++				--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static) \
+ 			) \
+ 			--without-docs \
+ 			$(if $(ENABLE_DEBUG),--enable-debug,--disable-debug) \
+diff --git a/external/libffi/ExternalProject_libffi.mk b/external/libffi/ExternalProject_libffi.mk
+index b93fcd8b3..f4ce82182 100644
+--- a/external/libffi/ExternalProject_libffi.mk
++++ b/external/libffi/ExternalProject_libffi.mk
+@@ -14,7 +14,7 @@ $(eval $(call gb_ExternalProject_register_targets,libffi,\
+ ))
+ 
+ # set prefix so that it ends up in libffi.pc so that pkg-config in python3 works
+-# For a static Windows build, change CPPFLAGS to include -D_LIB and --disable-static
++# For a static Windows build, change CPPFLAGS to include -D_LIB and $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static)
+ # Also remove the ExternalPackage in that case
+ 
+ libffi_WIN_PLATFORM := $(strip \
+@@ -36,7 +36,7 @@ $(call gb_ExternalProject_get_state_target,libffi,build):
+ 				--with-pic \
+ 				--enable-portable-binary) \
+ 			$(if $(filter WNT,$(OS)), \
+-			    --disable-static \
++			    $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static) \
+ 			    CC="$(gb_UnpackedTarball_workdir)/libffi/msvcc.sh -m$(libffi_WIN_PLATFORM)" \
+ 			    CXX="$(gb_UnpackedTarball_workdir)/libffi/msvcc.sh -m$(libffi_WIN_PLATFORM)" \
+ 				LD='link' \
+diff --git a/external/libgpg-error/ExternalProject_libgpg-error.mk b/external/libgpg-error/ExternalProject_libgpg-error.mk
+index 88b9b2be5..cb7fae49b 100644
+--- a/external/libgpg-error/ExternalProject_libgpg-error.mk
++++ b/external/libgpg-error/ExternalProject_libgpg-error.mk
+@@ -43,7 +43,7 @@ $(call gb_ExternalProject_get_state_target,libgpg-error,build):
+ 			CPPFLAGS="$(SOLARINC)" \
+ 			$(gb_CONFIGURE_PLATFORMS) \
+ 			$(if $(filter MACOSX,$(OS)),--prefix=/@.__________________________________________________OOO) \
+-	                $(if $(filter TRUE,$(DISABLE_DYNLOADING)),--disable-shared,--disable-static) \
++	                $(if $(filter TRUE,$(DISABLE_DYNLOADING)),--disable-shared,$(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static)) \
+ 	  && $(MAKE) \
+ 	)
+ 	$(call gb_Trace_EndRange,libgpg-error,EXTERNAL)
+diff --git a/external/liblangtag/ExternalProject_liblangtag.mk b/external/liblangtag/ExternalProject_liblangtag.mk
+index 27d0a8bca..7f455f79e 100644
+--- a/external/liblangtag/ExternalProject_liblangtag.mk
++++ b/external/liblangtag/ExternalProject_liblangtag.mk
+@@ -23,7 +23,7 @@ $(call gb_ExternalProject_get_state_target,liblangtag,build):
+ 		unset MSYS_NO_PATHCONV && MAKE=$(MAKE) $(gb_RUN_CONFIGURE) ./configure --disable-modules --disable-test --disable-introspection --with-pic \
+ 		$(if $(or $(DISABLE_DYNLOADING),$(filter MSC,$(COM))), \
+ 			--disable-shared --enable-static --prefix=//usr/local, \
+-			--enable-shared --disable-static) \
++			--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static)) \
+ 		$(if $(verbose),--disable-silent-rules,--enable-silent-rules) \
+ 		$(if $(filter TRUE,$(HAVE_GCC_BUILTIN_ATOMIC)),"lt_cv_has_atomic=yes","lt_cv_has_atomic=no") \
+ 		$(if $(filter -fsanitize=undefined,$(CC)),CC='$(CC) -fno-sanitize=function') \
+diff --git a/external/libmwaw/ExternalProject_libmwaw.mk b/external/libmwaw/ExternalProject_libmwaw.mk
+index 59075c7b9..dc61641d3 100644
+--- a/external/libmwaw/ExternalProject_libmwaw.mk
++++ b/external/libmwaw/ExternalProject_libmwaw.mk
+@@ -28,7 +28,7 @@ $(call gb_ExternalProject_get_state_target,libmwaw,build) :
+ 			$(if $(DISABLE_DYNLOADING), \
+ 				--enable-static --disable-shared \
+ 			, \
+-				--enable-shared --disable-static \
++				--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static) \
+ 			) \
+ 			--without-docs \
+ 			--disable-tools \
+diff --git a/external/libodfgen/ExternalProject_libodfgen.mk b/external/libodfgen/ExternalProject_libodfgen.mk
+index c3df917c0..a573d8118 100644
+--- a/external/libodfgen/ExternalProject_libodfgen.mk
++++ b/external/libodfgen/ExternalProject_libodfgen.mk
+@@ -29,7 +29,7 @@ $(call gb_ExternalProject_get_state_target,libodfgen,build) :
+ 			$(if $(DISABLE_DYNLOADING), \
+ 				--enable-static --disable-shared \
+ 			, \
+-				--enable-shared --disable-static \
++				--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static) \
+ 			) \
+ 			$(if $(ENABLE_DEBUG),--enable-debug,--disable-debug) \
+ 			--disable-werror \
+diff --git a/external/liborcus/ExternalProject_liborcus.mk b/external/liborcus/ExternalProject_liborcus.mk
+index d6a955cc4..2dc99e47a 100644
+--- a/external/liborcus/ExternalProject_liborcus.mk
++++ b/external/liborcus/ExternalProject_liborcus.mk
+@@ -92,7 +92,7 @@ $(call gb_ExternalProject_get_state_target,liborcus,build) :
+ 			$(if $(DISABLE_DYNLOADING), \
+ 				--enable-static --disable-shared \
+ 			, \
+-				--enable-shared --disable-static \
++				--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static) \
+ 			) \
+                        $(if $(ENABLE_DEBUG),--enable-debug,--disable-debug) \
+                        --disable-spreadsheet-model \
+diff --git a/external/librevenge/ExternalProject_librevenge.mk b/external/librevenge/ExternalProject_librevenge.mk
+index 98a2236bb..f67ab6810 100644
+--- a/external/librevenge/ExternalProject_librevenge.mk
++++ b/external/librevenge/ExternalProject_librevenge.mk
+@@ -26,7 +26,7 @@ $(call gb_ExternalProject_get_state_target,librevenge,build) :
+ 			--with-pic \
+ 			$(if $(DISABLE_DYNLOADING), \
+ 				--disable-shared --enable-static, \
+-				--enable-shared --disable-static) \
++				--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static)) \
+ 			$(if $(ENABLE_DEBUG),--enable-debug,--disable-debug) \
+ 			--disable-werror \
+ 			--disable-weffc \
+diff --git a/external/libstaroffice/ExternalProject_libstaroffice.mk b/external/libstaroffice/ExternalProject_libstaroffice.mk
+index 4279b8323..da09405a4 100644
+--- a/external/libstaroffice/ExternalProject_libstaroffice.mk
++++ b/external/libstaroffice/ExternalProject_libstaroffice.mk
+@@ -27,7 +27,7 @@ $(call gb_ExternalProject_get_state_target,libstaroffice,build) :
+ 			$(if $(DISABLE_DYNLOADING), \
+ 				--enable-static --disable-shared \
+ 			, \
+-				--enable-shared --disable-static \
++				--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static) \
+ 			) \
+ 			--with-sharedptr=c++11 \
+ 			--without-docs \
+diff --git a/external/libwpd/ExternalProject_libwpd.mk b/external/libwpd/ExternalProject_libwpd.mk
+index 3317aecd7..e069e3cad 100644
+--- a/external/libwpd/ExternalProject_libwpd.mk
++++ b/external/libwpd/ExternalProject_libwpd.mk
+@@ -28,7 +28,7 @@ $(call gb_ExternalProject_get_state_target,libwpd,build) :
+ 			--with-pic \
+ 			$(if $(DISABLE_DYNLOADING), \
+ 				--disable-shared --enable-static, \
+-				--enable-shared --disable-static) \
++				--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static)) \
+ 			--without-docs \
+ 			--disable-tools \
+ 			--disable-debug \
+diff --git a/external/libwpg/ExternalProject_libwpg.mk b/external/libwpg/ExternalProject_libwpg.mk
+index dc6bdf7d6..ba083c697 100644
+--- a/external/libwpg/ExternalProject_libwpg.mk
++++ b/external/libwpg/ExternalProject_libwpg.mk
+@@ -28,7 +28,7 @@ $(call gb_ExternalProject_get_state_target,libwpg,build) :
+ 			--with-pic \
+ 			$(if $(DISABLE_DYNLOADING), \
+ 				--disable-shared --enable-static, \
+-				--enable-shared --disable-static) \
++				--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static)) \
+ 			--without-docs \
+ 			--disable-tools \
+ 			--disable-debug \
+diff --git a/external/libwps/ExternalProject_libwps.mk b/external/libwps/ExternalProject_libwps.mk
+index 5ff5997f6..2f9dac1ae 100644
+--- a/external/libwps/ExternalProject_libwps.mk
++++ b/external/libwps/ExternalProject_libwps.mk
+@@ -39,7 +39,7 @@ $(call gb_ExternalProject_get_state_target,libwps,build) :
+ 			$(if $(DISABLE_DYNLOADING), \
+ 				--enable-static --disable-shared \
+ 			, \
+-				--enable-shared --disable-static \
++				--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static) \
+ 			) \
+ 			--with-sharedptr=c++11 \
+ 			--without-docs \
+diff --git a/external/libxml2/ExternalProject_libxml2.mk b/external/libxml2/ExternalProject_libxml2.mk
+index da3511f30..01d0be74e 100644
+--- a/external/libxml2/ExternalProject_libxml2.mk
++++ b/external/libxml2/ExternalProject_libxml2.mk
+@@ -58,7 +58,7 @@ $(call gb_ExternalProject_get_state_target,libxml2,build):
+ 			CFLAGS="$(CFLAGS) \
+ 				$(if $(SYSBASE),-I$(SYSBASE)/usr/include) \
+ 				$(call gb_ExternalProject_get_build_flags,libxml2)" \
+-			$(if $(filter TRUE,$(DISABLE_DYNLOADING)),--disable-shared,--disable-static) \
++			$(if $(filter TRUE,$(DISABLE_DYNLOADING)),--disable-shared,$(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static)) \
+ 		&& $(MAKE) libxml2.la xmllint \
+ 	)
+ 	$(call gb_Trace_EndRange,libxml2,EXTERNAL)
+diff --git a/external/libxslt/ExternalProject_libxslt.mk b/external/libxslt/ExternalProject_libxslt.mk
+index dfbda70f4..8dcdceadd 100644
+--- a/external/libxslt/ExternalProject_libxslt.mk
++++ b/external/libxslt/ExternalProject_libxslt.mk
+@@ -40,7 +40,7 @@ $(call gb_ExternalProject_get_state_target,libxslt,build):
+ 			$(if $(SYSBASE),CPPFLAGS="-I$(SYSBASE)/usr/include") \
+ 			$(if $(filter TRUE,$(DISABLE_DYNLOADING)), \
+ 			$(if $(filter iOS,$(OS)),LIBS="-liconv") \
+-			--disable-shared,--disable-static) \
++			--disable-shared,$(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static)) \
+ 			$(if $(SYSTEM_LIBXML),,--with-libxml-src=$(gb_UnpackedTarball_workdir)/libxml2) \
+ 		&& chmod 777 xslt-config \
+ 		&& $(MAKE) \
+diff --git a/external/openssl/ExternalProject_openssl.mk b/external/openssl/ExternalProject_openssl.mk
+index a31945fab..80b298e5e 100644
+--- a/external/openssl/ExternalProject_openssl.mk
++++ b/external/openssl/ExternalProject_openssl.mk
+@@ -32,6 +32,7 @@ OPENSSL_PLATFORM := \
+         )\
+       ,\
+         $(if $(filter TRUE, $(ENABLE_DBGUTIL)), debug-linux-generic32, linux-generic32)\
++        $(if $(filter WASM32,$(CPUNAME)), no-apps no-asm no-secure-memory no-afalgeng)\
+       )\
+     )\
+   ,\
+diff --git a/external/redland/ExternalProject_raptor.mk b/external/redland/ExternalProject_raptor.mk
+index 4651be922..e603b440d 100644
+--- a/external/redland/ExternalProject_raptor.mk
++++ b/external/redland/ExternalProject_raptor.mk
+@@ -46,7 +46,7 @@ $(call gb_ExternalProject_get_state_target,raptor,build):
+ 			$(if $(DISABLE_DYNLOADING), \
+ 				--enable-static --disable-shared \
+ 			, \
+-				--enable-shared --disable-static \
++				--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static) \
+ 			) \
+ 			$(if $(SYSTEM_LIBXML),$(if $(filter-out MACOSX,$(OS)),--without-xml2-config),--with-xml2-config=$(gb_UnpackedTarball_workdir)/libxml2/xml2-config) \
+ 		&& $(MAKE) \
+diff --git a/external/redland/ExternalProject_rasqal.mk b/external/redland/ExternalProject_rasqal.mk
+index 3d0b522f6..c030fa6a1 100644
+--- a/external/redland/ExternalProject_rasqal.mk
++++ b/external/redland/ExternalProject_rasqal.mk
+@@ -42,7 +42,7 @@ $(call gb_ExternalProject_get_state_target,rasqal,build):
+ 			$(if $(DISABLE_DYNLOADING), \
+ 				--enable-static --disable-shared \
+ 			, \
+-				--enable-shared --disable-static \
++				--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static) \
+ 			) \
+ 			$(if $(SYSTEM_LIBXML),,--with-xml2-config=$(gb_UnpackedTarball_workdir)/libxml2/xml2-config) \
+ 		&& $(MAKE) \
+diff --git a/external/redland/ExternalProject_redland.mk b/external/redland/ExternalProject_redland.mk
+index fe6306a7f..bdd391282 100644
+--- a/external/redland/ExternalProject_redland.mk
++++ b/external/redland/ExternalProject_redland.mk
+@@ -46,7 +46,7 @@ $(call gb_ExternalProject_get_state_target,redland,build):
+ 			$(if $(DISABLE_DYNLOADING), \
+ 				--enable-static --disable-shared \
+ 			, \
+-				--enable-shared --disable-static \
++				--enable-shared $(if $(filter WASM32,$(CPUNAME)),--disable-shared --enable-static,--disable-static) \
+ 			) \
+ 		&& $(MAKE) \
+ 		$(if $(filter MACOSX,$(OS)),&& $(PERL) \
+diff --git a/sal/osl/unx/process.cxx b/sal/osl/unx/process.cxx
+index 7706541a3..32d854e77 100644
+--- a/sal/osl/unx/process.cxx
++++ b/sal/osl/unx/process.cxx
+@@ -18,6 +18,10 @@
+  */
+ 
+ #include <sal/config.h>
++#if defined __wasm__
++#include <sys/types.h>
++extern "C" pid_t fork(void);   // wasm32: fails with ENOSYS (no asyncify)
++#endif
+ #include <rtl/ustring.hxx>
+ #include "file_impl.hxx"
+ #include <cassert>
+diff --git a/solenv/gbuild/extensions/pre_BuildTools.mk b/solenv/gbuild/extensions/pre_BuildTools.mk
+index 8ea180faa..8e228ee4e 100644
+--- a/solenv/gbuild/extensions/pre_BuildTools.mk
++++ b/solenv/gbuild/extensions/pre_BuildTools.mk
+@@ -16,7 +16,7 @@ gb_BUILD_TOOLS_executables = \
+ 		climaker \
+ 		cpp \
+ 		cppumaker \
+-		$(if $(filter EMSCRIPTEN,$(BUILD_TYPE_FOR_HOST)),embindmaker wasmbridgegen) \
++		$(if $(filter EMSCRIPTEN WASM32_LINUX,$(BUILD_TYPE_FOR_HOST)),embindmaker wasmbridgegen) \
+ 		gencoll_rule \
+ 		genconv_dict \
+ 		$(if $(WITH_GALLERY_BUILD),gengal) \
+diff --git a/solenv/gbuild/platform/LINUX_WASM32_GCC.mk b/solenv/gbuild/platform/LINUX_WASM32_GCC.mk
+new file mode 100644
+index 000000000..7d6a0f2bb
+--- /dev/null
++++ b/solenv/gbuild/platform/LINUX_WASM32_GCC.mk
+@@ -0,0 +1,40 @@
++# -*- Mode: makefile-gmake; tab-width: 4; indent-tabs-mode: t -*-
++#
++# This file is part of the LibreOffice project.
++#
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++#
++# Linux on WebAssembly (wasm32, the LinuxOnTab kernel): every program is one
++# statically linked wasm module (DISABLE_DYNLOADING), C++ exceptions and
++# setjmp/longjmp use native wasm exception handling. The compiler drivers
++# (CC/CXX) add the target, sysroot and runtime objects; see
++# spikes/libreoffice/bin/wasm-cc in the LinuxOnTab repository.
++# Deliberately not based on linux.mk: -z defs, --hash-style and rpaths are
++# ELF linker options wasm-ld does not have.
++
++include $(GBUILDDIR)/platform/unxgcc.mk
++
++# One static module: no position-independent code, no stack protector
++# (like the Emscripten build), no ELF-only linker options.
++gb_CFLAGS := $(filter-out -fPIC,$(gb_CFLAGS))
++gb_CXXFLAGS := $(filter-out -fPIC,$(gb_CXXFLAGS))
++gb_LinkTarget_CFLAGS := $(filter-out -fPIC -fstack-protector-strong,$(gb_LinkTarget_CFLAGS)) -fno-stack-protector
++gb_LinkTarget_CXXFLAGS := $(filter-out -fPIC -fstack-protector-strong,$(gb_LinkTarget_CXXFLAGS)) -fno-stack-protector
++gb_LinkTarget_LDFLAGS := $(filter-out -fstack-protector-strong -Wl$(COMMA)-z$(COMMA)combreloc -Wl$(COMMA)-Bsymbolic-functions,$(gb_LinkTarget_LDFLAGS))
++
++gb_LinkTarget_EXCEPTIONFLAGS := -fwasm-exceptions
++gb_PrecompiledHeader_EXCEPTIONFLAGS := $(gb_LinkTarget_EXCEPTIONFLAGS)
++
++gb_LINKEROPTFLAGS :=
++gb_LINKERSTRIPDEBUGFLAGS :=
++gb_COMPILEROPTFLAGS := -O2
++
++define gb_Library_get_rpath
++endef
++
++define gb_Executable_get_rpath
++endef
++
++# vim: set noet sw=4 ts=4
+diff --git a/static/Module_static.mk b/static/Module_static.mk
+index 4c57b94d7..d3aece92b 100644
+--- a/static/Module_static.mk
++++ b/static/Module_static.mk
+@@ -27,7 +27,7 @@ endif
+ 
+ endif
+ 
+-ifneq ($(filter EMSCRIPTEN,$(BUILD_TYPE_FOR_HOST)),)
++ifneq ($(filter EMSCRIPTEN WASM32_LINUX,$(BUILD_TYPE_FOR_HOST)),)
+ $(eval $(call gb_Module_add_targets,static, \
+     Executable_embindmaker \
+     Executable_wasmbridgegen \
