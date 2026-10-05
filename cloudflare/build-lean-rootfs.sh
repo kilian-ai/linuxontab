@@ -285,6 +285,7 @@ nginx|nginx-demo
 httpd|httpd-demo
 spiel|spiel-demo
 trust|tty:trust
+xtiny|xtiny
 EOF
 
 # ── Lean motd ────────────────────────────────────────────────────────────────

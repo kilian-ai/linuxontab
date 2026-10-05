@@ -193,12 +193,13 @@ const BUILTINS = ['lean', 'redis', 'python3', 'nodejs', 'jq', 'nano', 'tmux', 'h
 // the image's package is installed.
 const BUILTIN_CMDS = { vitetris: 'tetris', htop: 'htop' };
 // The standard X desktop, listed right under lean: the lean boot plus xtiny
-// (apk pulls in xterm and xeyes), the X server started at the first prompt,
+// (apk pulls in xterm and xeyes), started by /etc/rc from the image's service
+// registry (xtiny|xtiny in /etc/lot-services.conf, log /tmp/svc-xtiny.log),
 // and the X display panel opening by itself once :5900 answers (?x).
 const XDISTRO = {
   name: 'xtiny', image: 'xtiny',
   what: 'the standard X desktop — lean boot + the xtiny X server with xterm and xeyes; the X display opens by itself',
-  extra: { x: '', cmd: 'xtiny > /tmp/xtiny.log 2>&1 &' },
+  extra: { x: '' },
 };
 // Web demos: the container installs + starts the server (lot-services.conf),
 // and the tab opens straight on the page it serves, menu hidden (?web + ?kiosk).
