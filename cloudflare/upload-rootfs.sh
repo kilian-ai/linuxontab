@@ -56,7 +56,8 @@ echo "live slot: '${CUR_SLOT:-none}' → uploading to slot '$SLOT'"
 PARTSRC="$SRC"
 if [ -n "${GZIP:-}" ]; then
   echo "compressing $(du -h "$SRC" | cut -f1)…"
-  gzip -9 -c "$SRC" > "$WORK/$IMAGE.gz"; PARTSRC="$WORK/$IMAGE.gz"
+  # gzip reads $GZIP as default options ("1" = a file name): hide ours
+  env -u GZIP gzip -9 -c "$SRC" > "$WORK/$IMAGE.gz"; PARTSRC="$WORK/$IMAGE.gz"
 fi
 echo "splitting $(du -h "$PARTSRC" | cut -f1) into ${PART_MB} MiB parts…"
 split -b "${PART_MB}m" "$PARTSRC" "$WORK/$IMAGE.part-"
