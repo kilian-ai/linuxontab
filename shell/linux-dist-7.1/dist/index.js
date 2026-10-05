@@ -1231,7 +1231,55 @@ var MachineTerminationReason = {
   Clean: 0,
   Panic: 1
 };
-var HALT_KERNEL = Symbol("halt kernel");
+function uncatchable_halt(label) {
+  const trap_module = new Uint8Array([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    4,
+    1,
+    96,
+    0,
+    0,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    116,
+    114,
+    97,
+    112,
+    0,
+    0,
+    10,
+    5,
+    1,
+    3,
+    0,
+    0,
+    11
+  ]);
+  try {
+    const trap = new WebAssembly.Instance(new WebAssembly.Module(trap_module)).exports.trap;
+    trap();
+  } catch (error) {
+    if (error instanceof Error) error.message = label;
+    return error;
+  }
+  return Symbol(label);
+}
+var HALT_KERNEL = uncatchable_halt("halt kernel");
+var worker_halted = false;
 function kernel_imports({
   is_worker,
   memory,
@@ -1249,6 +1297,7 @@ function kernel_imports({
     },
     halt_worker: () => {
       if (!is_worker) throw new Error("Halt called in main thread");
+      worker_halted = true;
       worker_exit();
       platform.quit();
       throw HALT_KERNEL;
@@ -1257,6 +1306,7 @@ function kernel_imports({
       if (!is_worker) {
         throw new Error("Machine termination called in main thread");
       }
+      worker_halted = true;
       terminate_machine(reason);
       throw HALT_KERNEL;
     },

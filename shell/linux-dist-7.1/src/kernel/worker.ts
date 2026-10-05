@@ -10,6 +10,8 @@ import { makeWaliImports } from "../lot/wali-bridge.js";
 import {
   allocate_shared_memory,
   HALT_KERNEL,
+  is_worker_halted,
+  uncatchable_halt,
   type Imports,
   type Instance,
   kernel_imports,
@@ -136,7 +138,7 @@ function user_imports({
   prepare(): void;
   imports: Imports["user"];
 } {
-  const HALT_USER = Symbol("halt user");
+  const HALT_USER = uncatchable_halt("halt user");
 // __NR_arch_specific_syscall (244) + 1: arch/wasm/include/uapi/asm/unistd.h
 const NR_WASM_GET_ARGS = 245;
 
@@ -264,6 +266,9 @@ const NR_WASM_GET_ARGS = 245;
       arg4: number,
       arg5: number,
     ) => {
+      // This thread already exited in the kernel; user code that caught the
+      // HALT_KERNEL unwind (catch (...), destructors) must not re-enter it.
+      if (is_worker_halted()) throw HALT_KERNEL;
       if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
       // NOMMU vfork from our asyncify-built C binaries (busybox hush runs every
       // external command as clone(fn, CLONE_VM|CLONE_VFORK|SIGCHLD)). With a

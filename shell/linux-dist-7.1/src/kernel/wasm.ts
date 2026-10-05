@@ -200,7 +200,42 @@ export interface Imports {
   };
 }
 
-export const HALT_KERNEL = Symbol("halt kernel");
+/**
+ * LinuxOnTab: a value to throw that unwinds through user wasm frames without
+ * being caught by them. Halts unwind through the user module (a thread that
+ * exits inside a syscall, a process replaced by exec), and wasm exception
+ * handling lets C++ `catch (...)`, cleanup pads and noexcept terminate pads
+ * catch any foreign JS value — a Symbol included: LibreOffice threads killed
+ * by exit_group caught the halt, ran on as dead tasks into std::terminate and
+ * re-entered the kernel (task_work_run then called the NULL work_exited
+ * sentinel). The error object a real trap produces stays uncatchable by wasm
+ * when JS rethrows it (V8), so the halt values are trap errors; where that
+ * isn't so it degrades to an ordinary throwable, as the Symbol was.
+ */
+export function uncatchable_halt(label: string): unknown {
+  // (module (func (export "trap") unreachable))
+  const trap_module = new Uint8Array([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x03, 0x02, 0x01,
+    0x00, 0x07, 0x08, 0x01, 0x04, 0x74, 0x72, 0x61, 0x70, 0x00, 0x00, 0x0a, 0x05, 0x01, 0x03, 0x00, 0x00, 0x0b,
+  ]);
+  try {
+    const trap = new WebAssembly.Instance(new WebAssembly.Module(trap_module)).exports.trap as () => void;
+    trap();
+  } catch (error) {
+    if (error instanceof Error) error.message = label;
+    return error;
+  }
+  return Symbol(label);
+}
+
+export const HALT_KERNEL = uncatchable_halt("halt kernel");
+
+// Set once this worker's kernel thread has halted: the user syscall entry
+// rethrows HALT_KERNEL instead of re-entering the kernel as a dead task.
+let worker_halted = false;
+export function is_worker_halted(): boolean {
+  return worker_halted;
+}
 
 export function kernel_imports({
   is_worker,
@@ -237,6 +272,7 @@ export function kernel_imports({
     halt_worker: () => {
       if (!is_worker) throw new Error("Halt called in main thread");
       // Messages posted after platform.quit() are not guaranteed to arrive.
+      worker_halted = true;
       worker_exit();
       platform.quit();
       throw HALT_KERNEL;
@@ -245,6 +281,7 @@ export function kernel_imports({
       if (!is_worker) {
         throw new Error("Machine termination called in main thread");
       }
+      worker_halted = true;
       terminate_machine(reason);
       throw HALT_KERNEL;
     },

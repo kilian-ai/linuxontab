@@ -1046,7 +1046,58 @@ function memory_bytes(memory, address, length) {
 var WASM_USER_MEMORY_NONE = 0;
 var WASM_USER_MEMORY_SHARE = 1;
 var WASM_USER_MEMORY_COPY = 2;
-var HALT_KERNEL = Symbol("halt kernel");
+function uncatchable_halt(label) {
+  const trap_module = new Uint8Array([
+    0,
+    97,
+    115,
+    109,
+    1,
+    0,
+    0,
+    0,
+    1,
+    4,
+    1,
+    96,
+    0,
+    0,
+    3,
+    2,
+    1,
+    0,
+    7,
+    8,
+    1,
+    4,
+    116,
+    114,
+    97,
+    112,
+    0,
+    0,
+    10,
+    5,
+    1,
+    3,
+    0,
+    0,
+    11
+  ]);
+  try {
+    const trap = new WebAssembly.Instance(new WebAssembly.Module(trap_module)).exports.trap;
+    trap();
+  } catch (error) {
+    if (error instanceof Error) error.message = label;
+    return error;
+  }
+  return Symbol(label);
+}
+var HALT_KERNEL = uncatchable_halt("halt kernel");
+var worker_halted = false;
+function is_worker_halted() {
+  return worker_halted;
+}
 function kernel_imports({
   is_worker,
   memory,
@@ -1064,6 +1115,7 @@ function kernel_imports({
     },
     halt_worker: () => {
       if (!is_worker) throw new Error("Halt called in main thread");
+      worker_halted = true;
       worker_exit();
       platform.quit();
       throw HALT_KERNEL;
@@ -1072,6 +1124,7 @@ function kernel_imports({
       if (!is_worker) {
         throw new Error("Machine termination called in main thread");
       }
+      worker_halted = true;
       terminate_machine(reason);
       throw HALT_KERNEL;
     },
@@ -1155,7 +1208,7 @@ function user_imports({
   fork_rewind = null,
   set_pending_child_fork
 }) {
-  const HALT_USER = Symbol("halt user");
+  const HALT_USER = uncatchable_halt("halt user");
   const NR_WASM_GET_ARGS = 245;
   let context = parent;
   let instance = null;
@@ -1256,6 +1309,7 @@ function user_imports({
   function create_instance(context2) {
     const kernel_instance = get_kernel_instance();
     const linux_syscall = (nr, arg0, arg1, arg2, arg3, arg4, arg5) => {
+      if (is_worker_halted()) throw HALT_KERNEL;
       if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
       if (nr === NR_CLONE && arg2 & CLONE_VFORK && arg2 & CLONE_VM && asyncify()?.asyncify_get_state && !instance?.exports?.__lot_clone_sets_sp) {
         arg2 &= ~CLONE_VM;
