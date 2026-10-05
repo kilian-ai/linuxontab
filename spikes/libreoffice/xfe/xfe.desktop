@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=File Manager
+GenericName=File Manager
+Comment=Xfe, the X File Explorer
+Exec=xfe
+Terminal=false
+Type=Application
+Categories=System;FileManager;
+X-LinuxOnTab-Package=xfe
+X-LinuxOnTab-Color=#C58A2A

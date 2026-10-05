@@ -827,11 +827,11 @@
       "status": "available"
     },
     "xtiny": {
-      "version": "1.4.0",
+      "version": "1.5.0",
       "description": "Tiny X11 server + desktop on :5900 for real X clients (xterm, netsurf, wolf3d) with an Apps menu; open the X display panel",
-      "url": "https://linuxontab.com/packages/xtiny-1.4.0.tar.gz",
-      "size": 97103,
-      "sha256": "148482d8fdda4062f0028ee1a46a38cc1b869884f2d6bdae060faaae25f10e2e",
+      "url": "https://linuxontab.com/packages/xtiny-1.5.0.tar.gz",
+      "size": 98826,
+      "sha256": "d383d1867f904ed29a55368e2cb295b40b818699c0defc3db3f8d0a7ac22614c",
       "bins": [
         "xtiny"
       ],
@@ -923,6 +923,20 @@
       ],
       "depends": [
         "xtiny"
+      ],
+      "status": "available"
+    },
+    "xfe": {
+      "version": "2.1.11",
+      "description": "Xfe file manager (X File Explorer on FOX 1.6) for the xtiny desktop",
+      "url": "https://linuxontab.com/packages/xfe-2.1.11.tar.gz",
+      "size": 3532086,
+      "sha256": "df6ab353b308bec55a5669005152f9be13bfcdf5ad7d86ce1610277e47675549",
+      "bins": [
+        "xfe"
+      ],
+      "depends": [
+        "xtiny-apps"
       ],
       "status": "available"
     }

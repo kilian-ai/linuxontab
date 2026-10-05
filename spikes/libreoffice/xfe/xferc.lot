@@ -1,0 +1,10 @@
+
+# ── LinuxOnTab defaults (appended by the xfe package) ──
+[OPTIONS]
+# the guest runs everything as root: no warning dialog at every start
+root_warn = 0
+
+[PROGS]
+txteditor = lot-textedit
+txtviewer = lot-textedit
+xterm = xterm -fn fixed

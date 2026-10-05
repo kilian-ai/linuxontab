@@ -5,7 +5,10 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.4.0"   # 1.4.0: JPEG for video-like regions (librfb LJPG + lossless repair),
+VERSION="1.5.0"   # 1.5.0: CopyPlane, GC clip masks, depth-1 PutImage, X selections +
+                  # SendEvent (clipboard), 1024 windows/4096 pixmaps/512 GCs:
+                  # what FOX/Xfe (the xfe package) needs
+                  # 1.4.0: JPEG for video-like regions (librfb LJPG + lossless repair),
                   # damage merging, _LOT_PUTIMAGE_SCALE, fast PutImage, Videos entry
                   # 1.3.0: Text Editor + Calculator apps, date & time dialog on a
                   # double-click of the clock (package xtiny-apps); honours
