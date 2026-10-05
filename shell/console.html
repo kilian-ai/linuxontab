@@ -192,6 +192,14 @@ const BUILTINS = ['lean', 'redis', 'python3', 'nodejs', 'jq', 'nano', 'tmux', 'h
 // Builtins that start a program at the shell's first prompt (?cmd=), after
 // the image's package is installed.
 const BUILTIN_CMDS = { vitetris: 'tetris', htop: 'htop' };
+// The standard X desktop, listed right under lean: the lean boot plus xtiny
+// (apk pulls in xterm and xeyes), the X server started at the first prompt,
+// and the X display panel opening by itself once :5900 answers (?x).
+const XDISTRO = {
+  name: 'xtiny', image: 'xtiny',
+  what: 'the standard X desktop — lean boot + the xtiny X server with xterm and xeyes; the X display opens by itself',
+  extra: { x: '', cmd: 'xtiny > /tmp/xtiny.log 2>&1 &' },
+};
 // Web demos: the container installs + starts the server (lot-services.conf),
 // and the tab opens straight on the page it serves, menu hidden (?web + ?kiosk).
 const WEBDEMOS = [
@@ -323,6 +331,10 @@ async function renderImages(force) {
       tb.appendChild(imageRow(b, 'builtin', 'on demand', null, b === 'lean' ? '' : b, b,
         BUILTIN_CMDS[b] ? { cmd: BUILTIN_CMDS[b] } : undefined));
       sel.append(new Option(b, b === 'lean' ? '' : b));
+      if (b === 'lean') {
+        tb.appendChild(imageRow(XDISTRO.name, 'X desktop', 'on demand', null, XDISTRO.image,
+          XDISTRO.name, XDISTRO.extra, XDISTRO.what + ' — opens in a new tab'));
+      }
     }
     for (const d of WEBDEMOS) {
       tb.appendChild(imageRow(d.name, 'web demo', 'on demand', null, d.image, d.name,
