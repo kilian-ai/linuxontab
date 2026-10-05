@@ -2403,6 +2403,9 @@ static const App BUILTIN_APPS[] = {
     { "node",    "Node.js",        "JavaScript REPL (QuickJS)",    "node",                       "nodejs",   1, 0x3C873A, 0, 0 },
     { "trust",   "Rust IDE",       "TRUST: build and run Rust",    "trust",                      "trust",    1, 0xB7410E, 0, 0 },
     { "tmux",    "tmux",           "Terminal multiplexer",         "tmux",                       "tmux",     1, 0x1BB91F, 0, 0 },
+    /* clawlite opens its REPL without a key and says where to put one
+     * (~/.config/clawlite/config); the terminal window stays up meanwhile. */
+    { "claw",    "AI Assistant",   "claw LLM agent (needs API key)", "claw",                     "claw",     1, 0xD97757, 0, 0 },
     { "lotplay", "Videos",         "Video player (ffmpeg)",        "lotplay",                    "lotplay",  0, 0xE63946, 0, 0 },
     { "wolf3d",  "Wolfenstein 3D", "Shareware episode 1",          "wolf3d",                     "wolf3d",   0, 0x9B1C1C, 0, 0 },
     { "tetris",  "Tetris",         "vitetris, in colour",          "tetris",                     "vitetris", 1, 0xC77700, 0, 0 },

@@ -5,7 +5,8 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.7.0"   # 1.7.0: Apps menu — File Manager (xfe, pinned), Chromium (when the x86
+VERSION="1.8.0"   # 1.8.0: Apps menu — AI Assistant (claw, in a terminal)
+                  # 1.7.0: Apps menu — File Manager (xfe, pinned), Chromium (when the x86
                   # disk is mounted), Rust IDE, tmux, Node.js; menu flows into columns;
                   # installs refresh a stale package index once (apk update) and retry
                   # 1.6.0: sound server — /tmp/.lot-audio (s16le stereo 48 kHz) forwarded
