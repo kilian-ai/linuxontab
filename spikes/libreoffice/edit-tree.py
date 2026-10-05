@@ -115,4 +115,16 @@ edit('bridges/inc/vtablefactory.hxx', [("""    || defined(HAIKU)
 #if !defined __wasm__
 #define USE_DOUBLE_MMAP
 #endif""")])
+# ICU: the build-side pkgdata (native Linux, ELF support compiled in) would
+# write the Unicode data straight into an ELF object (genccode --match-arch);
+# for wasm32 make it write C (-w = without assembly) for our compiler
+edit('external/icu/ExternalProject_icu.mk', [("""		&& $(MAKE) $(if $(CROSS_COMPILING),DATASUBDIR=data) $(if $(verbose),VERBOSE=1) \\
+		$(if $(filter MACOSX,$(OS)), \\""","""		&& $(MAKE) $(if $(CROSS_COMPILING),DATASUBDIR=data) $(if $(verbose),VERBOSE=1) \\
+			$(if $(filter WASM32,$(CPUNAME)),'PKGDATA_OPTS=-O $$(top_builddir)/data/icupkg.inc -w') \\
+		$(if $(filter MACOSX,$(OS)), \\""")])
+# Calc: wasm has no floating-point exception flags (like Emscripten, which
+# this already skips)
+edit('sc/source/core/tool/math.cxx', [("""#ifndef __EMSCRIPTEN__
+        || (((math_errhandling & MATH_ERREXCEPT) != 0)""","""#if !defined __EMSCRIPTEN__ && !defined __wasm__
+        || (((math_errhandling & MATH_ERREXCEPT) != 0)""")])
 print("tree: ok")

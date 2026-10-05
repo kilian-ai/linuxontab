@@ -15,8 +15,16 @@ $CC -c /lot/sysroot/wasm_ld128.c -o $OUT/wasm_ld128.o
 $CC -c /lot/sysroot/wasm_fork_enosys.c -o $OUT/wasm_fork_enosys.o
 llvm-ar rcs $OUT/libforkenosys.a $OUT/wasm_fork_enosys.o
 $CC -c /lot/sysroot/wasm_syscall_cp.c -o $OUT/wasm_syscall_cp.o
+$CC -c /lot/sysroot/wasm_cxa_thread_atexit.c -o $OUT/wasm_cxa_thread_atexit.o
 $CC -mllvm -wasm-enable-sjlj -c /lot/sysroot/sjlj_rt_wasmeh.c -o $OUT/sjlj_rt.o
 # worker.ts keeps the module's declared maximum memory only if it exports this
 printf '__attribute__((export_name("__lot_big_memory"))) void __lot_big_memory(void) {}\n' > $OUT/lot_big_memory.c
 $CC -c $OUT/lot_big_memory.c -o $OUT/lot_big_memory.o
+# the symbols our reduced libX11 omits (xlibi18n, input methods), for X11 links
+if [ -d /work/xprefix/lib ]; then
+  $CC -c /lot/spike/xfe/x11_compat.c -o $OUT/x11_compat.o
+  $CC -I/work/xprefix/include -c /lot/spike/xfe/x11_im_compat.c -o $OUT/x11_im_compat.o
+  rm -f /work/xprefix/lib/libX11compat.a
+  llvm-ar rcs /work/xprefix/lib/libX11compat.a $OUT/x11_compat.o $OUT/x11_im_compat.o
+fi
 ls -l $OUT/*.o

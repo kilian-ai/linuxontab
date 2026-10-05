@@ -316,10 +316,10 @@ index d2733bf21..f9c396e5f 100644
  	  $(if $(filter MACOSX,$(OS)),\
  		  && $(PERL) $(SRCDIR)/solenv/bin/macosx-change-install-names.pl shl OOO \
 diff --git a/external/icu/ExternalProject_icu.mk b/external/icu/ExternalProject_icu.mk
-index d7b45f4c0..b4f7d17f0 100644
+index d7b45f4c0..183525175 100644
 --- a/external/icu/ExternalProject_icu.mk
 +++ b/external/icu/ExternalProject_icu.mk
-@@ -80,7 +80,7 @@ $(call gb_ExternalProject_get_state_target,icu,build) :
+@@ -80,13 +80,14 @@ $(call gb_ExternalProject_get_state_target,icu,build) :
  			$(if $(filter SOLARIS,$(OS)),--disable-64bit-libs) \
  			$(if $(filter TRUE,$(DISABLE_DYNLOADING)),\
  				--with-data-packaging=static --enable-static --disable-shared --disable-dyload,\
@@ -328,6 +328,13 @@ index d7b45f4c0..b4f7d17f0 100644
  			$(gb_CONFIGURE_PLATFORMS) \
  			$(if $(CROSS_COMPILING), \
  				--with-cross-build=$(WORKDIR_FOR_BUILD)/UnpackedTarball/icu/source \
+ 				--disable-tools --disable-extras) \
+ 			AR="$(AR)" RANLIB="$(RANLIB)" \
+ 		&& $(MAKE) $(if $(CROSS_COMPILING),DATASUBDIR=data) $(if $(verbose),VERBOSE=1) \
++			$(if $(filter WASM32,$(CPUNAME)),'PKGDATA_OPTS=-O $$(top_builddir)/data/icupkg.inc -w') \
+ 		$(if $(filter MACOSX,$(OS)), \
+ 			&& $(PERL) $(SRCDIR)/solenv/bin/macosx-change-install-names.pl shl \
+ 				URELIB \
 diff --git a/external/icu/UnpackedTarball_icu.mk b/external/icu/UnpackedTarball_icu.mk
 index 92777dd33..0d2ab7a7c 100644
 --- a/external/icu/UnpackedTarball_icu.mk
@@ -641,6 +648,19 @@ index 7706541a3..32d854e77 100644
  #include <rtl/ustring.hxx>
  #include "file_impl.hxx"
  #include <cassert>
+diff --git a/sc/source/core/tool/math.cxx b/sc/source/core/tool/math.cxx
+index e61d39386..6cf9e007f 100644
+--- a/sc/source/core/tool/math.cxx
++++ b/sc/source/core/tool/math.cxx
+@@ -57,7 +57,7 @@ double power(const double& fVal1, const double& fVal2)
+ // emscripten is currently broken by https://github.com/emscripten-core/emscripten/pull/11087
+ // While the removal is correct for C99, it's not for C++11 (see http://www.cplusplus.com/reference/cfenv/FE_INEXACT/)
+ // But since emscripten currently doesn't support any math exceptions, we simply ignore them
+-#ifndef __EMSCRIPTEN__
++#if !defined __EMSCRIPTEN__ && !defined __wasm__
+         || (((math_errhandling & MATH_ERREXCEPT) != 0)
+             && std::fetestexcept(FE_INVALID | FE_DIVBYZERO | FE_OVERFLOW | FE_UNDERFLOW))
+ #endif
 diff --git a/solenv/gbuild/extensions/pre_BuildTools.mk b/solenv/gbuild/extensions/pre_BuildTools.mk
 index 8ea180faa..8e228ee4e 100644
 --- a/solenv/gbuild/extensions/pre_BuildTools.mk

@@ -64,3 +64,65 @@ int Xutf8TextListToTextProperty(Display *d, char **list, int count, XICCEncoding
     tp->nitems = off - 1;
     return Success;
 }
+
+/* ── XKB: the guest's X server (xtiny) has no XKEYBOARD extension, and our
+ * libX11 is built without XKB. Report it absent; keysym lookup falls back to
+ * the core keyboard mapping. ─────────────────────────────────────────────── */
+#include <X11/XKBlib.h>
+
+Bool XkbLibraryVersion(int *major, int *minor)
+{ if (major) *major = XkbMajorVersion; if (minor) *minor = XkbMinorVersion; return False; }
+Bool XkbQueryExtension(Display *d, int *opcode, int *event, int *error, int *major, int *minor)
+{ (void)d; (void)opcode; (void)event; (void)error; (void)major; (void)minor; return False; }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+KeySym XkbKeycodeToKeysym(Display *d, unsigned int kc, int group, int level)   /* wide prototype */
+{
+    (void)group;
+    KeySym ks = XKeycodeToKeysym(d, kc, level);
+    return ks != NoSymbol || level == 0 ? ks : XKeycodeToKeysym(d, kc, 0);
+}
+#pragma clang diagnostic pop
+Bool XkbSelectEventDetails(Display *d, unsigned int spec, unsigned int type,
+                           unsigned long affect, unsigned long details)
+{ (void)d; (void)spec; (void)type; (void)affect; (void)details; return False; }
+Status XkbGetIndicatorState(Display *d, unsigned int spec, unsigned int *state)
+{ (void)d; (void)spec; if (state) *state = 0; return BadImplementation; }
+Bool XkbLockModifiers(Display *d, unsigned int spec, unsigned int affect, unsigned int values)
+{ (void)d; (void)spec; (void)affect; (void)values; return False; }
+Status XkbGetState(Display *d, unsigned int spec, XkbStatePtr state)
+{ (void)d; (void)spec; if (state) memset(state, 0, sizeof *state); return BadImplementation; }
+
+/* more of the input-method surface: no input method exists */
+Display *XDisplayOfIM(XIM im) { (void)im; return NULL; }
+char *XLocaleOfIM(XIM im) { (void)im; return NULL; }
+XIM XIMOfIC(XIC ic) { (void)ic; return NULL; }
+
+/* STRING/UTF8_STRING properties back into a list of strings (the inverse of
+ * Xutf8TextListToTextProperty above): NUL-separated items. */
+int XmbTextPropertyToTextList(Display *d, const XTextProperty *tp, char ***list_return, int *count_return)
+{
+    (void)d;
+    if (!tp || tp->format != 8 || !list_return || !count_return) return XConverterNotFound;
+    unsigned long n = tp->nitems;
+    int count = 1;
+    for (unsigned long i = 0; i < n; i++) if (!tp->value[i]) count++;
+    if (n && !tp->value[n - 1]) count--;
+    char **list = malloc(sizeof(char *) * (size_t)(count + 1));
+    char *buf = malloc(n + 1);
+    if (!list || !buf) { free(list); free(buf); return XNoMemory; }
+    memcpy(buf, tp->value, n);
+    buf[n] = 0;
+    int k = 0;
+    for (unsigned long i = 0; k < count; k++) {
+        list[k] = buf + i;
+        while (i < n && buf[i]) i++;
+        i++;
+    }
+    list[count] = NULL;
+    *list_return = list;
+    *count_return = count;
+    return Success;
+}
+int Xutf8TextPropertyToTextList(Display *d, const XTextProperty *tp, char ***l, int *c)
+{ return XmbTextPropertyToTextList(d, tp, l, c); }
