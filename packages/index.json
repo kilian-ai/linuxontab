@@ -827,17 +827,18 @@
       "status": "available"
     },
     "xtiny": {
-      "version": "1.2.0",
+      "version": "1.4.0",
       "description": "Tiny X11 server + desktop on :5900 for real X clients (xterm, netsurf, wolf3d) with an Apps menu; open the X display panel",
-      "url": "https://linuxontab.com/packages/xtiny-1.2.0.tar.gz",
-      "size": 88370,
-      "sha256": "ff30b0cf2a26ec8059a33bcab8124d6c6615eba9d57d6916a612affdcfb7b905",
+      "url": "https://linuxontab.com/packages/xtiny-1.4.0.tar.gz",
+      "size": 97103,
+      "sha256": "148482d8fdda4062f0028ee1a46a38cc1b869884f2d6bdae060faaae25f10e2e",
       "bins": [
         "xtiny"
       ],
       "depends": [
         "xterm",
-        "xeyes"
+        "xeyes",
+        "xtiny-apps"
       ],
       "status": "available"
     },
@@ -895,6 +896,34 @@
         "zsh"
       ],
       "depends": [],
+      "status": "available"
+    },
+    "xtiny-apps": {
+      "version": "1.0.0",
+      "description": "Text editor, calculator and date/time dialog for the xtiny desktop",
+      "url": "https://linuxontab.com/packages/xtiny-apps-1.0.0.tar.gz",
+      "size": 295242,
+      "sha256": "77770483b5234abe432203c8432cfd2cdf016d138808e2188a23f107e96f7027",
+      "bins": [
+        "lot-textedit",
+        "lot-calc",
+        "lot-calendar"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "lotplay": {
+      "version": "1.0.0",
+      "description": "Video player for the X desktop (ffmpeg decode, video only) \u2014 Apps menu \u2192 Videos",
+      "url": "https://linuxontab.com/packages/lotplay-1.0.0.tar.gz",
+      "size": 2243889,
+      "sha256": "8eec80b823e60b86a03256327456e715f80973f146039994bc49d65de814d83c",
+      "bins": [
+        "lotplay"
+      ],
+      "depends": [
+        "xtiny"
+      ],
       "status": "available"
     }
   }
