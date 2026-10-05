@@ -222,6 +222,18 @@ const XAPPS = [
     extra: { disk: 'full', xdisk: 'linux-dist/x86-chromium.ext4', x: '',
              cmd: 'mkdir -p /opt/x86 && mount -t ext4 -o ro /dev/vdc /opt/x86 && /opt/x86/chromium-desktop' } },
 ];
+// x86 terminal apps: the full disk plus a read-only x86 disk (?xdisk=) with
+// x86-64 Node 24 under the Blink emulator (V8 interpreter + Sparkplug);
+// x86-node-setup puts node/npm/npx (and baked bins) on PATH.
+const X86_SETUP = 'mkdir -p /opt/x86 && mount -t ext4 -o ro /dev/vdc /opt/x86 && /opt/x86/x86-node-setup';
+const X86APPS = [
+  { name: 'node-x86', size: '33 MB + full disk',
+    what: 'x86-64 Node.js 24 + npm 11 (Alpine, unmodified) under the Blink emulator — node, npm install work; first start ~1 min',
+    extra: { disk: 'full', xdisk: 'linux-dist/x86-node.ext4', cmd: X86_SETUP + ' && node -v && npm -v' } },
+  { name: 'openclaw', size: '200 MB + full disk',
+    what: 'OpenClaw (npm openclaw, baked in) on x86-64 Node 24 under Blink — run `openclaw onboard` to set it up (slow: tens of minutes)',
+    extra: { disk: 'full', xdisk: 'linux-dist/x86-openclaw.ext4', cmd: X86_SETUP + ' && openclaw --version' } },
+];
 const imgDb = () => new Promise((res, rej) => {
   const rq = indexedDB.open('lot-images', 1);
   rq.onupgradeneeded = () => rq.result.createObjectStore('images', { keyPath: 'name' });
@@ -344,6 +356,10 @@ async function renderImages(force) {
     for (const d of TUIAPPS) {
       tb.appendChild(imageRow(d.name, 'terminal app', 'on demand', null, d.image, d.name,
         {}, d.what + ' — opens the console with the app already running'));
+    }
+    for (const d of X86APPS) {
+      tb.appendChild(imageRow(d.name, 'x86 app', d.size, null, '', d.name,
+        d.extra, d.what + ' — opens the console in a new tab'));
     }
     for (const d of XAPPS) {
       tb.appendChild(imageRow(d.name, 'X app', d.size, null, '', d.name,
