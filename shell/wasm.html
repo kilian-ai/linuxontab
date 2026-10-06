@@ -441,6 +441,8 @@ class WispSlirp {
   #guestMac = null;
   #dnsCache = new Map();    // ipStr → hostname (from snooped DNS responses)
   #dnsResolver = null;      // resolver IP for DNS over the WISP backend; null = DoH
+  #corsProxy = null;        // HTTP gateway fallback for no-CORS origins; null = none (see #gatewayFetch)
+  #noCorsOrigins = new Set(); // origins whose direct fetch failed — go straight to the proxy
   #serverConns = new Map();  // 'guestPort:remotePort' → InboundConn (injected inbound TCP)
   #injectedGuestPorts = new Set(); // guest server ports we've injected to (22, ...)
   #serverNextPort = 30000;
@@ -470,9 +472,11 @@ class WispSlirp {
     };
   }
 
-  constructor(url = 'wss://linuxontab-net.fly.dev/wisp', dnsResolver = null) {
+  constructor(url = 'wss://linuxontab-net.fly.dev/wisp', dnsResolver = null,
+              corsProxy = WispSlirp.RELAY_CORS) {
     this.#url = url;
     this.#dnsResolver = dnsResolver;
+    this.#corsProxy = corsProxy;
     this.#connectWisp();
     this.#lanInit();
     // Half-open-socket watchdog: the WISP WS can silently stop passing data
@@ -1230,15 +1234,6 @@ class WispSlirp {
         : 'https://linuxontab.com';
       url = base + target;
     }
-    let fetchUrl = url;
-    try {
-      const u = new URL(url);
-      const sameOriginHost = (u.hostname === window.location.hostname);
-      // Cross-origin direct fetches fail CORS in the browser; relay proxy fixes this.
-      if (!sameOriginHost && (u.protocol === 'http:' || u.protocol === 'https:')) {
-        fetchUrl = 'https://relay.linuxontab.com/cors?url=' + encodeURIComponent(url);
-      }
-    } catch (_) {}
 
     // Guest Range header: bulk TCP into the guest stalls somewhere below
     // ~800 KB (see lotfetch), so large downloads are pulled as small Range
@@ -1252,7 +1247,7 @@ class WispSlirp {
       if (m) { wantRange = { start: +m[1], end: m[2] === '' ? Infinity : +m[2] }; break; }
     }
 
-    console.log('[HTTP-GW]', method, url, 'via', fetchUrl, wantRange ? `range=${wantRange.start}-${wantRange.end}` : '');
+    console.log('[HTTP-GW]', method, url, wantRange ? `range=${wantRange.start}-${wantRange.end}` : '');
     let respBytes;
     try {
       // Pass through method; for now only GET/HEAD have no body — sufficient
@@ -1264,12 +1259,14 @@ class WispSlirp {
       // awaited fetch() transfer cleanly. The browser HTTP cache still absorbs
       // repeat fetches of the same URL where headers allow.
       {
-        const resp = await fetch(fetchUrl, { method: method || 'GET', redirect: 'follow' });
-        if (!resp.ok && wantRange) throw new Error('upstream HTTP ' + resp.status);
+        const resp = await this.#gatewayFetch(url, method || 'GET');
+        // A non-2xx upstream status is passed through below, Range or not, so
+        // the guest sees the real code (lotfetch gives up at once on a 404
+        // instead of retrying what used to come back as a 502).
         full = new Uint8Array(await resp.arrayBuffer());
         ctype = resp.headers.get('content-type') || 'application/octet-stream';
         if (!resp.ok) {
-          // non-2xx, non-range: pass the status through as before
+          // non-2xx: pass the status (and body) through
           const status = resp.status + ' ' + (resp.statusText || 'OK');
           const hdr = new TextEncoder().encode(
             'HTTP/1.0 ' + status + '\r\n' +
@@ -1305,10 +1302,13 @@ class WispSlirp {
       respBytes.set(hdr); respBytes.set(body, hdr.length);
     } catch (e) {
       console.error('[HTTP-GW] error', e);
-      const msg = 'fetch failed: ' + (e?.message || e);
+      const blocked = !!(e && e.gatewayBlocked);
+      const msg = blocked ? e.message + '\n' : 'fetch failed: ' + (e?.message || e);
       const body = new TextEncoder().encode(msg);
+      // 403 for a refused origin: a client error, so lotfetch shows the
+      // message and stops instead of retrying; 502 stays for real failures.
       const hdr = new TextEncoder().encode(
-        'HTTP/1.0 502 Bad Gateway\r\nContent-Length: ' + body.length +
+        'HTTP/1.0 ' + (blocked ? '403 Forbidden' : '502 Bad Gateway') + '\r\nContent-Length: ' + body.length +
         '\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n');
       respBytes = new Uint8Array(hdr.length + body.length);
       respBytes.set(hdr); respBytes.set(body, hdr.length);
@@ -1614,6 +1614,50 @@ class WispSlirp {
       }
       off += rdlen;
     }
+  }
+
+  // ── HTTP gateway upstream ─────────────────────────────────────────────────
+  // The guest's HTTPS helpers (apk's index/fallback downloads, the wget/curl
+  // shims via /_https/…) have the page fetch() the URL so the browser does
+  // the TLS. Many hosts allow that directly — our package CDN, GitHub raw/API,
+  // PyPI's index, crates.io, npm, jsDelivr — so try a direct fetch first. Only
+  // an origin that refuses (no CORS headers) goes through #corsProxy, and it
+  // is remembered so later requests skip the doomed direct attempt.
+  //
+  // #corsProxy is relay.linuxontab.com by default. With ?wisp= it is null:
+  // a guest pointed at its own backend chose not to route through
+  // linuxontab.com, and the relay would see the whole URL, so a refused
+  // origin fails visibly instead (see #6 for the same rule applied to DNS).
+  // ?cors=relay restores the relay, ?cors=off disables any proxy, and
+  // ?cors=<prefix> names your own proxy (the URL is appended, encoded).
+  static RELAY_CORS = 'https://relay.linuxontab.com/cors?url=';
+
+  async #gatewayFetch(url, method) {
+    const opts = { method, redirect: 'follow', credentials: 'omit' };
+    let origin = null;
+    try { origin = new URL(url).origin; } catch (_) {}
+    if (!origin || origin === window.location.origin) return fetch(url, opts);
+    if (!this.#noCorsOrigins.has(origin)) {
+      try {
+        return await fetch(url, { ...opts, mode: 'cors' });
+      } catch (_) {
+        // TypeError: the origin sent no CORS headers (or the network failed);
+        // the browser does not say which, so both get the proxy from now on
+        this.#noCorsOrigins.add(origin);
+      }
+    }
+    if (!this.#corsProxy) {
+      const err = new Error(
+        'blocked: ' + origin + ' does not allow direct browser fetches, and this ' +
+        'page has no CORS proxy (?wisp= is set, so relay.linuxontab.com is not ' +
+        'used — it would see the full URL). Add ?cors=relay to allow the relay, ' +
+        '?cors=<your proxy prefix> to use your own, or fetch over the guest\'s ' +
+        'own TLS (e.g. python, or curl with TLS) instead of the wget/curl shims.');
+      err.gatewayBlocked = true;
+      throw err;
+    }
+    console.log('[HTTP-GW] via proxy', this.#corsProxy === WispSlirp.RELAY_CORS ? 'relay' : this.#corsProxy, url);
+    return fetch(this.#corsProxy + encodeURIComponent(url), opts);
   }
 
   async #forwardDns(clientIp, clientPort, query) {
@@ -3019,6 +3063,15 @@ async function doBoat() {
     : dnsOpt ? dnsOpt
     : new URLSearchParams(location.search).has('wisp') ? '1.1.1.1'
     : null;
+  // The same rule for the HTTP gateway's fallback proxy (WispSlirp
+  // #gatewayFetch): relay.linuxontab.com by default, none with ?wisp=.
+  // ?cors=relay | off | <proxy prefix> overrides.
+  const corsOpt = new URLSearchParams(location.search).get('cors');
+  const corsProxy = corsOpt === 'relay' ? WispSlirp.RELAY_CORS
+    : (corsOpt === 'off' || corsOpt === 'none') ? null
+    : (corsOpt && /^https?:\/\//i.test(corsOpt)) ? corsOpt
+    : new URLSearchParams(location.search).has('wisp') ? null
+    : WispSlirp.RELAY_CORS;
   // Per-packet network logging (VIRTIO/ETH/HTCP/RELAYWS/INJECT). MUST stay off
   // by default: at bulk-transfer rates the logging stalls the main thread long
   // enough that WS message dispatch stops and the WISP watchdog tears down a
@@ -3177,7 +3230,7 @@ async function doBoat() {
     return rec;
   };
 
-  const slirp = new WispSlirp(wispUrl, dnsResolver);
+  const slirp = new WispSlirp(wispUrl, dnsResolver, corsProxy);
   const guestMac = crypto.getRandomValues(new Uint8Array(6));
   guestMac[0] &= 0xfe;  // clear multicast bit
   // virtio-net: one NIC on a tiny Ethernet switch whose other port is the

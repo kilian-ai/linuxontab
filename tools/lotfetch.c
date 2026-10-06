@@ -106,7 +106,10 @@ static int gw_connect(void) {
 /* One attempt at [start, start+CHUNK) of url. On 206: fills slice[] and
  * returns its length (also sets *total from Content-Range). On 200 (server
  * ignored Range): streams the whole body straight to out_fd, sets *got200,
- * returns bytes streamed. Returns -1 on any failure/timeout/short slice. */
+ * returns bytes streamed. Returns -1 on any failure/timeout/short slice
+ * (worth retrying), -2 on a definite client error (4xx other than 408/429:
+ * retrying cannot help — a 404, or the gateway refusing an origin). */
+#define FETCH_FATAL (-2)
 static long fetch_range(const char *url, const char *host, long start,
                         char *slice, int out_fd, long *total, int *got200) {
     int fd = gw_connect();
@@ -134,8 +137,23 @@ static long fetch_range(const char *url, const char *host, long start,
     if (sscanf(buf, "HTTP/%*d.%*d %d", &status) != 1) { close(fd); return -1; }
     if (status != 200 && status != 206) {
         fprintf(stderr, "lotfetch: HTTP %d for %s\n", status, url);
+        int fatal = status >= 400 && status < 500 && status != 408 && status != 429;
+        if (fatal) {
+            /* Show a short plain-text explanation if the server sent one —
+             * the gateway says why it refused an origin this way. */
+            int text = 0;
+            for (char *p = buf; p < body; p++)
+                if (!strncasecmp(p, "content-type:", 13) && strstr(p, "text/plain") && strstr(p, "text/plain") < body) text = 1;
+            char *msg = body + 4;
+            size_t mhave = have - (size_t)(msg - buf);
+            if (text && mhave < 1024) {               /* pull a little more */
+                ssize_t r = tread(fd, buf + have, sizeof(buf) - 1 - have);
+                if (r > 0) { have += r; buf[have] = 0; mhave += r; }
+            }
+            if (text && mhave) fprintf(stderr, "lotfetch: %.*s\n", (int)(mhave > 1024 ? 1024 : mhave), msg);
+        }
         close(fd);
-        return -1;
+        return fatal ? FETCH_FATAL : -1;
     }
     long content_len = -1;
     for (char *p = buf; p < body; p++) {
@@ -219,6 +237,7 @@ int main(int argc, char **argv) {
         for (int a = 1; a <= RETRIES; a++) {
             n = fetch_range(url, host, pos, slice, out, &total, &got200);
             if (n >= 0) break;
+            if (n == FETCH_FATAL) return die("giving up (client error, not retried)");
             if (isatty(2))
                 fprintf(stderr, "\rlotfetch: retry %d/%d at %ld KB   ", a, RETRIES, pos >> 10);
             /* Back off before retrying: failures correlate with guest/page
