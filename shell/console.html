@@ -213,6 +213,10 @@ const WEBDEMOS = [
 // /etc/lot-services.conf); the shell takes over when it exits.
 const TUIAPPS = [
   { name: 'trust-ide', image: 'trust', what: 'TRUST — retro DOS-style Rust IDE on the console; F5 builds and runs with the guest rustc + cargo (installed on first use)' },
+  // Typed at the first prompt (?cmd=) rather than a tty: registry entry, so
+  // /exit lands in a shell where the API key can be exported before rerunning.
+  { name: 'claw', image: 'claw', cmd: 'claw',
+    what: 'clawlite AI agent with shell tools on the console (installed on first use) — needs an API key: /exit, then export ANTHROPIC_API_KEY=... and run claw -p anthropic (or OPENAI_API_KEY and claw)' },
 ];
 // X apps: boot (the full disk, or lean) plus an extra read-only disk (?xdisk=), start the
 // program on the X server, and open the X display panel by itself (?x).
@@ -368,7 +372,7 @@ async function renderImages(force) {
     }
     for (const d of TUIAPPS) {
       tb.appendChild(imageRow(d.name, 'terminal app', 'on demand', null, d.image, d.name,
-        {}, d.what + ' — opens the console with the app already running'));
+        d.cmd ? { cmd: d.cmd } : {}, d.what + ' — opens the console with the app already running'));
     }
     for (const d of X86APPS) {
       tb.appendChild(imageRow(d.name, 'x86 app', d.size, null, '', d.name,
