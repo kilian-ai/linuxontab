@@ -39,11 +39,11 @@
       "status": "available"
     },
     "jq": {
-      "version": "1.7.1",
+      "version": "1.7.1-r1",
       "description": "Lightweight command-line JSON processor",
-      "url": "https://linuxontab.com/packages/jq-1.7.1.tar.gz",
-      "size": 789447,
-      "sha256": "9e9c540f5f37615ca78f8eb812e6054d860e876df36bae7639e48fe33ecf58ef",
+      "url": "https://linuxontab.com/packages/jq-1.7.1-r1.tar.gz",
+      "size": 265640,
+      "sha256": "b8eb96ccee0b4a40499148567e5e5a6ee8f1e38fa31d228d6f9db993d825fd41",
       "bins": [
         "jq"
       ],
@@ -75,11 +75,11 @@
       "depends": []
     },
     "nodejs": {
-      "version": "20.0.0",
+      "version": "20.0.0-r1",
       "description": "JavaScript runtime (QuickJS 2026-05-21, ES2023) + npm package manager",
-      "url": "https://linuxontab.com/packages/nodejs-20.0.0.tar.gz",
-      "size": 603294,
-      "sha256": "59825b5516c0888f987ea1d17661a637090d8fe9810e541fbfa92bcf06bc8b9a",
+      "url": "https://linuxontab.com/packages/nodejs-20.0.0-r1.tar.gz",
+      "size": 608964,
+      "sha256": "b8e7ccf4efbe4d3529ce36f367a036cec47f65558ca8fccfadfba333fc0faf7a",
       "bins": [
         "nodejs"
       ],
