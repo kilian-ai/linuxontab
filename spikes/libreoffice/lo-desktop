@@ -1,0 +1,10 @@
+#!/bin/sh
+# One-shot desktop for the console's "libreoffice" row: the X server, then
+# Writer on it. The page (?x) connects its X display panel to :5900 itself.
+#   mkdir -p /opt/lo && mount -t ext4 -o ro /dev/vdc /opt/lo && /opt/lo/lo-desktop
+# On the lean image the first `xtiny` installs it (and xterm/xeyes) first.
+[ -e /tmp/.X11-unix/X1 ] || xtiny > /tmp/xtiny.log 2>&1 &
+while [ ! -e /tmp/.X11-unix/X1 ]; do sleep 1; done
+echo "[libreoffice] starting Writer: the window takes ~30 s, dialogs up to a minute"
+echo "[libreoffice] log: /tmp/libreoffice.log; Writer is also in the Apps menu"
+/opt/lo/writer > /tmp/libreoffice.log 2>&1 &

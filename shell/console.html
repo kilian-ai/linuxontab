@@ -214,13 +214,17 @@ const WEBDEMOS = [
 const TUIAPPS = [
   { name: 'trust-ide', image: 'trust', what: 'TRUST — retro DOS-style Rust IDE on the console; F5 builds and runs with the guest rustc + cargo (installed on first use)' },
 ];
-// X apps: boot the full disk plus an extra read-only disk (?xdisk=), start the
+// X apps: boot (the full disk, or lean) plus an extra read-only disk (?xdisk=), start the
 // program on the X server, and open the X display panel by itself (?x).
 const XAPPS = [
   { name: 'chromium', size: '470 MB + full disk',
     what: 'Chromium 131 (x86-64, unmodified) under the Blink emulator on the X server — full browser with address bar; first window takes ~3 min',
     extra: { disk: 'full', xdisk: 'linux-dist/x86-chromium.ext4', x: '',
              cmd: 'mkdir -p /opt/x86 && mount -t ext4 -o ro /dev/vdc /opt/x86 && /opt/x86/chromium-desktop' } },
+  { name: 'libreoffice', size: '295 MB',
+    what: 'LibreOffice 26.8 Writer, compiled natively to wasm, on the X server — menus and dialogs work; first window ~30 s, dialogs up to a minute; Writer is also in the Apps menu',
+    extra: { xdisk: 'linux-dist/libreoffice.ext4', x: '',
+             cmd: 'mkdir -p /opt/lo && mount -t ext4 -o ro /dev/vdc /opt/lo && /opt/lo/lo-desktop' } },
 ];
 // x86 terminal apps: the full disk plus a read-only x86 disk (?xdisk=) with
 // x86-64 Node 24 under the Blink emulator (V8 interpreter + Sparkplug);

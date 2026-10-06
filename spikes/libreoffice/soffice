@@ -1,0 +1,9 @@
+#!/bin/sh
+# soffice with the guest's settings (profile under $HOME, X11 backend), for
+# everything that isn't Writer's window — e.g. headless conversion:
+#   /opt/lo/soffice --headless --convert-to pdf --outdir /tmp /tmp/notes.txt
+[ "$HOME" = "/" ] && HOME=/root
+[ -n "$HOME" ] || HOME=/root
+export HOME SAL_USE_VCLPLUGIN=gen
+mkdir -p "$HOME/.config"
+exec /opt/lo/program/soffice.bin "-env:UserInstallation=file://$HOME/.config/libreoffice" "$@"

@@ -35,3 +35,25 @@ public.ecr.aws.
 3. headless `soffice --convert-to` in the guest.
 4. VCL gen (X11) on xtiny — xtiny is core protocol only, so cairo/VCL must use
    their no-RENDER paths.
+
+All four steps work (2026-10-06): `soffice.bin --version`, headless
+`--convert-to pdf`, and Writer on xtiny (>= 1.9.0) with menus and dialogs.
+
+## The guest disk
+
+    sh spikes/libreoffice/make-image.sh        # -> shell/linux-dist/libreoffice.ext4 (~295 MB)
+    cd cloudflare && IMAGE=libreoffice.ext4 GZIP=1 ./upload-rootfs.sh
+
+The console's "libreoffice" row boots the lean image with that disk
+(`?xdisk=linux-dist/libreoffice.ext4&x`) and runs
+`mount ... /opt/lo && /opt/lo/lo-desktop`: xtiny, then Writer. In any guest
+with the disk mounted at /opt/lo:
+
+    /opt/lo/writer [file]                      # Writer on DISPLAY :1 (also Apps → Writer)
+    /opt/lo/soffice --headless --convert-to pdf --outdir /tmp /tmp/notes.txt
+
+Wasm-specific changes worth knowing (edit-tree.py has the details): osl
+threads get 4 MB stacks (musl's 128 KB default overflowed silently), the
+shared comphelper::ThreadPool runs tasks inline (a lost wakeup hung dialogs),
+the module URL comes from /proc/self/exe (no dladdr), and the final link
+needs wasm-ld >= 20 (19 bound a global to a same-named static elsewhere).

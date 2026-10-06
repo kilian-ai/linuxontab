@@ -1,0 +1,12 @@
+#!/bin/sh
+# LibreOffice Writer on the X server (xtiny, DISPLAY :1). The LibreOffice disk
+# is mounted read-only at /opt/lo; the profile lives under $HOME (the guest's
+# init HOME is /, so fall back to /root). Extra arguments go to soffice:
+#   /opt/lo/writer report.odt
+[ -n "$DISPLAY" ] || DISPLAY=:1
+[ "$HOME" = "/" ] && HOME=/root
+[ -n "$HOME" ] || HOME=/root
+export DISPLAY HOME SAL_USE_VCLPLUGIN=gen
+mkdir -p "$HOME/.config"
+exec /opt/lo/program/soffice.bin "-env:UserInstallation=file://$HOME/.config/libreoffice" \
+    --nologo --writer "$@"
