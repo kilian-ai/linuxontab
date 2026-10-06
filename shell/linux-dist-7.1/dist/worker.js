@@ -1264,6 +1264,7 @@ function user_imports({
     console.warn("WALI thread entry returned");
   }
   let forkScratch = null;
+  let rawForkRetPtr = null;
   const asyncify = () => instance ? instance.exports : null;
   const sp = () => {
     const g = instance?.exports?.__stack_pointer;
@@ -1306,11 +1307,38 @@ function user_imports({
     }
     return -38;
   }
+  function raw_clone_fork() {
+    const a = asyncify();
+    assert(context);
+    if (!a?.asyncify_get_state || !a.asyncify_start_unwind || !a.asyncify_stop_rewind) return -38;
+    const state = a.asyncify_get_state();
+    if (state === 0) {
+      const sc = acquireForkScratch(context.memory);
+      const h = new Int32Array(context.memory.buffer);
+      h[sc.bufPtr >> 2] = sc.bufPtr + 8;
+      h[(sc.bufPtr >> 2) + 1] = sc.bufPtr + sc.size;
+      rawForkRetPtr = sc.retPtr;
+      pendingFork = { bufPtr: sc.bufPtr, retPtr: sc.retPtr, sp: (spGlobal()?.value ?? 0) >>> 0, vfork: false };
+      console.debug("[fork] " + (self.name || "?") + " old-ABI clone(SIGCHLD) unwind buf=0x" + sc.bufPtr.toString(16) + " sp=" + sp());
+      a.asyncify_start_unwind(sc.bufPtr);
+      return 0;
+    }
+    if (state === 2 && rawForkRetPtr !== null) {
+      const retPtr = rawForkRetPtr;
+      rawForkRetPtr = null;
+      a.asyncify_stop_rewind();
+      const rv = new Int32Array(context.memory.buffer)[retPtr >> 2];
+      console.debug("[fork] " + (self.name || "?") + " old-ABI rewound, fork() returns " + rv);
+      return rv;
+    }
+    return -38;
+  }
   function create_instance(context2) {
     const kernel_instance = get_kernel_instance();
     const linux_syscall = (nr, arg0, arg1, arg2, arg3, arg4, arg5) => {
       if (is_worker_halted()) throw HALT_KERNEL;
       if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
+      if (nr === NR_CLONE && arg0 === SIGCHLD && arg1 === 0 && arg2 === 0 && asyncify()?.asyncify_get_state) return raw_clone_fork();
       if (nr === NR_CLONE && arg2 & CLONE_VFORK && arg2 & CLONE_VM && asyncify()?.asyncify_get_state && !instance?.exports?.__lot_clone_sets_sp) {
         arg2 &= ~CLONE_VM;
       }
@@ -1509,6 +1537,7 @@ function user_imports({
         if (forkRewind) {
           const rw = forkRewind;
           forkRewind = null;
+          rawForkRetPtr = rw.retPtr;
           call_entry = () => {
             call_entry = call_start;
             assert(instance && context);
