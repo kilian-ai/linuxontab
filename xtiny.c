@@ -106,6 +106,9 @@ typedef struct {
     int cursor;                 /* RFB_CUR_*, -1 = inherit from parent */
     uint32_t *px;               /* backing, w*h X pixels (0x00RRGGBB) */
     int toplevel;
+    int override_;              /* override-redirect top-level (menus,
+                                   tooltips, drop-downs): placed by the
+                                   client's own x/y, no frame, no focus */
     rfb_winframe frame;
     char title[64];
     int creator;
@@ -180,6 +183,14 @@ static struct {
     int tb_hover;               /* taskbar item under the pointer, -1 none */
     int menu_open;              /* the Apps menu is showing */
     int menu_hover;             /* menu row under the pointer / keyboard, -1 */
+
+    /* Active grabs (GrabPointer / GrabKeyboard). A toolkit opening a menu
+     * grabs both: clicks outside the popup must reach the popup's client
+     * (that is how the menu learns to close) and the arrow keys must reach
+     * the popup, not the focused frame. */
+    uint32_t pgrab_win, pgrab_mask;
+    int pgrab_owner;            /* owner_events: own windows get their events */
+    uint32_t kgrab_win;
 
     /* Edge-drag resize of a top-level (see on_pointer). */
     uint32_t rz_win;
@@ -368,6 +379,7 @@ static XGC *find_gc(uint32_t id) {
 /* Screen origin of a window's content area. */
 static void win_origin(XWindow *w, int *ox, int *oy) {
     if (w->id == ROOT_ID) { *ox = 0; *oy = 0; return; }
+    if (w->toplevel && w->override_) { *ox = w->x; *oy = w->y; return; }
     if (w->toplevel) {
         *ox = rfb_winframe_cx(&w->frame);
         *oy = rfb_winframe_cy(&w->frame);
@@ -627,6 +639,30 @@ static void ev_map_notify(XWindow *w) {
     send_event(c, ev);
 }
 
+/* PropertyNotify (state 0 = NewValue, 1 = Deleted) to the window's client
+ * when it selected PropertyChangeMask; for the root, to every client that
+ * selected it there. Toolkits read the server time this way: LibreOffice's
+ * X11 frame appends zero bytes to a property and blocks in XIfEvent until
+ * the PropertyNotify arrives (without it, soffice hangs before its first
+ * window maps). */
+static void ev_property_notify(XWindow *w, uint32_t atom, int state) {
+    uint8_t ev[32]; memset(ev, 0, sizeof ev);
+    ev[0] = 28;
+    p32(ev, 4, w->id);
+    p32(ev, 8, atom);
+    p32(ev, 12, (uint32_t)rfb_now_ms());
+    ev[16] = (uint8_t)state;
+    if (w->id == ROOT_ID) {
+        for (int i = 0; i < MAX_XCLIENTS; i++) {
+            XClient *c = &X.cl[i];
+            if (c->fd >= 0 && c->state == 2 && (c->root_evmask & 0x400000)) send_event(c, ev);
+        }
+        return;
+    }
+    XClient *c = win_client(w);
+    if (c && (w->evmask & 0x400000)) send_event(c, ev);
+}
+
 static void ev_configure_notify(XWindow *w) {
     XClient *c = win_client(w);
     if (!c || !(w->evmask & 0x20000)) return;
@@ -758,6 +794,11 @@ static XWindow *toplevel_at(int fx, int fy) {
     for (int i = 0; i < X.nstack; i++) {
         XWindow *w = find_win(X.stack[i]);
         if (!w || !w->mapped || w->minimized) continue;
+        if (w->override_) {
+            if (fx >= w->x && fx < w->x + w->w && fy >= w->y && fy < w->y + w->h)
+                return w;
+            continue;
+        }
         int fw = w->w + 2*RFB_BORDER;
         int fh = RFB_TITLE_H + w->h + RFB_BORDER;
         if (fx >= w->frame.x && fx < w->frame.x + fw &&
@@ -832,6 +873,8 @@ static void set_focus(uint32_t id) {
 static void free_window(XWindow *w) {
     if (w->id == X.focus)  X.focus = 0;
     if (w->id == X.xfocus) X.xfocus = 0;
+    if (w->id == X.pgrab_win) X.pgrab_win = 0;
+    if (w->id == X.kgrab_win) X.kgrab_win = 0;
     stack_remove(w->id);
     free(w->px);
     memset(w, 0, sizeof *w);
@@ -938,14 +981,20 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
             if (!(vmask & (1u << bit))) continue;
             uint32_t v = g32(r, vo); vo += 4;
             if (bit == 1) { slot->bg = v & 0xffffff; slot->has_bg = 1; }
+            if (bit == 9) slot->override_ = (int)(v & 1);       /* CWOverrideRedirect */
             if (bit == 11) slot->evmask = v;
             if (bit == 14) slot->cursor = cursor_id_shape(v);   /* CWCursor */
         }
+        if (!slot->toplevel) slot->override_ = 0;
         if (slot->class_ == 1) {
             slot->px = malloc((size_t)slot->w * slot->h * 4);
             if (slot->px) win_fill_bg(slot);
         }
-        if (slot->toplevel) {
+        if (slot->toplevel && slot->override_) {
+            slot->frame.w = slot->w;
+            slot->frame.h = slot->h;
+            slot->frame.title = slot->title;
+        } else if (slot->toplevel) {
             slot->frame.x = 100 + (X.ntoplevel % 5) * 40;
             slot->frame.y = 40 + (X.ntoplevel % 5) * 30;
             slot->frame.w = slot->w;
@@ -977,6 +1026,7 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
             if (!(vmask & (1u << bit))) continue;
             uint32_t v = g32(r, vo); vo += 4;
             if (bit == 1) { w->bg = v & 0xffffff; w->has_bg = 1; }
+            if (bit == 9 && w->toplevel) w->override_ = (int)(v & 1);
             if (bit == 11) {
                 if (w->id == ROOT_ID) c->root_evmask = v;
                 else w->evmask = v;
@@ -1030,7 +1080,12 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
         if (!w) { send_error(c, 3, g32(r, 4), op); return; }
         if (!w->mapped) {
             w->mapped = 1;
-            if (w->toplevel) {           /* newly shown windows come to front
+            if (w->toplevel && w->override_) {
+                /* a popup: where the client put it, on top, and the
+                 * keyboard focus stays with the window that opened it */
+                stack_add(w->id);
+                stack_raise(w->id);
+            } else if (w->toplevel) {    /* newly shown windows come to front
                                           * and take the keyboard */
                 /* A client that asks for a user-specified position
                  * (WM_NORMAL_HINTS flags & USPosition, as `-geometry +x+y`
@@ -1073,6 +1128,8 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
         XWindow *w = find_win(g32(r, 4));
         if (w && w->mapped) {
             w->mapped = 0;
+            if (w->id == X.pgrab_win) X.pgrab_win = 0;
+            if (w->id == X.kgrab_win) X.kgrab_win = 0;
             if (w->toplevel && w->id == X.focus) {
                 /* hand the keyboard to the next visible window down */
                 X.focus = 0;
@@ -1095,8 +1152,8 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
         for (int bit = 0; bit < 7; bit++) {
             if (!(vmask & (1u << bit))) continue;
             uint32_t v = g32(r, vo); vo += 4;
-            if (bit == 0 && !w->toplevel) w->x = (int16_t)v;
-            if (bit == 1 && !w->toplevel) w->y = (int16_t)v;
+            if (bit == 0 && (!w->toplevel || w->override_)) w->x = (int16_t)v;
+            if (bit == 1 && (!w->toplevel || w->override_)) w->y = (int16_t)v;
             if (bit == 2) nw = (int)v;
             if (bit == 3) nh = (int)v;
             if (bit == 4) w->border = (int)v;
@@ -1113,7 +1170,7 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
             if (w->px) win_fill_bg(w);
             if (w->toplevel) {
                 w->frame.w = nw; w->frame.h = nh;
-                if (w->mapped) keep_on_screen(w);
+                if (w->mapped && !w->override_) keep_on_screen(w);
             }
             ev_configure_notify(w);
             ev_expose(w);
@@ -1206,6 +1263,7 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
         uint8_t fmt = r[16];
         uint32_t n = g32(r, 20);
         set_prop(w, prop, type, fmt, r[1], r + 24, n);
+        ev_property_notify(w, prop, 0);
         /* _LOT_PUTIMAGE_SCALE (CARDINAL/32, k = 1..4): a video player sends
          * frames at 1/k size and every pixel lands as a k×k block at window
          * position (dst*k) — k² less data through the socket than an
@@ -1223,7 +1281,18 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
         }
         break;
     }
-    case 19: break; /* DeleteProperty — ignore */
+    case 19: { /* DeleteProperty */
+        XWindow *w = find_win(g32(r, 4));
+        if (!w) { send_error(c, 3, g32(r, 4), op); return; }
+        uint32_t prop = g32(r, 8);
+        for (int i = 0; i < w->nprops; i++) {
+            if (w->props[i].atom != prop) continue;
+            w->props[i] = w->props[--w->nprops];
+            ev_property_notify(w, prop, 1);
+            break;
+        }
+        break;
+    }
 
     case 20: { /* GetProperty */
         XWindow *w = find_win(g32(r, 4));
@@ -1337,19 +1406,29 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
     }
 
     case 26: case 31: { /* GrabPointer / GrabKeyboard — always granted */
+        XWindow *gw = find_win(g32(r, 4));
+        if (gw && op == 26) {
+            X.pgrab_win = gw->id;
+            X.pgrab_owner = r[1];
+            X.pgrab_mask = g16(r, 8);
+        } else if (gw) {
+            X.kgrab_win = gw->id;
+        }
         uint8_t b[24]; memset(b, 0, sizeof b);
         send_reply(c, 0, b, NULL, 0);             /* status = Success */
         break;
     }
+    case 27: X.pgrab_win = 0; break;              /* UngrabPointer */
+    case 32: X.kgrab_win = 0; break;              /* UngrabKeyboard */
 
     /* The void half of the grab family: UngrabPointer(27), GrabButton(28),
-     * UngrabButton(29), ChangeActivePointerGrab(30), UngrabKeyboard(32),
-     * GrabKey(33), UngrabKey(34), AllowEvents(35). Nothing to do — this
-     * server delivers events to the window under the pointer and has no
-     * grab state — but they must be accepted silently: erroring on a
+     * UngrabButton(29), ChangeActivePointerGrab(30), GrabKey(33),
+     * UngrabKey(34), AllowEvents(35). Nothing to do — passive grabs are not
+     * implemented (active ones are, above) — but they must be accepted
+     * silently: erroring on a
      * void request makes Xlib's default handler abort the client. */
-    case 27: case 28: case 29: case 30:
-    case 32: case 33: case 34: case 35:
+    case 28: case 29: case 30:
+    case 33: case 34: case 35:
         break;
 
     case 39: { /* GetMotionEvents — no motion history is kept */
@@ -2749,7 +2828,7 @@ static int taskbar_layout(TbItem *it, int max) {
     int nwin = 0;
     for (int i = 0; i < X.nstack; i++) {
         XWindow *w = find_win(X.stack[i]);
-        if (w && w->mapped) nwin++;
+        if (w && w->mapped && !w->override_) nwin++;
     }
     /* window buttons share what is left, 90..180 px each */
     int room = FB_W - TB_CLOCK_W - 8 - x;
@@ -2759,7 +2838,7 @@ static int taskbar_layout(TbItem *it, int max) {
     /* list in creation order (stable), not stacking order (which jumps) */
     for (int i = 0; i < MAX_WINDOWS && n < max; i++) {
         XWindow *w = &X.win[i];
-        if (!w->id || !w->toplevel || !w->mapped) continue;
+        if (!w->id || !w->toplevel || !w->mapped || w->override_) continue;
         if (x + bw > FB_W - TB_CLOCK_W - 8) break;
         it[n].x = x; it[n].w = bw; it[n].kind = TB_WINDOW;
         it[n].arg = 0; it[n].win = w->id;
@@ -3113,6 +3192,11 @@ static void render(rfb_server *s) {
     for (int i = X.nstack - 1; i >= 0; i--) {
         XWindow *w = find_win(X.stack[i]);
         if (!w || !w->toplevel || !w->mapped || w->minimized) continue;
+        if (w->override_) {
+            rfb_drop_shadow(s, w->x, w->y, w->w, w->h, 90);
+            blit_window(s, w, w->x, w->y);
+            continue;
+        }
         w->frame.title = w->title[0] ? w->title : "x11";
         w->frame.inactive = (w->id != X.focus);
         rfb_draw_winframe(s, &w->frame);
@@ -3137,6 +3221,10 @@ static int resize_edges_at(int x, int y, XWindow **out) {
     for (int i = 0; i < X.nstack; i++) {
         XWindow *w = find_win(X.stack[i]);
         if (!w || !w->mapped || w->minimized || !w->toplevel) continue;
+        if (w->override_) {                       /* popups cover what they cover */
+            if (x >= w->x && x < w->x + w->w && y >= w->y && y < w->y + w->h) return 0;
+            continue;
+        }
         int fx = w->frame.x, fy = w->frame.y;
         int fw = w->w + 2*RFB_BORDER, fh = RFB_TITLE_H + w->h + RFB_BORDER;
         if (x < fx - RZ_OUT || x >= fx + fw + RZ_OUT ||
@@ -3206,7 +3294,7 @@ static void on_pointer(rfb_server *s, int buttons, int x, int y) {
         XWindow *ht = toplevel_at(x, y);
         for (int i = 0; i < MAX_WINDOWS; i++) {
             XWindow *w = &X.win[i];
-            if (!w->id || !w->toplevel) continue;
+            if (!w->id || !w->toplevel || w->override_) continue;
             int hv = (w == ht) && !(buttons & 1) &&
                      rfb_winframe_over_buttons(&w->frame, x, y);
             if (hv != w->frame.hover) {
@@ -3240,7 +3328,7 @@ static void on_pointer(rfb_server *s, int buttons, int x, int y) {
      * press on any part of a window (chrome or content) brings it to the
      * front and gives it the keyboard. */
     int btn1 = buttons & 1;
-    if (btn1 && !prev_btn1) {
+    if (btn1 && !prev_btn1 && !X.pgrab_win) {
         if (taskbar_click(s, x, y)) {
             swallow_drag = 1;
             prev_btn1 = btn1;
@@ -3264,6 +3352,7 @@ static void on_pointer(rfb_server *s, int buttons, int x, int y) {
             return;
         }
         XWindow *top = toplevel_at(x, y);
+        if (top && top->override_) top = NULL;    /* a popup: just deliver */
         if (top) {
             /* title-bar buttons act on press, and must not start a drag */
             int b = rfb_winframe_button_at(&top->frame, x, y);
@@ -3287,11 +3376,11 @@ static void on_pointer(rfb_server *s, int buttons, int x, int y) {
 
     /* Frame dragging — only the front-most window under the pointer, so a
      * drag can't grab a window buried beneath another. */
-    if (!swallow_drag) {
+    if (!swallow_drag && !X.pgrab_win) {
         XWindow *top = toplevel_at(x, y);
         for (int i = 0; i < MAX_WINDOWS; i++) {
             XWindow *w = &X.win[i];
-            if (!w->id || !w->toplevel || !w->mapped || w->minimized) continue;
+            if (!w->id || !w->toplevel || !w->mapped || w->minimized || w->override_) continue;
             if (w != top && !w->frame.dragging) continue;
             if (rfb_winframe_pointer(s, &w->frame, buttons, x, y)) {
                 /* keep the title bar reachable: never let a window be
@@ -3309,11 +3398,22 @@ static void on_pointer(rfb_server *s, int buttons, int x, int y) {
     if (buttons & 4) newstate |= 0x400;
 
     XWindow *w = deepest_at(x, y);
+    uint32_t evmask_override = 0;
+    XWindow *gw = X.pgrab_win ? find_win(X.pgrab_win) : NULL;
+    if (gw) {
+        /* owner_events: the grabbing client's own windows get their events
+         * as usual; everything else is reported to the grab window */
+        if (!(X.pgrab_owner && w && w->creator == gw->creator)) {
+            w = gw;
+            evmask_override = X.pgrab_mask | 0x4 | 0x8;
+        }
+    }
     if (w) {
         XClient *c = win_client(w);
         int ox, oy;
         win_origin(w, &ox, &oy);
         uint32_t t = (uint32_t)rfb_now_ms();
+        uint32_t wmask = evmask_override ? evmask_override : w->evmask;
         if (c) {
             /* buttons: press/release events */
             for (int b = 0; b < 3; b++) {
@@ -3322,7 +3422,7 @@ static void on_pointer(rfb_server *s, int buttons, int x, int y) {
                 int now = (newstate & bit) != 0;
                 if (was == now) continue;
                 uint32_t need = now ? 0x4 : 0x8;
-                if (!(w->evmask & need)) continue;
+                if (!(wmask & need)) continue;
                 uint8_t ev[32]; memset(ev, 0, sizeof ev);
                 ev[0] = now ? 4 : 5;
                 ev[1] = (uint8_t)(b + 1);
@@ -3337,7 +3437,7 @@ static void on_pointer(rfb_server *s, int buttons, int x, int y) {
                 send_event(c, ev);
             }
             /* motion */
-            if (w->evmask & 0x40) {
+            if (wmask & 0x40 || (evmask_override && (wmask & 0x2000))) {
                 uint8_t ev[32]; memset(ev, 0, sizeof ev);
                 ev[0] = 6;
                 p32(ev, 4, t);
@@ -3407,12 +3507,32 @@ static void on_key(rfb_server *s, uint32_t ks, int down) {
      * over. Focus is a top-level, but the widget that selected for key
      * events is usually a child (xterm's VT window), so hand the event to
      * the deepest descendant that actually asked for it. */
+    uint32_t need = down ? 0x1 : 0x2;
+    XWindow *kg = X.kgrab_win ? find_win(X.kgrab_win) : NULL;
+    if (kg) {
+        /* a grabbed keyboard (an open menu) goes to the grab window */
+        XClient *c = win_client(kg);
+        if (!c) return;
+        int ox, oy;
+        win_origin(kg, &ox, &oy);
+        uint8_t ev[32]; memset(ev, 0, sizeof ev);
+        ev[0] = down ? 2 : 3;
+        ev[1] = code;
+        p32(ev, 4, (uint32_t)rfb_now_ms());
+        p32(ev, 8, ROOT_ID);
+        p32(ev, 12, kg->id);
+        p16(ev, 20, (uint16_t)X.ptr_x); p16(ev, 22, (uint16_t)X.ptr_y);
+        p16(ev, 24, (uint16_t)(X.ptr_x - ox)); p16(ev, 26, (uint16_t)(X.ptr_y - oy));
+        p16(ev, 28, (uint16_t)(X.btn_state | X.mod_state));
+        ev[30] = 1;
+        send_event(c, ev);
+        return;
+    }
     XWindow *top = find_win(X.focus);
     if (!top) {
         if (xtrace) { printf("[xtiny] key: no focus window\n"); fflush(stdout); }
         return;
     }
-    uint32_t need = down ? 0x1 : 0x2;
 
     /* Pick the window that will actually ACT on the key, innermost first:
      * the client's own SetInputFocus target, else the deepest descendant
