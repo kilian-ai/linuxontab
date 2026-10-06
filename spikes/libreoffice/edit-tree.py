@@ -158,10 +158,11 @@ edit('sal/osl/unx/module.cxx', [("""    bool result = false;
 #include <unistd.h>
 #include "file_url.hxx"''')])
 # Thread stacks: release Linux builds keep the libc default, which is 8 MB
-# with glibc but 128 KB with musl, and wasm has no guard pages, so a deep
-# thread (the zip/XML parser threads AutoCorrect starts on the first space)
-# ran off its stack into the next thread's descriptor and a pthread_getspecific
-# returned zip data. Ask for 4 MB on wasm, as OpenBSD/macOS ask for theirs.
+# with glibc but 128 KB with musl, and wasm has no guard pages to catch an
+# overflow. Ask for 4 MB on wasm, as OpenBSD/macOS ask for theirs. (The
+# AutoCorrect crash once blamed on this — pthread_getspecific returning zip
+# data in a new thread — was musl's wasm pthread_create handing threads
+# unzeroed TSD/TLS memory: toolchain/patches/musl-wasm-pthread-create-zero-tls.patch.)
 edit('sal/osl/unx/thread.cxx', [('''#if defined OPENBSD || defined MACOSX || (defined LINUX && !ENABLE_RUNTIME_OPTIMIZATIONS)
     if (pthread_attr_init(&attr) != 0)
         return nullptr;
@@ -182,16 +183,4 @@ _s = open(_p).read().replace(
     '#if defined OPENBSD || defined MACOSX || (defined LINUX && !ENABLE_RUNTIME_OPTIMIZATIONS)\n',
     '#if defined OPENBSD || defined MACOSX || (defined LINUX && !ENABLE_RUNTIME_OPTIMIZATIONS) || defined __wasm__\n')
 open(_p, 'w').write(_s)
-# The shared comphelper::ThreadPool runs its tasks inline on wasm (0
-# workers: pushTask queues, waitUntilDone executes). Every guest thread is
-# a whole new worker + module instance, and the About/character dialogs'
-# blur filters hung: shutdownLocked's notify_all never reached the idle
-# worker, so the join never returned (lost wakeup still to be root-caused).
-edit('comphelper/source/misc/threadpool.cxx', [('''        const std::size_t nThreads = ThreadPool::getPreferredConcurrency();
-        return std::make_shared< ThreadPool >( nThreads );''', '''#if defined __wasm__
-        const std::size_t nThreads = 0;
-#else
-        const std::size_t nThreads = ThreadPool::getPreferredConcurrency();
-#endif
-        return std::make_shared< ThreadPool >( nThreads );''')])
 print("tree: ok")

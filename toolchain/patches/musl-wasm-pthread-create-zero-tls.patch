@@ -1,0 +1,19 @@
+--- a/src/thread/pthread_create.c	2026-10-06 10:14:14
++++ b/src/thread/pthread_create.c	2026-10-06 10:14:14
+@@ -293,6 +293,16 @@
+ 	if (!tsd) {
+ 		#ifdef __wasm__
+ 		map = __libc_malloc(size);
++		if (!map) goto fail;
++		/* mmap would hand out zero pages, and the code below relies on
++		 * that: __copy_tls fills in only part of struct pthread (not
++		 * cancelbuf, the robust list, ...) and nothing clears the TSD
++		 * slots. Recycled heap memory gave new threads stale cleanup
++		 * handlers — __pthread_exit called garbage before waking the
++		 * joiner, so pthread_join hung — and stale pthread_getspecific
++		 * values. The stack below needs no clearing. */
++		memset(map + size - libc.tls_size - __pthread_tsd_size, 0,
++		       libc.tls_size + __pthread_tsd_size);
+ 		#else
+ 		if (guard) {
+ 			map = __mmap(0, size, PROT_NONE, MAP_PRIVATE|MAP_ANON, -1, 0);

@@ -17,6 +17,13 @@
 # heap and hit the 256 MiB maximum with only ~54 MiB of brk heap in use
 # (every sbrk-only dlmalloc port — ffmpeg, netsurf, … — was capped there).
 #
+# Also applies toolchain/patches/musl-wasm-pthread-create-zero-tls.patch: on
+# wasm, pthread_create takes the thread's stack + TLS + struct pthread + TSD
+# array from __libc_malloc instead of fresh zeroed mmap pages, but relies on
+# the zeroes; recycled heap memory gave new threads stale cancellation
+# handlers (__pthread_exit trapped in call_indirect before waking its joiner,
+# so pthread_join hung forever) and stale pthread_getspecific values.
+#
 # This script replays the original Nix derivations (musl.drv + musl-sysroot
 # .drv) outside Nix, using the exact same toolchain store paths, with the
 # patch applied. Output: toolchain/musl-sysroot-fixed/ — byte-identical to
@@ -54,6 +61,8 @@ patch -p1 -d "$WORK/src" < "$REPO_ROOT/toolchain/patches/musl-mallocng-alloc-met
 
 echo "==> Applying brk wasm-page-units patch"
 patch -p1 -d "$WORK/src" < "$REPO_ROOT/toolchain/patches/musl-brk-wasm-page-units.patch"
+echo "==> Applying pthread_create zeroed-TLS patch"
+patch -p1 -d "$WORK/src" < "$REPO_ROOT/toolchain/patches/musl-wasm-pthread-create-zero-tls.patch"
 
 echo "==> Building musl (wasm32)"
 MUSL_OUT="$WORK/out"
@@ -95,10 +104,13 @@ PY
 
 # toolchain/cpp-sysroot-fixed carries its own copy of libc.a (plus libc++);
 # keep it in step when rebuilding the default sysroot.
-CPP_SYSROOT="$REPO_ROOT/toolchain/cpp-sysroot-fixed"
-if [ -z "${LOT_SYSROOT_OUT:-}" ] && [ -f "$CPP_SYSROOT/lib/libc.a" ]; then
-    cp "$OUT/lib/libc.a" "$CPP_SYSROOT/lib/libc.a"
-    echo "==> Updated $CPP_SYSROOT/lib/libc.a"
-fi
+# the C++ sysroots carry a copy of the same libc.a (cpp-eh-sysroot: the
+# wasm-exceptions one LibreOffice builds with)
+for CPP_SYSROOT in "$REPO_ROOT/toolchain/cpp-sysroot-fixed" "$REPO_ROOT/toolchain/cpp-eh-sysroot"; do
+    if [ -z "${LOT_SYSROOT_OUT:-}" ] && [ -f "$CPP_SYSROOT/lib/libc.a" ]; then
+        cp "$OUT/lib/libc.a" "$CPP_SYSROOT/lib/libc.a"
+        echo "==> Updated $CPP_SYSROOT/lib/libc.a"
+    fi
+done
 
 echo "Done: $OUT"
