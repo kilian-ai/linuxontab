@@ -1,9 +1,10 @@
 #!/bin/sh
-# soffice with the guest's settings (profile under $HOME, X11 backend), for
-# everything that isn't Writer's window — e.g. headless conversion:
+# soffice with the guest's profile under $HOME, for everything that isn't
+# Writer's window — e.g. headless conversion:
 #   /opt/lo/soffice --headless --convert-to pdf --outdir /tmp /tmp/notes.txt
+# (No SAL_USE_VCLPLUGIN here: forcing gen makes --headless open the X display.)
 [ "$HOME" = "/" ] && HOME=/root
 [ -n "$HOME" ] || HOME=/root
-export HOME SAL_USE_VCLPLUGIN=gen
+export HOME
 mkdir -p "$HOME/.config"
 exec /opt/lo/program/soffice.bin "-env:UserInstallation=file://$HOME/.config/libreoffice" "$@"
