@@ -450,100 +450,191 @@ import { bootMachine, consoleDevice, entropyDevice, blockDevice, ethernetDevice,
 // #tlsFetch carries its ciphertext over a WISP stream, so an HTTPS host that
 // refuses browser fetches (no CORS) is still reached without a proxy: the
 // backend sees ciphertext and the host name, nothing else. Certificates are
-// checked against the bundled Mozilla roots. Loaded on first use only (it is
-// ~650 KB); a trap or load failure drops the instance so the next use reloads.
+// checked against the bundled Mozilla roots. The module runs in its own
+// Worker, so handshakes and decryption never take time from the page; it is
+// loaded on first use only (~650 KB), and a trap or load failure ends the
+// Worker so the next use starts a fresh one.
 const LOT_TLS_URL = './linux-dist/lot-tls.wasm?v=1c3913200c9a';
-let lotTlsPromise = null;
-function lotTls() {
-  if (lotTlsPromise) return lotTlsPromise;
-  lotTlsPromise = (async () => {
-    let mem = null;
-    const dv = () => new DataView(mem.buffer);
-    // the only WASI calls the module makes (Rust std on wasm32-wasip1)
-    const wasi = {
-      random_get(p, n) { crypto.getRandomValues(new Uint8Array(mem.buffer, p, n)); return 0; },
-      clock_time_get(id, prec, out) { dv().setBigUint64(out, BigInt(Date.now()) * 1000000n, true); return 0; },
-      fd_write(fd, iovs, n, nwritten) { dv().setUint32(nwritten, 0, true); return 0; },
-      environ_get() { return 0; },
-      environ_sizes_get(c, sz) { dv().setUint32(c, 0, true); dv().setUint32(sz, 0, true); return 0; },
-      proc_exit(code) { throw new Error('lot-tls exited ' + code); },
-    };
-    const resp = await fetch(LOT_TLS_URL);
+
+// Worker body (stringified). Owns the wasm instance and its connections;
+// every reply carries whatever ciphertext to send and plaintext received.
+function lotTlsWorker() {
+  let X = null, mem = null, buf = 0;
+  const CAP = 65536;
+  const conns = new Map();
+  const dv = () => new DataView(mem.buffer);
+  // the only WASI calls the module makes (Rust std on wasm32-wasip1)
+  const wasi = {
+    random_get(p, n) { crypto.getRandomValues(new Uint8Array(mem.buffer, p, n)); return 0; },
+    clock_time_get(id, prec, out) { dv().setBigUint64(out, BigInt(Date.now()) * 1000000n, true); return 0; },
+    fd_write(fd, iovs, n, nwritten) { dv().setUint32(nwritten, 0, true); return 0; },
+    environ_get() { return 0; },
+    environ_sizes_get(c, sz) { dv().setUint32(c, 0, true); dv().setUint32(sz, 0, true); return 0; },
+    proc_exit(code) { throw new Error('lot-tls exited ' + code); },
+  };
+  const put = (bytes) => { new Uint8Array(mem.buffer, buf, bytes.length).set(bytes); };
+  const errOf = (h) => new TextDecoder().decode(new Uint8Array(mem.buffer, buf, X.lt_error(h, buf, CAP)));
+  const tlsErr = (h) => {
+    const e = new Error(errOf(h));
+    e.tls = true;
+    e.cert = /certificate|UnknownIssuer|BadSignature|NotValidForName/i.test(e.message);
+    return e;
+  };
+  function plain(h, out) {          // → true once close_notify was seen
+    for (;;) {
+      const n = X.lt_pull_plain(h, buf, CAP);
+      if (n === -4) return true;
+      if (n < 0) throw tlsErr(h);
+      if (n === 0) return false;
+      out.push(new Uint8Array(mem.buffer, buf, n).slice());
+    }
+  }
+  function cipher(h, out) {
+    for (;;) {
+      const n = X.lt_pull_cipher(h, buf, CAP);
+      if (n < 0) throw tlsErr(h);
+      if (n === 0) return;
+      out.push(new Uint8Array(mem.buffer, buf, n).slice());
+    }
+  }
+  // rustls holds at most 16 KiB of plaintext, so feeding alternates with draining
+  function feed(h, bytes, out) {
+    for (let o = 0; o < bytes.length;) {
+      const part = bytes.subarray(o, o + CAP);
+      put(part);
+      const n = X.lt_feed(h, buf, part.length);
+      if (n < 0) throw tlsErr(h);
+      o += n;
+      const before = out.length;
+      if (plain(h, out)) return true;
+      if (n === 0 && out.length === before) break;   // nothing consumed, nothing to drain
+    }
+    return false;
+  }
+  async function load(url) {
+    const resp = await fetch(url);
     if (!resp.ok) throw new Error('lot-tls.wasm: HTTP ' + resp.status);
     const { instance } = await WebAssembly.instantiate(await resp.arrayBuffer(),
                                                        { wasi_snapshot_preview1: wasi });
-    const X = instance.exports;
+    X = instance.exports;
     mem = X.memory;
-    const CAP = 65536;
-    const buf = X.lt_alloc(CAP);
-    const put = (bytes) => { new Uint8Array(mem.buffer, buf, bytes.length).set(bytes); };
-    const errOf = (h) => new TextDecoder().decode(new Uint8Array(mem.buffer, buf, X.lt_error(h, buf, CAP)));
-    // One TLS client connection. feed(ciphertext) → decrypted chunks (it
-    // drains as it goes; rustls holds at most 16 KiB of plaintext), throws on
-    // a TLS error (e.tls, e.cert); write(plaintext); cipher() drains what to
-    // send; plain() drains what is left, noting close_notify.
-    return {
-      open(host) {
-        const hb = new TextEncoder().encode(host);
+    buf = X.lt_alloc(CAP);
+  }
+  self.onmessage = async (ev) => {
+    const d = ev.data;
+    if (d.op === 'load') {
+      try { await load(d.url); self.postMessage({ op: 'ready' }); }
+      catch (e) { self.postMessage({ op: 'dead', message: String(e && e.message || e) }); }
+      return;
+    }
+    const h = d.op === 'open' ? 0 : conns.get(d.id);
+    if (d.op !== 'open' && !h) return;               // already dropped (error)
+    const c = [], p = [];
+    let closed = false;
+    try {
+      if (d.op === 'open') {
+        const hb = new TextEncoder().encode(d.host);
         put(hb);
-        const h = X.lt_new(buf, hb.length);
-        if (!h) throw new Error('tls: ' + errOf(0));
-        return {
-          feed(bytes) {
-            const out = [];
-            let closed = false;
-            for (let o = 0; o < bytes.length;) {
-              const part = bytes.subarray(o, o + CAP);
-              put(part);
-              const n = X.lt_feed(h, buf, part.length);
-              if (n < 0) {
-                const e = new Error(errOf(h));
-                e.tls = true;
-                e.cert = /certificate|UnknownIssuer|BadSignature|NotValidForName/i.test(e.message);
-                throw e;
-              }
-              o += n;
-              const p = this.plain();
-              out.push(...p.chunks);
-              if (p.closed) { closed = true; break; }
-              if (n === 0 && !p.chunks.length) break;   // nothing consumed, nothing to drain
-            }
-            return { chunks: out, closed };
-          },
-          write(bytes) {
-            for (let o = 0; o < bytes.length; o += CAP) {
-              const part = bytes.subarray(o, o + CAP);
-              put(part);
-              if (X.lt_write(h, buf, part.length) < 0) throw new Error('tls write: ' + errOf(h));
-            }
-          },
-          cipher() {
-            const out = [];
-            for (;;) {
-              const n = X.lt_pull_cipher(h, buf, CAP);
-              if (n < 0) throw new Error('tls: ' + errOf(h));
-              if (n === 0) break;
-              out.push(new Uint8Array(mem.buffer, buf, n).slice());
-            }
-            return out;
-          },
-          plain() {               // { chunks, closed }  closed = close_notify seen
-            const chunks = [];
-            for (;;) {
-              const n = X.lt_pull_plain(h, buf, CAP);
-              if (n === -4) return { chunks, closed: true };
-              if (n < 0) throw new Error('tls: ' + errOf(h));
-              if (n === 0) return { chunks, closed: false };
-              chunks.push(new Uint8Array(mem.buffer, buf, n).slice());
-            }
-          },
-          close() { try { X.lt_close(h); } catch (_) {} },
-          drop() { try { X.lt_drop(h); } catch (_) {} },
-        };
-      },
+        const nh = X.lt_new(buf, hb.length);
+        if (!nh) throw new Error('tls: ' + errOf(0));
+        conns.set(d.id, nh);
+        return;
+      } else if (d.op === 'feed') {
+        closed = feed(h, new Uint8Array(d.bytes), p);
+      } else if (d.op === 'write') {
+        const bytes = new Uint8Array(d.bytes);
+        for (let o = 0; o < bytes.length; o += CAP) {
+          const part = bytes.subarray(o, o + CAP);
+          put(part);
+          if (X.lt_write(h, buf, part.length) < 0) throw tlsErr(h);
+        }
+      } else if (d.op === 'end') {                   // peer closed: last plaintext
+        try { closed = plain(h, p); } catch (_) {}
+        closed = true;
+      } else if (d.op === 'drop') {
+        conns.delete(d.id);
+        try { X.lt_drop(h); } catch (_) {}
+        return;
+      }
+      if (!closed) cipher(h, c);
+    } catch (e) {
+      if (e instanceof WebAssembly.RuntimeError) {   // trap: the instance is unusable
+        self.postMessage({ op: 'dead', message: 'lot-tls trapped: ' + e.message });
+        return;
+      }
+      conns.delete(d.id);
+      try { X.lt_drop(h); } catch (_) {}
+      self.postMessage({ op: 'error', id: d.id, message: String(e.message || e), tls: !!e.tls, cert: !!e.cert });
+      return;
+    }
+    if (c.length || p.length || closed) {
+      self.postMessage({ op: 'io', id: d.id, cipher: c, plain: p, closed },
+                       [...c, ...p].map((b) => b.buffer));
+    }
+  };
+}
+
+// Page side: lotTls() → { open(host, on) } where on = { cipher(chunks),
+// plain(chunks, closed), error(e) }; open returns { feed(bytes), write(bytes),
+// end(), drop() }. e.tls / e.cert mark TLS and certificate failures.
+let lotTlsPromise = null;
+function lotTls() {
+  if (lotTlsPromise) return lotTlsPromise;
+  lotTlsPromise = new Promise((resolve, reject) => {
+    const src = URL.createObjectURL(new Blob(['(' + lotTlsWorker.toString() + ')()'],
+                                             { type: 'text/javascript' }));
+    const w = new Worker(src);
+    URL.revokeObjectURL(src);
+    const conns = new Map();
+    let next = 1, ready = false;
+    const die = (message) => {
+      try { w.terminate(); } catch (_) {}
+      lotTlsPromise = null;
+      if (!ready) reject(new Error(message));
+      for (const on of conns.values()) on.error(new Error(message));
+      conns.clear();
     };
-  })();
-  lotTlsPromise.catch(() => { lotTlsPromise = null; });
+    w.onerror = (ev) => { ev.preventDefault(); die('lot-tls worker: ' + (ev.message || 'failed')); };
+    w.onmessage = (ev) => {
+      const d = ev.data;
+      if (d.op === 'ready') {
+        ready = true;
+        resolve({
+          open(host, on) {
+            const id = next++;
+            conns.set(id, on);
+            w.postMessage({ op: 'open', id, host });
+            const send = (op, bytes) => {
+              const b = bytes.slice();          // own copy, handed over
+              w.postMessage({ op, id, bytes: b.buffer }, [b.buffer]);
+            };
+            return {
+              feed(bytes) { send('feed', bytes); },
+              write(bytes) { send('write', bytes); },
+              end() { w.postMessage({ op: 'end', id }); },
+              drop() { if (conns.delete(id)) w.postMessage({ op: 'drop', id }); },
+            };
+          },
+        });
+      } else if (d.op === 'dead') {
+        die(d.message);
+      } else {
+        const on = conns.get(d.id);
+        if (!on) return;
+        if (d.op === 'error') {
+          conns.delete(d.id);
+          const e = new Error(d.message);
+          e.tls = d.tls; e.cert = d.cert;
+          on.error(e);
+        } else {
+          const u8 = (b) => new Uint8Array(b.buffer || b);
+          if (d.cipher.length) on.cipher(d.cipher.map(u8));
+          if (d.plain.length || d.closed) on.plain(d.plain.map(u8), d.closed);
+        }
+      }
+    };
+    w.postMessage({ op: 'load', url: new URL(LOT_TLS_URL, location.href).href });
+  });
   return lotTlsPromise;
 }
 
@@ -1824,47 +1915,46 @@ class WispSlirp {
     const https = u.protocol === 'https:';
     const port = +u.port || (https ? 443 : 80);
     console.log('[HTTP-GW] via page TLS', u.host);
-    const tls = https ? (await lotTls()).open(u.hostname) : null;
+    const lib = https ? await lotTls() : null;
     const id = this.#wispConnect(u.hostname, port);
     const s = this.#streams.get(id);
     const raw = [];                 // response bytes (plaintext)
     let total = 0;
-    const result = await new Promise((resolve, reject) => {
-      let idle;
+    await new Promise((resolve, reject) => {
+      let idle, tls = null, over = false;
       const done = (err) => {
+        if (over) return;
+        over = true;
         clearTimeout(idle);
-        if (tls) { tls.drop(); }
+        if (tls) tls.drop();
         if (this.#streams.has(id)) this.#wispClose(id);
         if (err) reject(err); else resolve();
       };
       const arm = () => { clearTimeout(idle); idle = setTimeout(() => done(new Error('timed out')), 30000); };
-      const send = (chunks) => { for (const c of chunks) this.#wispData(id, c); };
+      const keep = (chunks) => { for (const c of chunks) { raw.push(c); total += c.length; } };
       if (!s) { reject(new Error('WISP stream not available')); return; }
-      s.onClose = () => {
-        if (tls) { try { const p = tls.plain(); for (const c of p.chunks) { raw.push(c); total += c.length; } } catch (_) {} }
-        done(total ? null : new Error('connection closed before a response'));
-      };
+      if (lib) {
+        tls = lib.open(u.hostname, {
+          cipher: (chunks) => { if (!over && this.#streams.has(id)) for (const c of chunks) this.#wispData(id, c); },
+          plain: (chunks, closed) => { keep(chunks); if (closed) done(total ? null : new Error('connection closed before a response')); },
+          error: (e) => {
+            if (e.cert) {
+              const err = new Error('TLS certificate error for ' + u.host + ': ' + e.message +
+                ' — the certificate did not check out, so nothing was sent.');
+              err.gatewayStatus = '495 SSL Certificate Error';
+              done(err);
+            } else if (e.tls) {
+              done(new Error('TLS error for ' + u.host + ': ' + e.message));
+            } else done(e);
+          },
+        });
+      }
+      // the TLS worker answers in order, so after end() its last plaintext
+      // arrives with closed set and finishes the request
+      s.onClose = () => { if (tls) tls.end(); else done(total ? null : new Error('connection closed before a response')); };
       s.onData = (chunk) => {
         arm();
-        try {
-          if (tls) {
-            const p = tls.feed(chunk);
-            for (const c of p.chunks) { raw.push(c); total += c.length; }
-            send(tls.cipher());
-            if (p.closed) done(null);
-          } else {
-            raw.push(chunk.slice()); total += chunk.length;
-          }
-        } catch (e) {
-          if (e.cert) {
-            const err = new Error('TLS certificate error for ' + u.host + ': ' + e.message +
-              ' — the certificate did not check out, so nothing was sent.');
-            err.gatewayStatus = '495 SSL Certificate Error';
-            done(err);
-          } else if (e.tls) {
-            done(new Error('TLS error for ' + u.host + ': ' + e.message));
-          } else done(e);
-        }
+        if (tls) tls.feed(chunk); else keep([chunk.slice()]);
       };
       const req = new TextEncoder().encode(
         method + ' ' + (u.pathname || '/') + u.search + ' HTTP/1.1\r\n' +
@@ -1872,9 +1962,8 @@ class WispSlirp {
         'User-Agent: Wget/1.21 (LinuxOnTab)\r\n' +
         'Accept: */*\r\nAccept-Encoding: gzip, deflate\r\nConnection: close\r\n\r\n');
       arm();
-      if (tls) { tls.write(req); send(tls.cipher()); } else this.#wispData(id, req);
+      if (tls) tls.write(req); else this.#wispData(id, req);
     });
-    void result;
 
     // ── parse HTTP/1.1 ──
     const all = new Uint8Array(total);
