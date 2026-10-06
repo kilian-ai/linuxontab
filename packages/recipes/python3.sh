@@ -8,7 +8,10 @@
 # Build deps: host python3.11+ (for --with-build-python), curl, make
 
 NAME="python3"
-VERSION="3.11.14-r1"   # r1: locked sbrk dlmalloc (wasm_dlmalloc_mt) instead of mallocng, per-thread TLS
+VERSION="3.11.14-r2"   # r2: rebuilt against the libc.a whose pthread_create zeroes the new
+                       # thread's TLS/struct pthread/TSD (stale cancelbuf trapped every
+                       # thread's exit: "table index is out of bounds", joins hung)
+                       # r1: locked sbrk dlmalloc (wasm_dlmalloc_mt) instead of mallocng, per-thread TLS
 DESCRIPTION="Python 3.11 interpreter (CPython, WASM)"
 SOURCE_URL="https://www.python.org/ftp/python/3.11.14/Python-3.11.14.tar.xz"
 # Leave SOURCE_SHA256 empty to skip checksum (set once confirmed)
