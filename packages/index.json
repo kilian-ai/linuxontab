@@ -620,11 +620,11 @@
       "status": "available"
     },
     "redis": {
-      "version": "7.2.5-r1",
+      "version": "7.2.5-r2",
       "description": "Redis key/value database server + CLI",
-      "url": "https://linuxontab.com/packages/redis-7.2.5-r1.tar.gz",
-      "size": 2153076,
-      "sha256": "71b72a2c5e0642166a1a1030b74e1ccd5e8c4be00bd7c55db9b92872c9cb2e82",
+      "url": "https://linuxontab.com/packages/redis-7.2.5-r2.tar.gz",
+      "size": 2153687,
+      "sha256": "ece4a0740e43263a2fef60afba860adb55b62f6b00e1d2f3df54fd3a319c9811",
       "bins": [
         "redis-server",
         "redis-cli"
@@ -711,11 +711,11 @@
       "status": "available"
     },
     "ffmpeg7": {
-      "version": "7.0.2-r3",
+      "version": "7.0.2-r4",
       "description": "ffmpeg 7.0 + ffprobe 7.0 with pthreads \u2014 installs as ffmpeg7 / ffprobe7",
-      "url": "https://linuxontab.com/packages/ffmpeg7-7.0.2-r3.tar.gz",
-      "size": 16394499,
-      "sha256": "c5cf28fccfe322008e7baefd796b36d9dca7e1eebf6d8181702199671bfa10ed",
+      "url": "https://linuxontab.com/packages/ffmpeg7-7.0.2-r4.tar.gz",
+      "size": 16394077,
+      "sha256": "6927d10cd949ff1e9af5b9b66956ecd7c6bd1d655e65f070c06cd2fc12311bd6",
       "bins": [
         "ffmpeg7",
         "ffprobe7"

@@ -27,9 +27,10 @@
 
 NAME="ffmpeg7"
 FFMPEG_UPSTREAM="7.0.2"
-VERSION="${FFMPEG_UPSTREAM}-r3"   # r1: fixed-sysroot brk, heap no longer capped at ~60 MB
+VERSION="${FFMPEG_UPSTREAM}-r4"   # r1: fixed-sysroot brk, heap no longer capped at ~60 MB
                                   # r2: locked dlmalloc (wasm_dlmalloc_mt), per-thread TLS
                                   # r3: same code, EXPERIMENTAL dropped (kernel futex fix)
+                                  # r4: libc.a whose pthread_create zeroes TLS/TSD (017c113)
 DESCRIPTION="ffmpeg 7.0 + ffprobe 7.0 with pthreads — installs as ffmpeg7 / ffprobe7"
 SOURCE_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_UPSTREAM}.tar.gz"
 SOURCE_SHA256=""

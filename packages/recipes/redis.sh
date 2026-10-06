@@ -23,7 +23,8 @@
 
 NAME="redis"
 REDIS_UPSTREAM="7.2.5"
-VERSION="${REDIS_UPSTREAM}-r1"   # r1: own thread stacks + TLS (wasm_clone), locked dlmalloc, fork-child globals
+VERSION="${REDIS_UPSTREAM}-r2"   # r1: own thread stacks + TLS (wasm_clone), locked dlmalloc, fork-child globals
+                                 # r2: libc.a whose pthread_create zeroes TLS/TSD (017c113)
 DESCRIPTION="Redis key/value database server + CLI"
 SOURCE_URL="https://download.redis.io/releases/redis-${REDIS_UPSTREAM}.tar.gz"
 SOURCE_SHA256=""
