@@ -421,6 +421,108 @@ import { bootMachine, consoleDevice, entropyDevice, blockDevice, ethernetDevice,
 // UDP53: Guest DNS → DoH via relay.linuxontab.com → UDP response back
 // ARP:   Respond to "who has 192.168.86.1?" with gateway MAC
 // ─────────────────────────────────────────────────────────────────────────────
+// ── TLS in the page (lot-tls.wasm, tools/lot-tls) ───────────────────────────
+// rustls compiled to wasm32-wasip1 behind a byte-in/byte-out C ABI. WispSlirp
+// #tlsFetch carries its ciphertext over a WISP stream, so an HTTPS host that
+// refuses browser fetches (no CORS) is still reached without a proxy: the
+// backend sees ciphertext and the host name, nothing else. Certificates are
+// checked against the bundled Mozilla roots. Loaded on first use only (it is
+// ~650 KB); a trap or load failure drops the instance so the next use reloads.
+const LOT_TLS_URL = './linux-dist/lot-tls.wasm?v=1c3913200c9a';
+let lotTlsPromise = null;
+function lotTls() {
+  if (lotTlsPromise) return lotTlsPromise;
+  lotTlsPromise = (async () => {
+    let mem = null;
+    const dv = () => new DataView(mem.buffer);
+    // the only WASI calls the module makes (Rust std on wasm32-wasip1)
+    const wasi = {
+      random_get(p, n) { crypto.getRandomValues(new Uint8Array(mem.buffer, p, n)); return 0; },
+      clock_time_get(id, prec, out) { dv().setBigUint64(out, BigInt(Date.now()) * 1000000n, true); return 0; },
+      fd_write(fd, iovs, n, nwritten) { dv().setUint32(nwritten, 0, true); return 0; },
+      environ_get() { return 0; },
+      environ_sizes_get(c, sz) { dv().setUint32(c, 0, true); dv().setUint32(sz, 0, true); return 0; },
+      proc_exit(code) { throw new Error('lot-tls exited ' + code); },
+    };
+    const resp = await fetch(LOT_TLS_URL);
+    if (!resp.ok) throw new Error('lot-tls.wasm: HTTP ' + resp.status);
+    const { instance } = await WebAssembly.instantiate(await resp.arrayBuffer(),
+                                                       { wasi_snapshot_preview1: wasi });
+    const X = instance.exports;
+    mem = X.memory;
+    const CAP = 65536;
+    const buf = X.lt_alloc(CAP);
+    const put = (bytes) => { new Uint8Array(mem.buffer, buf, bytes.length).set(bytes); };
+    const errOf = (h) => new TextDecoder().decode(new Uint8Array(mem.buffer, buf, X.lt_error(h, buf, CAP)));
+    // One TLS client connection. feed(ciphertext) → decrypted chunks (it
+    // drains as it goes; rustls holds at most 16 KiB of plaintext), throws on
+    // a TLS error (e.tls, e.cert); write(plaintext); cipher() drains what to
+    // send; plain() drains what is left, noting close_notify.
+    return {
+      open(host) {
+        const hb = new TextEncoder().encode(host);
+        put(hb);
+        const h = X.lt_new(buf, hb.length);
+        if (!h) throw new Error('tls: ' + errOf(0));
+        return {
+          feed(bytes) {
+            const out = [];
+            let closed = false;
+            for (let o = 0; o < bytes.length;) {
+              const part = bytes.subarray(o, o + CAP);
+              put(part);
+              const n = X.lt_feed(h, buf, part.length);
+              if (n < 0) {
+                const e = new Error(errOf(h));
+                e.tls = true;
+                e.cert = /certificate|UnknownIssuer|BadSignature|NotValidForName/i.test(e.message);
+                throw e;
+              }
+              o += n;
+              const p = this.plain();
+              out.push(...p.chunks);
+              if (p.closed) { closed = true; break; }
+              if (n === 0 && !p.chunks.length) break;   // nothing consumed, nothing to drain
+            }
+            return { chunks: out, closed };
+          },
+          write(bytes) {
+            for (let o = 0; o < bytes.length; o += CAP) {
+              const part = bytes.subarray(o, o + CAP);
+              put(part);
+              if (X.lt_write(h, buf, part.length) < 0) throw new Error('tls write: ' + errOf(h));
+            }
+          },
+          cipher() {
+            const out = [];
+            for (;;) {
+              const n = X.lt_pull_cipher(h, buf, CAP);
+              if (n < 0) throw new Error('tls: ' + errOf(h));
+              if (n === 0) break;
+              out.push(new Uint8Array(mem.buffer, buf, n).slice());
+            }
+            return out;
+          },
+          plain() {               // { chunks, closed }  closed = close_notify seen
+            const chunks = [];
+            for (;;) {
+              const n = X.lt_pull_plain(h, buf, CAP);
+              if (n === -4) return { chunks, closed: true };
+              if (n < 0) throw new Error('tls: ' + errOf(h));
+              if (n === 0) return { chunks, closed: false };
+              chunks.push(new Uint8Array(mem.buffer, buf, n).slice());
+            }
+          },
+          close() { try { X.lt_close(h); } catch (_) {} },
+          drop() { try { X.lt_drop(h); } catch (_) {} },
+        };
+      },
+    };
+  })();
+  lotTlsPromise.catch(() => { lotTlsPromise = null; });
+  return lotTlsPromise;
+}
+
 class WispSlirp {
   static GW_MAC  = new Uint8Array([0x52, 0x54, 0x00, 0x01, 0x02, 0x03]);
   static GW_IP   = new Uint8Array([192, 168, 86, 1]);
@@ -1302,13 +1404,14 @@ class WispSlirp {
       respBytes.set(hdr); respBytes.set(body, hdr.length);
     } catch (e) {
       console.error('[HTTP-GW] error', e);
-      const blocked = !!(e && e.gatewayBlocked);
-      const msg = blocked ? e.message + '\n' : 'fetch failed: ' + (e?.message || e);
+      // A refused origin (403) or a failed certificate check (495) is a
+      // client error with an explanation: lotfetch prints it and stops
+      // instead of retrying. 502 stays for real (retryable) failures.
+      const status = (e && e.gatewayStatus) || '502 Bad Gateway';
+      const msg = (e && e.gatewayStatus) ? e.message + '\n' : 'fetch failed: ' + (e?.message || e);
       const body = new TextEncoder().encode(msg);
-      // 403 for a refused origin: a client error, so lotfetch shows the
-      // message and stops instead of retrying; 502 stays for real failures.
       const hdr = new TextEncoder().encode(
-        'HTTP/1.0 ' + (blocked ? '403 Forbidden' : '502 Bad Gateway') + '\r\nContent-Length: ' + body.length +
+        'HTTP/1.0 ' + status + '\r\nContent-Length: ' + body.length +
         '\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n');
       respBytes = new Uint8Array(hdr.length + body.length);
       respBytes.set(hdr); respBytes.set(body, hdr.length);
@@ -1624,15 +1727,17 @@ class WispSlirp {
   // an origin that refuses (no CORS headers) goes through #corsProxy, and it
   // is remembered so later requests skip the doomed direct attempt.
   //
-  // #corsProxy is relay.linuxontab.com by default. With ?wisp= it is null:
-  // a guest pointed at its own backend chose not to route through
-  // linuxontab.com, and the relay would see the whole URL, so a refused
-  // origin fails visibly instead (see #6 for the same rule applied to DNS).
-  // ?cors=relay restores the relay, ?cors=off disables any proxy, and
-  // ?cors=<prefix> names your own proxy (the URL is appended, encoded).
+  // #corsProxy is relay.linuxontab.com by default. With ?wisp= it is
+  // WispSlirp.PAGE_TLS: a guest pointed at its own backend chose not to
+  // route through linuxontab.com, so a refused origin is fetched with TLS in
+  // the page over a WISP stream instead (#tlsFetch; same rule as #6 for DNS).
+  // ?cors=tls selects that anywhere, ?cors=relay the relay, ?cors=off no
+  // fallback at all (a refused origin gets a 403), and ?cors=<prefix> names
+  // your own proxy (the URL is appended, encoded).
   static RELAY_CORS = 'https://relay.linuxontab.com/cors?url=';
+  static PAGE_TLS = 'tls';
 
-  async #gatewayFetch(url, method) {
+  async #gatewayFetch(url, method, hops = 0) {
     const opts = { method, redirect: 'follow', credentials: 'omit' };
     let origin = null;
     try { origin = new URL(url).origin; } catch (_) {}
@@ -1646,18 +1751,157 @@ class WispSlirp {
         this.#noCorsOrigins.add(origin);
       }
     }
+    if (this.#corsProxy === WispSlirp.PAGE_TLS) return this.#tlsFetch(url, method, hops);
     if (!this.#corsProxy) {
       const err = new Error(
         'blocked: ' + origin + ' does not allow direct browser fetches, and this ' +
-        'page has no CORS proxy (?wisp= is set, so relay.linuxontab.com is not ' +
-        'used — it would see the full URL). Add ?cors=relay to allow the relay, ' +
-        '?cors=<your proxy prefix> to use your own, or fetch over the guest\'s ' +
-        'own TLS (e.g. python, or curl with TLS) instead of the wget/curl shims.');
-      err.gatewayBlocked = true;
+        'page has no fallback (?cors=off). Use ?cors=tls to fetch it with TLS in ' +
+        'the page over the WISP backend, ?cors=relay for the relay, or ' +
+        '?cors=<your proxy prefix> for your own proxy.');
+      err.gatewayStatus = '403 Forbidden';
       throw err;
     }
     console.log('[HTTP-GW] via proxy', this.#corsProxy === WispSlirp.RELAY_CORS ? 'relay' : this.#corsProxy, url);
     return fetch(this.#corsProxy + encodeURIComponent(url), opts);
+  }
+
+  // GET/HEAD `url` over a WISP TCP stream: TLS in the page (lot-tls) for
+  // https, plain for http, HTTP/1.1 with Connection: close. Handles chunked
+  // bodies, gzip/deflate and redirects (a redirect goes back through
+  // #gatewayFetch, so a CORS-friendly target is still fetched directly).
+  //
+  // lotfetch pulls a file as 32 KB Range slices on fresh connections, and
+  // the gateway re-fetches the full URL for each (the browser cache absorbs
+  // that for direct fetches; nothing does here). So whole responses are
+  // cached briefly by URL — in flight and for a minute after — and every
+  // slice after the first is served from memory.
+  #tlsCache = new Map();          // url → { at, promise }
+
+  #tlsFetch(url, method, hops) {
+    const key = method + ' ' + url;
+    const now = Date.now();
+    for (const [k, v] of this.#tlsCache) if (now - v.at > 60000) this.#tlsCache.delete(k);
+    let hit = this.#tlsCache.get(key);
+    if (hit) {
+      // Answer after a real pause, never in the same tick: the gateway's
+      // delivery only transfers cleanly behind an awaited fetch.
+      return hit.promise.then((r) => new Promise((ok) => setTimeout(() => ok(r.clone()), 20)));
+    }
+    const promise = this.#tlsFetchOnce(url, method, hops);
+    hit = { at: now, promise };
+    this.#tlsCache.set(key, hit);
+    while (this.#tlsCache.size > 4) this.#tlsCache.delete(this.#tlsCache.keys().next().value);
+    promise.catch(() => this.#tlsCache.delete(key));
+    return promise.then((r) => r.clone());
+  }
+
+  async #tlsFetchOnce(url, method, hops) {
+    const u = new URL(url);
+    const https = u.protocol === 'https:';
+    const port = +u.port || (https ? 443 : 80);
+    console.log('[HTTP-GW] via page TLS', u.host);
+    const tls = https ? (await lotTls()).open(u.hostname) : null;
+    const id = this.#wispConnect(u.hostname, port);
+    const s = this.#streams.get(id);
+    const raw = [];                 // response bytes (plaintext)
+    let total = 0;
+    const result = await new Promise((resolve, reject) => {
+      let idle;
+      const done = (err) => {
+        clearTimeout(idle);
+        if (tls) { tls.drop(); }
+        if (this.#streams.has(id)) this.#wispClose(id);
+        if (err) reject(err); else resolve();
+      };
+      const arm = () => { clearTimeout(idle); idle = setTimeout(() => done(new Error('timed out')), 30000); };
+      const send = (chunks) => { for (const c of chunks) this.#wispData(id, c); };
+      if (!s) { reject(new Error('WISP stream not available')); return; }
+      s.onClose = () => {
+        if (tls) { try { const p = tls.plain(); for (const c of p.chunks) { raw.push(c); total += c.length; } } catch (_) {} }
+        done(total ? null : new Error('connection closed before a response'));
+      };
+      s.onData = (chunk) => {
+        arm();
+        try {
+          if (tls) {
+            const p = tls.feed(chunk);
+            for (const c of p.chunks) { raw.push(c); total += c.length; }
+            send(tls.cipher());
+            if (p.closed) done(null);
+          } else {
+            raw.push(chunk.slice()); total += chunk.length;
+          }
+        } catch (e) {
+          if (e.cert) {
+            const err = new Error('TLS certificate error for ' + u.host + ': ' + e.message +
+              ' — the certificate did not check out, so nothing was sent.');
+            err.gatewayStatus = '495 SSL Certificate Error';
+            done(err);
+          } else if (e.tls) {
+            done(new Error('TLS error for ' + u.host + ': ' + e.message));
+          } else done(e);
+        }
+      };
+      const req = new TextEncoder().encode(
+        method + ' ' + (u.pathname || '/') + u.search + ' HTTP/1.1\r\n' +
+        'Host: ' + u.host + '\r\n' +
+        'User-Agent: Wget/1.21 (LinuxOnTab)\r\n' +
+        'Accept: */*\r\nAccept-Encoding: gzip, deflate\r\nConnection: close\r\n\r\n');
+      arm();
+      if (tls) { tls.write(req); send(tls.cipher()); } else this.#wispData(id, req);
+    });
+    void result;
+
+    // ── parse HTTP/1.1 ──
+    const all = new Uint8Array(total);
+    { let o = 0; for (const c of raw) { all.set(c, o); o += c.length; } }
+    let he = -1;
+    for (let i = 0; i + 3 < all.length; i++)
+      if (all[i] === 13 && all[i + 1] === 10 && all[i + 2] === 13 && all[i + 3] === 10) { he = i; break; }
+    if (he < 0) throw new Error('malformed response from ' + u.host);
+    const head = new TextDecoder('latin1').decode(all.subarray(0, he)).split('\r\n');
+    const m = /^HTTP\/1\.[01] (\d{3}) ?(.*)$/.exec(head[0] || '');
+    if (!m) throw new Error('malformed status line from ' + u.host);
+    const status = +m[1];
+    const hdrs = new Headers();
+    for (const line of head.slice(1)) {
+      const c = line.indexOf(':');
+      if (c > 0) { try { hdrs.append(line.slice(0, c).trim(), line.slice(c + 1).trim()); } catch (_) {} }
+    }
+    let body = all.subarray(he + 4);
+    if (/chunked/i.test(hdrs.get('transfer-encoding') || '')) {
+      const parts = []; let o = 0, n = 0;
+      for (;;) {
+        let e = o; while (e + 1 < body.length && !(body[e] === 13 && body[e + 1] === 10)) e++;
+        const size = parseInt(new TextDecoder().decode(body.subarray(o, e)).split(';')[0], 16);
+        if (!(size > 0)) break;
+        parts.push(body.subarray(e + 2, e + 2 + size)); n += size;
+        o = e + 2 + size + 2;
+        if (o > body.length) break;
+      }
+      const joined = new Uint8Array(n); let p = 0;
+      for (const part of parts) { joined.set(part, p); p += part.length; }
+      body = joined;
+    } else {
+      const cl = +(hdrs.get('content-length') || NaN);
+      if (cl >= 0 && body.length > cl) body = body.subarray(0, cl);
+    }
+    const enc = (hdrs.get('content-encoding') || '').toLowerCase();
+    if ((enc === 'gzip' || enc === 'deflate') && body.length && method !== 'HEAD') {
+      body = new Uint8Array(await new Response(new Blob([body]).stream()
+        .pipeThrough(new DecompressionStream(enc))).arrayBuffer());
+    }
+    if ([301, 302, 303, 307, 308].includes(status) && hdrs.get('location') && hops < 5) {
+      const next = new URL(hdrs.get('location'), url).href;
+      console.log('[HTTP-GW] redirect', status, '→', next);
+      return this.#gatewayFetch(next, status === 303 ? 'GET' : method, hops + 1);
+    }
+    const ok = status >= 200 && status <= 599 ? status : 502;
+    return new Response([204, 205, 304].includes(ok) || method === 'HEAD' ? null : body, {
+      status: ok,
+      statusText: m[2].replace(/[^\x20-\x7e]/g, ''),
+      headers: { 'content-type': hdrs.get('content-type') || 'application/octet-stream' },
+    });
   }
 
   async #forwardDns(clientIp, clientPort, query) {
@@ -3063,14 +3307,16 @@ async function doBoat() {
     : dnsOpt ? dnsOpt
     : new URLSearchParams(location.search).has('wisp') ? '1.1.1.1'
     : null;
-  // The same rule for the HTTP gateway's fallback proxy (WispSlirp
-  // #gatewayFetch): relay.linuxontab.com by default, none with ?wisp=.
-  // ?cors=relay | off | <proxy prefix> overrides.
+  // The same rule for the HTTP gateway's fallback for origins that refuse
+  // browser fetches (WispSlirp #gatewayFetch): relay.linuxontab.com by
+  // default, TLS in the page over the WISP backend with ?wisp=.
+  // ?cors=tls | relay | off | <proxy prefix> overrides.
   const corsOpt = new URLSearchParams(location.search).get('cors');
   const corsProxy = corsOpt === 'relay' ? WispSlirp.RELAY_CORS
+    : corsOpt === 'tls' ? WispSlirp.PAGE_TLS
     : (corsOpt === 'off' || corsOpt === 'none') ? null
     : (corsOpt && /^https?:\/\//i.test(corsOpt)) ? corsOpt
-    : new URLSearchParams(location.search).has('wisp') ? null
+    : new URLSearchParams(location.search).has('wisp') ? WispSlirp.PAGE_TLS
     : WispSlirp.RELAY_CORS;
   // Per-packet network logging (VIRTIO/ETH/HTCP/RELAYWS/INJECT). MUST stay off
   // by default: at bulk-transfer rates the logging stalls the main thread long

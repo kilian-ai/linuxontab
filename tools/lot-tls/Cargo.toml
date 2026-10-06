@@ -1,0 +1,24 @@
+[package]
+name = "lot-tls"
+version = "0.1.0"
+edition = "2021"
+description = "TLS client for the LinuxOnTab page: rustls over bytes the page moves on a WISP stream"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+# ring = crypto; no aws-lc (does not build for wasm32-unknown-unknown)
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
+# Built for wasm32-wasip1: randomness and the clock come from the two WASI
+# imports the page provides (random_get, clock_time_get) — no wasm-bindgen.
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
