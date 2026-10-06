@@ -18,7 +18,7 @@ PUB="$HERE/public"
 # fresh clone of the branch got a worker.js that called a function the
 # committed file never defined (init died in switch_entry, a74368e) while
 # the deployed site worked. Refuse unless explicitly overridden.
-LOCKED="shell/wasm.html shell/console.html shell/linux-dist/dist shell/linux-dist-7.1/dist shell/linux-dist-7.1/vmlinux.wasm shell/linux-dist/vmlinux.wasm shell/linux-dist/initramfs.cpio shell/linux-dist/rootfs-lean.data shell/linux-dist/rootfs-lean.manifest.json"
+LOCKED="shell/wasm.html shell/console.html shell/linux-dist/dist shell/linux-dist-7.1/dist shell/linux-dist-7.1/vmlinux.wasm shell/linux-dist/vmlinux.wasm shell/linux-dist/initramfs.cpio shell/linux-dist/rootfs-lean.data shell/linux-dist/rootfs-lean.manifest.json shell/linux-dist/lot-tls.wasm"
 # shellcheck disable=SC2086
 DIRTY="$(git -C "$REPO" status --porcelain -- $LOCKED 2>/dev/null || true)"
 if [ -n "$DIRTY" ] && [ "${LOT_ALLOW_DIRTY:-}" != "1" ]; then
