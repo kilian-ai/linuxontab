@@ -223,8 +223,17 @@ const XAPPS = [
              cmd: 'mkdir -p /opt/x86 && mount -t ext4 -o ro /dev/vdc /opt/x86 && /opt/x86/chromium-desktop' } },
   { name: 'libreoffice', size: '295 MB',
     what: 'LibreOffice 26.8 Writer, compiled natively to wasm, on the X server — menus and dialogs work; first window ~30 s, dialogs up to a minute; Writer is also in the Apps menu',
-    extra: { xdisk: 'linux-dist/libreoffice.ext4', x: '',
-             cmd: 'mkdir -p /opt/lo && mount -t ext4 -o ro /dev/vdc /opt/lo && /opt/lo/lo-desktop' } },
+    // ?image=xtiny: /etc/rc installs + starts the X server (service registry,
+    // visible progress) before the shell; the command then only waits for it
+    // and opens Writer. Not lo-desktop: its own background `xtiny` install
+    // was silent (and hung with no message if it failed), and with the
+    // service also running it would race a second server onto X1/:5900.
+    extra: { image: 'xtiny', xdisk: 'linux-dist/libreoffice.ext4', x: '',
+             // one shell line each (?cmd= splits on \n): only Writer is backgrounded
+             cmd: ['mkdir -p /opt/lo && mount -t ext4 -o ro /dev/vdc /opt/lo',
+                   'echo "[libreoffice] waiting for the X server (xtiny)..."; while [ ! -e /tmp/.X11-unix/X1 ]; do sleep 1; done',
+                   'echo "[libreoffice] starting Writer: the window takes ~30 s (log: /tmp/libreoffice.log)"; /opt/lo/writer > /tmp/libreoffice.log 2>&1 &',
+                  ].join('\n') } },
 ];
 // x86 terminal apps: the full disk plus a read-only x86 disk (?xdisk=) with
 // x86-64 Node 24 under the Blink emulator (V8 interpreter + Sparkplug);
