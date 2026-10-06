@@ -181,16 +181,46 @@ fixes (bit/cvt/ssefloat) 1/3; plus only map.c (48-bit layout, 4 KiB pages)
 3/3 and stopped at the next fork (async exec). The current build
 (spikes/x86-chromium/build.sh) passed nodetest.js **15/15**.
 
-Also found: our wasm musl has no working `longjmp`, so when Blink delivers a
-guest fault it traps (`unreachable` in longjmp, from HaltMachine) instead of
-reaching the guest's SIGSEGV handler. Harmless for correct programs; any real
-guest fault kills Blink outright. The guest's hush also never reaps a
-background Blink that died (it stays Z); `runn.sh` detects that.
+The guest's hush also never reaps a background Blink that died (it stays
+Z); `runn.sh` detects that.
+
+### Guest faults reach the guest's signal handlers
+
+Blink leaves a guest fault through `siglongjmp(m->onhalt)` (HaltMachine),
+and our wasm musl's `longjmp` is a trapping stub: any fault Blink delivered
+(SIGSEGV, SIGFPE, SIGILL, ...) killed Blink with `unreachable` instead of
+reaching the guest's handler. spikes/x86-chromium/build.sh now compiles
+Blink with the native wasm exception-handling SjLj lowering
+(`-mexception-handling -mllvm -wasm-enable-sjlj`, runtime
+sysroot/sjlj_rt_wasmeh.c, the same as netsurf/redis), which composes with
+asyncify. That pass only rewrites `setjmp`/`longjmp`, so
+spikes/x86-chromium/lot_sjlj.h maps `sigsetjmp`/`siglongjmp` onto them and
+keeps the signal mask in the jmp_buf's own `__fl`/`__ss` fields.
+
+`faulttest.c` (guest, 2026-10-06): read of unmapped memory and write to a
+read-only page (SIGSEGV with the right si_addr), `idiv` by zero (SIGFPE),
+`ud2` (SIGILL), each caught and left with siglongjmp, the signal mask
+restored, a second fault after that, and an unhandled fault in a fork child
+(WTERMSIG = SIGSEGV, parent unaffected): 7/7, also via binfmt_misc. Without
+the change Blink died at the first fault ("Segmentation fault", exit 139, no
+handler ran). threads, forkthreads, spawntest pass; primes
+bench 1.86 s vs 1.85 s without it.
+
+Open (not caused by this change): on 2026-10-06 nodetest.js died at the
+async `child_process` step in most runs with every build, the one without
+SjLj included (0/5 vs 1/5 with it; also 0/3 with the previous libc.a and
+0/3 with blink-chromium.patch from before 72e47157), and on the runtime from
+before e8ba4a6e as well. A debug Blink (`-L`) shows the cause: Node's main
+thread executes the `hlt` in musl's `a_crash` (ld-musl at 0x1100...): its
+malloc found corrupted heap metadata right after the fork for `exec`, the
+guest gets SIGILL, and TerminateSignal's KillOtherThreads ends with SIGKILL
+(exit 137). Same signature as the fork-child heap corruption above, so the
+copy-on-write fork still leaks a write into the parent under some timing.
 
 ## Not done / next
 
 - Node: continued in spikes/x86-node (Node 24, npm, wrappers)
-- Blink: a working longjmp (or sjlj build) so guest faults reach handlers
+- Node: heap corruption after a fork for async exec (see "Open" above)
 - speed: a wasm32 "offset-linear" memory mode, asyncify only the syscall path,
   then a block JIT that compiles hot x86 code to wasm modules
 - packaging: blink as an apk package + binfmt registration in /etc/rc + an

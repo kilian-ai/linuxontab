@@ -22,6 +22,11 @@ LLVM_AR=$(find /nix/store -maxdepth 3 -name llvm-ar -path "*llvm-19*" 2>/dev/nul
 SYSROOT="$REPO/toolchain/musl-sysroot-fixed"
 export PATH="$(dirname "$WASM_LD"):$W/bin:$PATH"
 CFLAGS0="-O2 -matomics -mbulk-memory"
+# Blink leaves a guest fault with siglongjmp (HaltMachine); musl's longjmp
+# traps on wasm, so use the native wasm-EH SjLj lowering (composes with
+# asyncify) and its runtime, sysroot/sjlj_rt_wasmeh.c; lot_sjlj.h maps the
+# sig* variants onto setjmp/longjmp
+SJLJ="-mexception-handling -mllvm -wasm-enable-sjlj"
 CC1="$CLANG -target wasm32 --sysroot=$SYSROOT"
 export LOT_CLANG_BIN="$CLANG" LOT_SYSROOT_DIR="$SYSROOT" LOT_CRT1="$SYSROOT/lib/crt1.o" \
        LOT_BUILTINS="$SYSROOT/lib/clang/19/lib/wasm32-unknown-linux-musl/libclang_rt.builtins.a"
@@ -47,12 +52,13 @@ cp "$BLINKSPIKE/lot_mmap.c" "$W/"   # lot_mman.h stays put (relative include)
 (cd "$W" && patch -s -p3 < "$HERE/lot_mmap-chromium.patch")
 $CC1 $CFLAGS0 -w -I"$BLINKSPIKE" -c "$W/lot_mmap.c" -o "$W/objs/lot_mmap.o"
 O="$W/objs"
+$CC1 $CFLAGS0 $SJLJ -c "$REPO/sysroot/sjlj_rt_wasmeh.c" -o "$O/sjlj_rt.o"
 if [ "${THREADS:-0}" = 1 ]; then
   MALLOC="$O/wasm_dlmalloc_mt.o"; THREADFLAG=""
 else
   MALLOC="$O/wasm_dlmalloc.o"; THREADFLAG="--disable-threads"
 fi
-export LOT_LINK_OBJS="$MALLOC $O/wasm_ld128.o $O/wasm_clone.o $O/wasm_fork.o $O/lot_mmap.o"
+export LOT_LINK_OBJS="$MALLOC $O/wasm_ld128.o $O/wasm_clone.o $O/wasm_fork.o $O/lot_mmap.o $O/sjlj_rt.o"
 
 [ -d "$W/blink" ] || git clone -q https://github.com/jart/blink.git "$W/blink"
 cd "$W/blink"
@@ -67,7 +73,7 @@ git apply "$HERE/blink-chromium.patch"
 # configure RUNS its probes; cross-compiling, "it linked" is the answer
 sed -i '' 's|     run "o/tool/config/${RUNPROGRAM}"; then|     test -f "o/tool/config/${RUNPROGRAM}"; then|' configure
 rm -rf o && mkdir -p o/tool && cc -o o/tool/flock tool/flock.c   # host tool
-./configure CC="$CC" AR="$AR" CFLAGS="$CFLAGS0 -g0" --disable-jit $THREADFLAG --static >/dev/null 2>&1
+./configure CC="$CC" AR="$AR" CFLAGS="$CFLAGS0 $SJLJ -g0" --disable-jit $THREADFLAG --static >/dev/null 2>&1
 sed -i '' 's|^// #define HAVE_FORK|#define HAVE_FORK|' config.h   # probe can't see our fork decl
 # The MAP_ANONYMOUS probe can't see the constants either (the wasm sysroot
 # hides sys/mman.h; lot_mman.h is only -included after configure). Without
@@ -76,7 +82,7 @@ sed -i '' 's|^// #define HAVE_FORK|#define HAVE_FORK|' config.h   # probe can't 
 # two fds per file. Chromium ran into the fd limit, unpinned inode numbers got
 # reused and unrelated regions aliased (duplicated tiles on screen).
 sed -i '' 's|^// #define HAVE_MAP_ANONYMOUS|#define HAVE_MAP_ANONYMOUS|' config.h
-sed -i '' "s|^CPPFLAGS = |CPPFLAGS = -DLOT_VFORK -DLOT_SYSCALLS -include $BLINKSPIKE/lot_mman.h |; s|^LDFLAGS = .*|LDFLAGS = -static|; s|^LDLIBS = .*|LDLIBS = -lm|" config.mk
+sed -i '' "s|^CPPFLAGS = |CPPFLAGS = -DLOT_VFORK -DLOT_SYSCALLS -include $BLINKSPIKE/lot_mman.h -include $HERE/lot_sjlj.h |; s|^LDFLAGS = .*|LDFLAGS = -static|; s|^LDLIBS = .*|LDLIBS = -lm|" config.mk
 # MODE=rel by default; MODE= (empty) builds Blink's debug mode, with the
 # syscall tracer (blink -s) and logging (blink -L file)
 MODE="${MODE-rel}"
