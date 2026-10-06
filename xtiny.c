@@ -2470,6 +2470,8 @@ static const App BUILTIN_APPS[] = {
     /* No package: lives on the x86 Chromium disk (console "chromium" row,
      * ?xdisk=), so it shows only while that disk is mounted at /opt/x86. */
     { "chromium","Chromium",       "Chromium 131 (x86-64, Blink)", "/opt/x86/chromium-desktop",  "",         0, 0x4285F4, 0, 0 },
+    /* Likewise the LibreOffice disk (console "libreoffice" row) at /opt/lo. */
+    { "writer",  "Writer",         "LibreOffice Writer documents", "/opt/lo/writer",             "",         0, 0x2A6099, 0, 0 },
     { "htop",    "System Monitor", "Processes and memory (htop)",  "htop",                       "htop",     1, 0x2E8B57, 0, 0 },
     /* matches the xfe package's own xfe.desktop, so the entry looks the same
      * before and after install */

@@ -5,7 +5,12 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.8.0"   # 1.8.0: Apps menu — AI Assistant (claw, in a terminal); launched
+VERSION="1.9.0"   # 1.9.0: what LibreOffice's X11 backend needs — PropertyNotify (the
+                  # server-time handshake it blocks on before mapping a window),
+                  # override-redirect popups (menus at their own position, no frame),
+                  # active pointer/keyboard grabs; Writer in the Apps menu while the
+                  # LibreOffice disk is mounted at /opt/lo
+                  # 1.8.0: Apps menu — AI Assistant (claw, in a terminal); launched
                   # apps get HOME=/root instead of init's HOME=/
                   # 1.7.0: Apps menu — File Manager (xfe, pinned), Chromium (when the x86
                   # disk is mounted), Rust IDE, tmux, Node.js; menu flows into columns;

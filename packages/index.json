@@ -827,11 +827,11 @@
       "status": "available"
     },
     "xtiny": {
-      "version": "1.8.0",
+      "version": "1.9.0",
       "description": "Tiny X11 server + desktop on :5900 for real X clients (xterm, netsurf, wolf3d) with an Apps menu; open the X display panel",
-      "url": "https://linuxontab.com/packages/xtiny-1.8.0.tar.gz",
-      "size": 99464,
-      "sha256": "2be9a3261c57d5850689e8450cd1f6578dc88279b6f8676fe1b8c98075586a53",
+      "url": "https://linuxontab.com/packages/xtiny-1.9.0.tar.gz",
+      "size": 100378,
+      "sha256": "a14fbf8563bec915de6d35552e6f57de491b900b4a8461cdb46ba0107d874400",
       "bins": [
         "xtiny"
       ],
