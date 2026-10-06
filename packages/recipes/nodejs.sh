@@ -16,7 +16,7 @@
 # apk add curl — required for npm install (HTTPS to registry.npmjs.org)
 
 NAME="nodejs"
-VERSION="20.0.0"
+VERSION="20.0.0-r1"   # r1: relinked on the libc.a whose pthread_create zeroes TLS/TSD (qjs workers)
 DESCRIPTION="JavaScript runtime (QuickJS 2026-05-21, ES2023) + npm package manager"
 # No release tags exist; pin to a specific commit.
 # d73189dd = 2026-05-21 "fixed compilation with clang"

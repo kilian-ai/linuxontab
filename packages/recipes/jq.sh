@@ -3,7 +3,7 @@
 # Uses bundled oniguruma (regex library) — no external dependencies.
 
 NAME="jq"
-VERSION="1.7.1"
+VERSION="1.7.1-r1"   # r1: relinked on the libc.a whose pthread_create zeroes TLS/TSD
 DESCRIPTION="Lightweight command-line JSON processor"
 SOURCE_URL="https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz"
 SOURCE_SHA256="478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703873deeee580c2"
