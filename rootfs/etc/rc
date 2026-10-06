@@ -182,6 +182,9 @@ esac
 # Run OpenSSH. Default to sshd-session for compatibility.
 # If /etc/ssh/sshd-daemon.enabled exists (written by host rebuild script after
 # wasm import-memory verification), prefer native sshd daemon mode.
+# sshd refuses to start (and privsep fails) unless its chroot dir is root's:
+# images built from a host tree carry the builder's uid (#10).
+chown root:root /var/empty 2>/dev/null; chmod 755 /var/empty 2>/dev/null
 if [ -f /etc/ssh/sshd-daemon.enabled ]; then
         mkdir -p /run/sshd
         (while true; do

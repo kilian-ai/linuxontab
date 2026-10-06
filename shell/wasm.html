@@ -133,6 +133,12 @@
   /* ── tunnels panel ── */
   #tunnels-panel { position:absolute; right:0; top:36px; bottom:0; width:520px; max-width:60vw; display:flex; flex-direction:column; background:#0b0d10; border-left:1px solid #2a2f36; z-index:50; box-shadow:-4px 0 12px rgba(0,0,0,0.5); }
   #tunnels-panel[hidden] { display:none; }
+  #ssh-panel { position:absolute; right:12px; top:44px; width:440px; max-width:calc(100vw - 24px); background:#0b0d10; border:1px solid #2a2f36; border-radius:6px; padding:12px 14px; z-index:60; box-shadow:0 6px 20px rgba(0,0,0,0.5); font-size:12px; color:#d5d8dc; }
+  #ssh-panel[hidden] { display:none; }
+  #ssh-panel .row { display:flex; gap:6px; align-items:center; margin:6px 0; }
+  #ssh-panel code { flex:1; background:#14181d; border:1px solid #2a2f36; border-radius:4px; padding:5px 7px; font-size:12px; word-break:break-all; color:#e6edf3; }
+  #ssh-panel .warn { color:#f0b429; font-size:11px; margin-top:8px; }
+  #ssh-panel .err { color:#f87171; }
   #tunnels-hdr { display:flex; gap:8px; align-items:center; padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; }
   #tunnels-hdr button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
   #tunnels-hdr button:hover:not(:disabled) { background:#2d343d; }
@@ -252,10 +258,28 @@
     <span id="dl-progress" hidden><span id="dl-track"><span id="dl-fill"></span></span><span id="dl-label" class="hint"></span></span>
     <span class="stat" style="margin-left:auto"></span>
     <button id="storage-btn">storage</button>
+    <button id="ssh-btn" disabled title="let a terminal on your computer ssh/sftp into this tab">ssh</button>
     <button id="tunnels" disabled>tunnels</button>
     <button id="lot-bridge-btn" disabled>lot-bridge</button>
     <button id="x-display-btn" disabled>X display</button>
     <button id="web-view-btn" disabled title="render a guest web server (e.g. sqlite-web on :8080) in the page">web view</button>
+  </div>
+  <div id="ssh-panel" hidden>
+    <div class="row"><b>SSH into this tab</b><button id="ssh-close" style="margin-left:auto">close</button></div>
+    <div id="ssh-off">
+      <div class="hint">Lets ssh/sftp on your computer log in to this tab as root through the LinuxOnTab relay. Off until you turn it on; a fresh random password is set each time.</div>
+      <div class="row"><button id="ssh-enable">enable SSH access</button></div>
+    </div>
+    <div id="ssh-on" hidden>
+      <div class="row"><code id="ssh-cmd"></code><button data-copy="ssh-cmd">copy</button></div>
+      <div class="row"><code id="sftp-cmd"></code><button data-copy="sftp-cmd">copy</button></div>
+      <div class="hint">or without the public port (needs <a href="https://github.com/vi/websocat" target="_blank" rel="noopener">websocat</a>):</div>
+      <div class="row"><code id="ssh-ws-cmd"></code><button data-copy="ssh-ws-cmd">copy</button></div>
+      <div class="row">password <code id="ssh-pw"></code><button data-copy="ssh-pw">copy</button></div>
+      <div class="row"><button id="ssh-disable">stop SSH access</button></div>
+      <div class="warn">Anyone with this command and password can log in to this tab as root. Stop when you are done; closing the tab also ends it.</div>
+    </div>
+    <div id="ssh-status" class="hint"></div>
   </div>
   <div id="term"></div>
   <div id="x-view" hidden>
@@ -4056,6 +4080,7 @@ async function doBoat() {
     $('reset').disabled = false;
     $('break').disabled = false;
     $('tunnels').disabled = false;
+    $('ssh-btn').disabled = false;
     $('lot-bridge-btn').disabled = false;
     $('x-display-btn').disabled = false;
     $('web-view-btn').disabled = false;
@@ -4767,8 +4792,132 @@ $('tn-run-btn').onclick = () => {
 
   $('jtn-start').onclick = () => startJsTunnel(22);
   $('jtn-stop').onclick  = stopJsTunnel;
-  // Auto-start tunnel when ?autoboot is in URL
-  if (new URLSearchParams(location.search).has('autoboot')) startJsTunnel(22);
+  // The tunnel (and its PUBLIC port) is opt-in: the "ssh" button, or ?tunnel
+  // for automation. It used to start on every ?autoboot, which made every
+  // guest running sshd reachable from the internet (#10).
+  { const q = new URLSearchParams(location.search);
+    if (q.has('autoboot') && q.has('tunnel')) startJsTunnel(22); }
+})();
+
+// ── SSH into this tab (opt-in, #10) ──────────────────────────────────────────
+// One button: check that a guest sshd answers, give root a fresh random
+// password (busybox cryptpw, DES — the guest musl crypt() is DES-only, so 8
+// significant characters), then start the JS tunnel, which registers with the
+// relay and gets a public TCP port. Nothing is reachable before this.
+(function () {
+  const panel = $('ssh-panel');
+  const status = (t, cls) => { const el = $('ssh-status'); el.textContent = t || ''; el.className = cls || 'hint'; };
+  const show = (on) => { $('ssh-off').hidden = on; $('ssh-on').hidden = !on; };
+  const rand = (n, alphabet) => {
+    const b = crypto.getRandomValues(new Uint8Array(n));
+    let out = ''; for (const x of b) out += alphabet[x % alphabet.length];
+    return out;
+  };
+  // Is an SSH server answering on guest port 22? (banner starts with "SSH-")
+  function probeSshd(timeoutMs = 8000) {
+    return new Promise((resolve) => {
+      const slirp = window.__slirp;
+      if (!slirp) return resolve(false);
+      let done = false, buf = '';
+      const finish = (ok) => {
+        if (done) return; done = true;
+        setTimeout(() => { try { adapter.onclose && adapter.onclose(); } catch (_) {} }, 0);
+        resolve(ok);
+      };
+      const adapter = {
+        binaryType: 'arraybuffer',
+        readyState: WebSocket.OPEN,
+        send(g) {
+          buf += new TextDecoder().decode(g instanceof Uint8Array ? g : new Uint8Array(g));
+          if (buf.length >= 4) finish(buf.startsWith('SSH-'));
+        },
+        close() { finish(false); },
+      };
+      slirp.injectConnect(22, adapter);
+      setTimeout(() => finish(false), timeoutMs);
+    });
+  }
+  // Type one command into the guest shell and wait for its marker line. The
+  // marker is printed through tr (O->0: L0T_SSH_0K) so the echoed command line
+  // can't match it.
+  function guestRun(cmd, timeoutMs = 30000) {
+    return new Promise((resolve) => {
+      guestSend(' ' + cmd + ' && echo LOT_SSH_OK | tr O 0 || echo LOT_SSH_FAIL | tr A 4');
+      const t0 = Date.now();
+      const iv = setInterval(() => {
+        const tail = String(window.__lotTermTail || '');
+        if (tail.includes('L0T_SSH_0K')) { clearInterval(iv); resolve(true); }
+        else if (tail.includes('LOT_SSH_F4IL') || Date.now() - t0 > timeoutMs) { clearInterval(iv); resolve(false); }
+      }, 300);
+    });
+  }
+  function waitPublic(timeoutMs = 30000) {
+    return new Promise((resolve) => {
+      const have = window.getTunnelInfo && window.getTunnelInfo().publicEndpoints[22];
+      if (have) return resolve(have);
+      const on = (e) => { if ((e.detail || {}).port === 22) { cleanup(); resolve(e.detail); } };
+      const cleanup = () => { window.removeEventListener('lot-public', on); clearTimeout(t); };
+      const t = setTimeout(() => { cleanup(); resolve(null); }, timeoutMs);
+      window.addEventListener('lot-public', on);
+    });
+  }
+  let busy = false;
+  async function enable() {
+    if (busy) return;                       // one run at a time
+    const cur = window.getTunnelInfo ? window.getTunnelInfo() : {};
+    if (window.__lotSshActive && cur.active && cur.port === 22 && $('ssh-pw').textContent) {
+      show(true); return;                   // already on: keep the session and password
+    }
+    busy = true;
+    const btn = $('ssh-enable'); btn.disabled = true;
+    try {
+      status('checking for an SSH server in the guest…');
+      if (!await probeSshd()) {
+        status('No SSH server is answering on port 22 in this tab. The full disk (?disk=full) runs one; on the lean image try `apk add openssh` first.', 'err');
+        return;
+      }
+      const pw = rand(8, 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789');
+      const salt = rand(2, 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./');
+      status('setting a random root password in the guest (typed into the terminal)…');
+      const ok = await guestRun(`sed -i "s#^root:[^:]*:#root:$(cryptpw -m des '${pw}' '${salt}'):#" /etc/shadow`);
+      if (!ok) { status('Could not set the password: is the guest shell at a prompt? Try again from an idle shell.', 'err'); return; }
+      status('opening the tunnel…');
+      window.__lotSshActive = true;
+      const info = window.getTunnelInfo ? window.getTunnelInfo() : {};
+      if (!info.active || info.port !== 22) { window.stopJsTunnel && window.stopJsTunnel(); window.__lotSshActive = true; await window.startJsTunnel(22); }
+      else await window.exposePublic(22);
+      const pub = await waitPublic();
+      if (!pub) { status('The relay did not hand out a public port; try again in a moment.', 'err'); window.__lotSshActive = false; window.stopJsTunnel && window.stopJsTunnel(); return; }
+      $('ssh-cmd').textContent = `ssh -p ${pub.publicPort} -o PubkeyAuthentication=no root@${pub.host}`;
+      $('sftp-cmd').textContent = `sftp -P ${pub.publicPort} root@${pub.host}`;
+      const t = window.getTunnelInfo();
+      const wsUrl = `${String(t.relay).replace(/^http/, 'ws')}/port/client?code=${t.code}&port=22`;
+      $('ssh-ws-cmd').textContent = `ssh -o ProxyCommand="websocat --binary -E '${wsUrl}'" -o PubkeyAuthentication=no root@linuxontab`;
+      $('ssh-pw').textContent = pw;
+      $('ssh-btn').textContent = 'ssh ●';
+      show(true); status('');
+    } finally { btn.disabled = false; busy = false; }
+  }
+  function disable() {
+    window.__lotSshActive = false;
+    if (typeof window.stopJsTunnel === 'function') window.stopJsTunnel();
+  }
+  window.addEventListener('lot-public-clear', () => {
+    window.__lotSshActive = false;
+    $('ssh-pw').textContent = '';
+    $('ssh-btn').textContent = 'ssh';
+    show(false); status('SSH access is off.');
+  });
+  // Hand the keyboard back to the terminal after every click here: a focused
+  // panel button would otherwise turn the next Enter/Space typed "into the
+  // terminal" into another enable/copy.
+  panel.addEventListener('click', (e) => { if (e.target.closest('button')) setTimeout(() => { try { e.target.blur(); term.focus(); } catch (_) {} }, 0); });
+  $('ssh-btn').onclick = () => { panel.hidden = !panel.hidden; setTimeout(() => { try { $('ssh-btn').blur(); term.focus(); } catch (_) {} }, 0); };
+  $('ssh-close').onclick = () => { panel.hidden = true; };
+  $('ssh-enable').onclick = enable;
+  $('ssh-disable').onclick = disable;
+  for (const b of panel.querySelectorAll('button[data-copy]'))
+    b.onclick = () => navigator.clipboard.writeText($(b.dataset.copy).textContent).then(() => status('copied'), () => status('copy failed — select the text instead', 'err'));
 })();
 
 // ── lot-bridge panel ──────────────────────────────────────────────────────────
@@ -5537,7 +5686,7 @@ function xConnect() {
   // The JS tunnel pool can generate constant websocket churn in autoboot mode.
   // Pause it while using the in-browser VNC path to avoid starving RFB parsing.
   try {
-    if (typeof window.stopJsTunnel === 'function') window.stopJsTunnel();
+    if (!window.__lotSshActive && typeof window.stopJsTunnel === 'function') window.stopJsTunnel();
   } catch (_) {}
 
   $('x-status').textContent = 'connecting to :5900…';

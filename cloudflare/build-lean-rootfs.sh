@@ -245,7 +245,8 @@ esac
 if [ -x /usr/local/libexec/sshd-session ] || [ -x /sbin/sshd ]; then
 	(while true; do
 		if [ -x /sbin/sshd ]; then
-			mkdir -p /run/sshd
+			mkdir -p /run/sshd /var/empty
+			chown root:root /var/empty; chmod 755 /var/empty
 			/sbin/sshd -D -e -f /etc/ssh/sshd_config >>/tmp/sshd.log 2>&1
 		fi
 		[ -x /usr/local/libexec/sshd-session ] && \
