@@ -213,6 +213,9 @@ const NR_WASM_GET_ARGS = 245;
     console.warn("WALI thread entry returned");
   }
   let forkScratch: { memory: WebAssembly.Memory; bufPtr: number; retPtr: number; size: number } | null = null;
+  // Return slot of an in-flight old-ABI fork (raw clone(SIGCHLD, 0), see
+  // raw_clone_fork): the parent sets it at unwind, a fork child in switch_entry.
+  let rawForkRetPtr: number | null = null;
   const asyncify = () => (instance ? (instance.exports as unknown as AsyncifyExports) : null);
   const sp = () => { const g = (instance?.exports as any)?.__stack_pointer; return g instanceof WebAssembly.Global ? "0x" + (g.value >>> 0).toString(16) : "n/a"; };
   // Per-worker scratch for binaries that do not bring their own buffer:
@@ -255,6 +258,41 @@ const NR_WASM_GET_ARGS = 245;
     return -38;
   }
 
+  // fork() in binaries built against the pre-7.1 sysroot (e.g. sshd-session):
+  // musl calls syscall(SYS_clone, SIGCHLD, 0), with the flags in the FIRST
+  // argument. The 7.1 wasm clone takes (fn, arg, flags, ...), so the kernel
+  // read fn=17, flags=0 and started the child at table entry 17 — "Invalid
+  // function signature", SIGSEGV, and a parent waiting forever for a command
+  // that never ran (ssh sessions hung right after login). The 6.1 host
+  // intercepted this call and forked by asyncify; do the same here, with the
+  // per-worker scratch (these binaries bring no buffer or return slot).
+  function raw_clone_fork(): number {
+    const a = asyncify();
+    assert(context);
+    if (!a?.asyncify_get_state || !a.asyncify_start_unwind || !a.asyncify_stop_rewind) return -38;
+    const state = a.asyncify_get_state();
+    if (state === 0) {
+      const sc = acquireForkScratch(context.memory);
+      const h = new Int32Array(context.memory.buffer);
+      h[sc.bufPtr >> 2] = sc.bufPtr + 8;
+      h[(sc.bufPtr >> 2) + 1] = sc.bufPtr + sc.size;
+      rawForkRetPtr = sc.retPtr;
+      pendingFork = { bufPtr: sc.bufPtr, retPtr: sc.retPtr, sp: (spGlobal()?.value ?? 0) >>> 0, vfork: false };
+      console.debug("[fork] " + (self.name || "?") + " old-ABI clone(SIGCHLD) unwind buf=0x" + sc.bufPtr.toString(16) + " sp=" + sp());
+      a.asyncify_start_unwind(sc.bufPtr);
+      return 0;
+    }
+    if (state === 2 && rawForkRetPtr !== null) {
+      const retPtr = rawForkRetPtr;
+      rawForkRetPtr = null;
+      a.asyncify_stop_rewind();
+      const rv = new Int32Array(context.memory.buffer)[retPtr >> 2];
+      console.debug("[fork] " + (self.name || "?") + " old-ABI rewound, fork() returns " + rv);
+      return rv;
+    }
+    return -38;
+  }
+
   function create_instance(context: UserContext): WebAssembly.Instance {
     const kernel_instance = get_kernel_instance();
     const linux_syscall = (
@@ -270,6 +308,9 @@ const NR_WASM_GET_ARGS = 245;
       // HALT_KERNEL unwind (catch (...), destructors) must not re-enter it.
       if (is_worker_halted()) throw HALT_KERNEL;
       if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
+      // Old-ABI fork: clone(SIGCHLD, 0). A real 7.1 clone always has its flags
+      // in arg2, so (17, 0, 0) can't be one.
+      if (nr === NR_CLONE && arg0 === SIGCHLD && arg1 === 0 && arg2 === 0 && asyncify()?.asyncify_get_state) return raw_clone_fork();
       // NOMMU vfork from our asyncify-built C binaries (busybox hush runs every
       // external command as clone(fn, CLONE_VM|CLONE_VFORK|SIGCHLD)). With a
       // shared memory the child starts at the module's default __stack_pointer
@@ -528,6 +569,7 @@ const NR_WASM_GET_ARGS = 245;
         if (forkRewind) {
           const rw = forkRewind;
           forkRewind = null;
+          rawForkRetPtr = rw.retPtr;
           call_entry = () => {
             call_entry = call_start;
             assert(instance && context);
