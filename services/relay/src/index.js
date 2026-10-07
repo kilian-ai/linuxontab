@@ -1258,54 +1258,19 @@ async function _wispTunnelWs(request) {
   return new Response(null, { status: 101, webSocket: client });
 }
 
-// ── CORS proxy (for v86 fetch backend + generic in-browser requests) ─────────
-// Usage: GET /cors?url=https://example.com/path
-// Passes method+headers+body through; strips host-sensitive request headers.
+// ── CORS proxy: RETIRED ──────────────────────────────────────────────────────
+// /cors?url= used to fetch any http(s) URL on behalf of the page. The wasm
+// page now reaches origins without CORS headers with TLS in the page over a
+// WISP stream (lot-tls, kilian-ai/linuxontab#9), so no proxy sees plaintext.
+// Answer 410 with that pointer instead of proxying.
 
-async function _corsProxy(request) {
-  const url = new URL(request.url);
-  let target = url.searchParams.get('url');
-  if (!target) {
-    // Also accept suffix form: /cors/https://example.com/...
-    const prefix = '/cors/';
-    if (url.pathname.startsWith(prefix)) {
-      target = url.pathname.slice(prefix.length) + url.search;
-    }
-  }
-  if (!target) return json({ error: "missing ?url=" }, 400);
-  let targetUrl;
-  try { targetUrl = new URL(target); } catch (_) { return json({ error: "invalid url" }, 400); }
-  if (targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:') {
-    return json({ error: "only http/https supported" }, 400);
-  }
-
-  const forwardHeaders = new Headers();
-  for (const [k, v] of request.headers) {
-    const kl = k.toLowerCase();
-    if (kl === 'host' || kl === 'origin' || kl === 'referer' || kl.startsWith('cf-') ||
-        kl.startsWith('x-forwarded-') || kl === 'x-real-ip') continue;
-    forwardHeaders.set(k, v);
-  }
-  try {
-    const upstream = await fetch(targetUrl.toString(), {
-      method: request.method,
-      headers: forwardHeaders,
-      body: (request.method === 'GET' || request.method === 'HEAD') ? undefined : request.body,
-      redirect: 'follow',
-    });
-    const headers = new Headers(upstream.headers);
-    for (const [k, v] of Object.entries(cors())) headers.set(k, v);
-    // Drop headers that would confuse the browser about the origin
-    headers.delete('content-security-policy');
-    headers.delete('content-security-policy-report-only');
-    return new Response(upstream.body, {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      headers,
-    });
-  } catch (e) {
-    return json({ error: `cors proxy failed: ${e?.message || e}` }, 502);
-  }
+function _corsRetired() {
+  return json({
+    error: 'gone: the relay /cors proxy is retired. LinuxOnTab pages fetch ' +
+      'hosts without CORS headers with TLS in the page over WISP ' +
+      '(https://github.com/kilian-ai/linuxontab/issues/9); pass ?cors=<prefix> ' +
+      'to use your own proxy.',
+  }, 410);
 }
 
 // ── DoH (DNS-over-HTTPS) proxy ───────────────────────────────────────────────
@@ -1786,7 +1751,7 @@ export default {
       if (request.method === 'OPTIONS') {
         return new Response(null, { status: 204, headers: cors() });
       }
-      return _corsProxy(request);
+      return _corsRetired();
     }
 
     if (url.pathname === '/dns-query') {
