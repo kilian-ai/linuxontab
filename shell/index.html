@@ -7230,7 +7230,7 @@
         'mkdir -p /usr/local/bin ~/.config/clawlite ~/.local/share/clawlite '
         + '&& (wget -qO /usr/local/bin/claw http://192.168.86.1/local/clawlite.sh '
         + '|| wget -qO /usr/local/bin/claw https://linuxontab.com/local/clawlite.sh) '
-        + '&& awk '\''BEGIN{done=0} { if(!done && $0=="set -u"){ print "if (set -u) 2>/dev/null; then"; print "  set -u"; print "fi"; done=1; next } print }'\'' /usr/local/bin/claw > /tmp/claw.fixed '
+        + '&& awk \'BEGIN{done=0} { if(!done && $0=="set -u"){ print "if (set -u) 2>/dev/null; then"; print "  set -u"; print "fi"; done=1; next } print }\' /usr/local/bin/claw > /tmp/claw.fixed '
         + '&& mv /tmp/claw.fixed /usr/local/bin/claw '
         + '&& chmod +x /usr/local/bin/claw',
         90000
