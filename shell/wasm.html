@@ -4856,6 +4856,15 @@ $('tn-run-btn').onclick = () => {
     publicEndpoints: Object.fromEntries(publicEndpoints) });
 
   function stopJsTunnel() {
+    // Give the public ports back now (the relay would hold them for an hour).
+    if (tunnelCode && publicEndpoints.size) {
+      try {
+        fetch(TUNNEL_EXPOSE_ENDPOINTS[0] + '/port/unexpose', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: tunnelCode }), keepalive: true,
+        }).catch(() => {});
+      } catch (_) {}
+    }
     active = false;
     if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
     if (refillTimer) { clearTimeout(refillTimer); refillTimer = null; }
@@ -4875,6 +4884,8 @@ $('tn-run-btn').onclick = () => {
 
   // Allow other UI modules (e.g., X display) to pause tunnel traffic.
   window.stopJsTunnel = stopJsTunnel;
+  // Closing the tab ends remote access: release its public port right away.
+  window.addEventListener('pagehide', () => { if (active) stopJsTunnel(); });
   // Exposed for automation/tests: switch the tunnel to a different guest port
   // (e.g. stopJsTunnel(); startJsTunnel(8080) to expose an in-guest web app).
   window.startJsTunnel = startJsTunnel;
@@ -4961,7 +4972,12 @@ $('tn-run-btn').onclick = () => {
     const btn = $('ssh-enable'); btn.disabled = true;
     try {
       status('checking for an SSH server in the guest…');
-      if (!await probeSshd()) {
+      // A few tries: until the images are rebuilt, sshd runs as rc's
+      // one-connection sshd-session fallback, which is briefly not listening
+      // between connections.
+      let up = false;
+      for (let i = 0; i < 3 && !up; i++) { if (i) await new Promise(r => setTimeout(r, 2000)); up = await probeSshd(); }
+      if (!up) {
         status('No SSH server is answering on port 22 in this tab. The full disk (?disk=full) runs one; on the lean image try `apk add openssh` first.', 'err');
         return;
       }
