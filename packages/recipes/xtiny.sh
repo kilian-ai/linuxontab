@@ -5,7 +5,10 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.10.0"  # 1.10.0: mouse wheel (X buttons 4-7: NetSurf, xterm, GTK scroll);
+VERSION="1.11.0"  # 1.11.0: Apps > Mail (NeoMutt); what GTK 2 needs (Sylpheed) — GC clip
+                  # rectangles, motion before the press, QueryPointer's child, dialogs
+                  # kept above their parent (WM_TRANSIENT_FOR), 24 properties a window
+                  # 1.10.0: mouse wheel (X buttons 4-7: NetSurf, xterm, GTK scroll);
                   # X pointer semantics — press/release propagate to the first
                   # ancestor that selected them, implicit grab, Enter/LeaveNotify
                   # 1.9.0: what LibreOffice's X11 backend needs — PropertyNotify (the
