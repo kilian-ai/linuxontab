@@ -190,6 +190,8 @@ static struct {
      * the popup, not the focused frame. */
     uint32_t pgrab_win, pgrab_mask;
     int pgrab_owner;            /* owner_events: own windows get their events */
+    uint32_t igrab_win;         /* implicit grab: the press went here, until all buttons are up */
+    uint32_t ptr_win;           /* window under the pointer, for Enter/LeaveNotify */
     uint32_t kgrab_win;
 
     /* Edge-drag resize of a top-level (see on_pointer). */
@@ -875,6 +877,8 @@ static void free_window(XWindow *w) {
     if (w->id == X.xfocus) X.xfocus = 0;
     if (w->id == X.pgrab_win) X.pgrab_win = 0;
     if (w->id == X.kgrab_win) X.kgrab_win = 0;
+    if (w->id == X.igrab_win) X.igrab_win = 0;
+    if (w->id == X.ptr_win)   X.ptr_win = 0;
     stack_remove(w->id);
     free(w->px);
     memset(w, 0, sizeof *w);
@@ -1130,6 +1134,8 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
             w->mapped = 0;
             if (w->id == X.pgrab_win) X.pgrab_win = 0;
             if (w->id == X.kgrab_win) X.kgrab_win = 0;
+            if (w->id == X.igrab_win) X.igrab_win = 0;
+            if (w->id == X.ptr_win)   X.ptr_win = 0;
             if (w->toplevel && w->id == X.focus) {
                 /* hand the keyboard to the next visible window down */
                 X.focus = 0;
@@ -3269,6 +3275,101 @@ static void resize_apply(rfb_server *s, int force) {
     rfb_damage_full(s);
 }
 
+/* ── pointer events, X semantics ──────────────────────────────────────────
+ * Button and motion events go to the deepest window under the pointer and
+ * propagate up to the first ancestor that selected them; a ButtonPress
+ * starts an implicit grab on the window that got it, until every button is
+ * up; Enter/LeaveNotify follow the pointer from window to window (with the
+ * virtual ones for the windows in between). GTK 2 needs all three: its
+ * buttons are input-only child windows that activate on release only after
+ * an EnterNotify, and its widgets often select presses on an ancestor. */
+static void send_pointer_ev(XWindow *ew, int type, int detail, uint32_t child,
+                            int x, int y, uint16_t state) {
+    XClient *c = win_client(ew);
+    if (!c) return;
+    int ox, oy;
+    win_origin(ew, &ox, &oy);
+    uint8_t ev[32]; memset(ev, 0, sizeof ev);
+    ev[0] = (uint8_t)type;
+    ev[1] = (uint8_t)detail;
+    p32(ev, 4, (uint32_t)rfb_now_ms());
+    p32(ev, 8, ROOT_ID);
+    p32(ev, 12, ew->id);
+    p32(ev, 16, child);
+    p16(ev, 20, (uint16_t)x); p16(ev, 22, (uint16_t)y);
+    p16(ev, 24, (uint16_t)(x - ox)); p16(ev, 26, (uint16_t)(y - oy));
+    p16(ev, 28, state);
+    if (type == 7 || type == 8) {              /* Enter/LeaveNotify */
+        ev[30] = 0;                            /* mode: Normal */
+        ev[31] = (uint8_t)(2 | (in_focus_tree(ew) ? 1 : 0));   /* same-screen, focus */
+    } else {
+        ev[30] = 1;                            /* same-screen */
+    }
+    send_event(c, ev);
+}
+
+/* First window from src upwards that selected `need`; *child = its child on
+ * the way down to src (0 when it is src itself). The root is xtiny's own. */
+static XWindow *pointer_target(XWindow *src, uint32_t need, uint32_t *child) {
+    XWindow *prev = NULL;
+    for (XWindow *t = src; t && t->id != ROOT_ID; t = find_win(t->parent)) {
+        if (t->evmask & need) { *child = prev ? prev->id : 0; return t; }
+        prev = t;
+    }
+    *child = 0;
+    return NULL;
+}
+
+#define PTR_MAXDEPTH 32
+static int pointer_chain(XWindow *w, XWindow **out) {     /* w, its parent, ... root */
+    int n = 0;
+    while (w && n < PTR_MAXDEPTH) {
+        out[n++] = w;
+        if (w->id == ROOT_ID) break;
+        w = find_win(w->parent);
+    }
+    return n;
+}
+
+static void crossing_one(XWindow *w, int type, int detail, uint32_t child,
+                         int x, int y, uint16_t state, XWindow *only) {
+    if (!w || w->id == ROOT_ID || (only && w != only)) return;
+    if (!(w->evmask & (type == 7 ? 0x10 : 0x20))) return;   /* Enter/LeaveWindowMask */
+    send_pointer_ev(w, type, detail, child, x, y, state);
+}
+
+/* The pointer moved from `from` to `to` (NULL = the root). With a grab,
+ * only the grab window hears about it. Details: 0 Ancestor, 1 Virtual,
+ * 2 Inferior, 3 Nonlinear, 4 NonlinearVirtual. */
+static void pointer_crossing(XWindow *from, XWindow *to, int x, int y, uint16_t state,
+                             XWindow *only) {
+    XWindow *root = find_win(ROOT_ID);
+    if (!from) from = root;
+    if (!to) to = root;
+    if (!from || !to || from == to) return;
+    XWindow *ca[PTR_MAXDEPTH], *cb[PTR_MAXDEPTH];
+    int na = pointer_chain(from, ca), nb = pointer_chain(to, cb);
+    int ia = -1, ib = -1;
+    for (int i = 0; i < na && ia < 0; i++)
+        for (int j = 0; j < nb; j++)
+            if (ca[i] == cb[j]) { ia = i; ib = j; break; }
+    if (ia < 0) return;
+    if (ia == 0) {                              /* into a descendant of from */
+        crossing_one(from, 8, 2, cb[ib - 1]->id, x, y, state, only);
+        for (int j = ib - 1; j >= 1; j--) crossing_one(cb[j], 7, 1, cb[j - 1]->id, x, y, state, only);
+        crossing_one(to, 7, 0, 0, x, y, state, only);
+    } else if (ib == 0) {                       /* out to an ancestor of from */
+        crossing_one(from, 8, 0, 0, x, y, state, only);
+        for (int i = 1; i < ia; i++) crossing_one(ca[i], 8, 1, ca[i - 1]->id, x, y, state, only);
+        crossing_one(to, 7, 2, ca[ia - 1]->id, x, y, state, only);
+    } else {                                    /* across */
+        crossing_one(from, 8, 3, 0, x, y, state, only);
+        for (int i = 1; i < ia; i++) crossing_one(ca[i], 8, 4, ca[i - 1]->id, x, y, state, only);
+        for (int j = ib - 1; j >= 1; j--) crossing_one(cb[j], 7, 4, cb[j - 1]->id, x, y, state, only);
+        crossing_one(to, 7, 3, 0, x, y, state, only);
+    }
+}
+
 static void on_pointer(rfb_server *s, int buttons, int x, int y) {
     X.srv = s;
     X.ptr_x = x; X.ptr_y = y;
@@ -3402,61 +3503,62 @@ static void on_pointer(rfb_server *s, int buttons, int x, int y) {
     if (buttons & 4) newstate |= 0x400;
 
     XWindow *w = deepest_at(x, y);
-    uint32_t evmask_override = 0;
     XWindow *gw = X.pgrab_win ? find_win(X.pgrab_win) : NULL;
-    if (gw) {
-        /* owner_events: the grabbing client's own windows get their events
-         * as usual; everything else is reported to the grab window */
-        if (!(X.pgrab_owner && w && w->creator == gw->creator)) {
-            w = gw;
-            evmask_override = X.pgrab_mask | 0x4 | 0x8;
+    XWindow *ig = X.igrab_win ? find_win(X.igrab_win) : NULL;
+    /* an active grab reports to the grab window, except (owner_events) the
+     * grabbing client's own windows, which get their events as usual */
+    int grab_redirect = gw && !(X.pgrab_owner && w && w->creator == gw->creator);
+    uint16_t st0 = (uint16_t)(X.btn_state | X.mod_state);
+
+    /* Enter/LeaveNotify */
+    {
+        XWindow *pw = X.ptr_win ? find_win(X.ptr_win) : NULL;
+        if (w != pw) {
+            pointer_crossing(pw, w, x, y, st0, gw ? gw : ig);
+            X.ptr_win = w ? w->id : 0;
         }
     }
-    if (w) {
-        XClient *c = win_client(w);
-        int ox, oy;
-        win_origin(w, &ox, &oy);
-        uint32_t t = (uint32_t)rfb_now_ms();
-        uint32_t wmask = evmask_override ? evmask_override : w->evmask;
-        if (c) {
-            /* buttons: press/release events */
-            for (int b = 0; b < 3; b++) {
-                uint16_t bit = (uint16_t)(0x100 << b);
-                int was = (X.btn_state & bit) != 0;
-                int now = (newstate & bit) != 0;
-                if (was == now) continue;
-                uint32_t need = now ? 0x4 : 0x8;
-                if (!(wmask & need)) continue;
-                uint8_t ev[32]; memset(ev, 0, sizeof ev);
-                ev[0] = now ? 4 : 5;
-                ev[1] = (uint8_t)(b + 1);
-                p32(ev, 4, t);
-                p32(ev, 8, ROOT_ID);
-                p32(ev, 12, w->id);
-                p32(ev, 16, 0);
-                p16(ev, 20, (uint16_t)x); p16(ev, 22, (uint16_t)y);
-                p16(ev, 24, (uint16_t)(x - ox)); p16(ev, 26, (uint16_t)(y - oy));
-                p16(ev, 28, (uint16_t)(X.btn_state | X.mod_state));
-                ev[30] = 1;
-                send_event(c, ev);
-            }
-            /* motion */
-            if (wmask & 0x40 || (evmask_override && (wmask & 0x2000))) {
-                uint8_t ev[32]; memset(ev, 0, sizeof ev);
-                ev[0] = 6;
-                p32(ev, 4, t);
-                p32(ev, 8, ROOT_ID);
-                p32(ev, 12, w->id);
-                p32(ev, 16, 0);
-                p16(ev, 20, (uint16_t)x); p16(ev, 22, (uint16_t)y);
-                p16(ev, 24, (uint16_t)(x - ox)); p16(ev, 26, (uint16_t)(y - oy));
-                p16(ev, 28, (uint16_t)(newstate | X.mod_state));
-                ev[30] = 1;
-                send_event(c, ev);
-            }
+
+    /* ButtonPress / ButtonRelease */
+    for (int b = 0; b < 3; b++) {
+        uint16_t bit = (uint16_t)(0x100 << b);
+        int was = (X.btn_state & bit) != 0;
+        int now = (newstate & bit) != 0;
+        if (was == now) continue;
+        uint32_t need = now ? 0x4 : 0x8;
+        XWindow *ew = NULL;
+        uint32_t child = 0;
+        if (grab_redirect) {
+            if ((X.pgrab_mask | 0x4 | 0x8) & need) ew = gw;
+        } else if (ig && !gw) {
+            if (ig->evmask & need) ew = ig;           /* implicit grab: owner_events off */
+        } else {
+            ew = pointer_target(w, need, &child);
         }
+        if (ew) send_pointer_ev(ew, now ? 4 : 5, b + 1, child, x, y,
+                                (uint16_t)(X.btn_state | X.mod_state));
+        if (now && ew && !gw && !ig) { X.igrab_win = ew->id; ig = ew; }
+        X.btn_state = (uint16_t)(now ? (X.btn_state | bit) : (X.btn_state & ~bit));
+    }
+
+    /* MotionNotify */
+    {
+        uint32_t need = 0x40;                                  /* PointerMotion */
+        if (newstate) need |= 0x2000;                          /* ButtonMotion */
+        need |= newstate & (0x100 | 0x200 | 0x400);            /* Button1..3Motion */
+        XWindow *ew = NULL;
+        uint32_t child = 0;
+        if (grab_redirect) {
+            if (X.pgrab_mask & need) ew = gw;
+        } else if (ig && !gw) {
+            if (ig->evmask & need) ew = ig;
+        } else {
+            ew = pointer_target(w, need, &child);
+        }
+        if (ew) send_pointer_ev(ew, 6, 0, child, x, y, (uint16_t)(newstate | X.mod_state));
     }
     X.btn_state = newstate;
+    if (!newstate) X.igrab_win = 0;
 
     /* Follow the pointer with the right cursor shape. The frame chrome is
      * OURS, not the client's, so it always shows the plain arrow — without
