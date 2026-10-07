@@ -68,7 +68,7 @@ pid_t fork(void);
 #define MAX_PIXMAPS  4096
 #define MAX_GCS      512
 #define MAX_DYNATOMS 256
-#define MAX_PROPS    12
+#define MAX_PROPS    24      /* GTK 2 sets ~15 on a toplevel (WM_TRANSIENT_FOR among the late ones) */
 
 #define ROOT_ID   1u
 #define CMAP_ID   2u
@@ -792,12 +792,39 @@ static void stack_remove(uint32_t id) {
     X.nstack--;
 }
 
-static int stack_raise(uint32_t id) {         /* returns 1 if order changed */
+/* WM_TRANSIENT_FOR of a top-level (0 = none): its dialogs name their parent */
+static uint32_t transient_for(XWindow *w) {
+    for (int i = 0; i < w->nprops; i++)
+        if (w->props[i].atom == 68 && w->props[i].fmt == 32 && w->props[i].n >= 1) {
+            uint32_t v;
+            memcpy(&v, w->props[i].data, 4);
+            return v;
+        }
+    return 0;
+}
+
+static int stack_raise_depth(uint32_t id, int depth) {
+    int changed = 0;
     int i = stack_index(id);
-    if (i <= 0) return 0;                     /* absent, or already front */
-    memmove(X.stack + 1, X.stack, (size_t)i * sizeof X.stack[0]);
-    X.stack[0] = id;
-    return 1;
+    if (i < 0) return 0;                      /* absent */
+    if (i > 0) {
+        memmove(X.stack + 1, X.stack, (size_t)i * sizeof X.stack[0]);
+        X.stack[0] = id;
+        changed = 1;
+    }
+    /* its transient windows (dialogs) stay above it: raising a main window
+     * over its own modal dialog hid the dialog GTK is waiting on */
+    if (depth < 8)
+        for (int k = 0; k < MAX_WINDOWS; k++) {
+            XWindow *t = &X.win[k];
+            if (t->id && t->id != id && t->toplevel && t->mapped && transient_for(t) == id)
+                changed |= stack_raise_depth(t->id, depth + 1);
+        }
+    return changed;
+}
+
+static int stack_raise(uint32_t id) {         /* returns 1 if order changed */
+    return stack_raise_depth(id, 0);
 }
 
 static int stack_lower(uint32_t id) {
@@ -858,6 +885,18 @@ static XWindow *deepest_at(int fx, int fy) {
         return top;                            /* on the chrome, not content */
     XWindow *child = descend_at(top, fx, fy);
     return child ? child : top;
+}
+
+/* The child of w (an immediate child) on the way down to the deepest window
+ * at the frame point, or 0. QueryPointer and TranslateCoordinates report it:
+ * GDK 2 finds the window under the pointer by walking QueryPointer's child
+ * from the root down, and with "None" it decided the pointer had left the
+ * toplevel after every click (no crossings, so the next button never armed). */
+static uint32_t child_toward_point(XWindow *w, int fx, int fy) {
+    XWindow *d = deepest_at(fx, fy);
+    for (XWindow *t = d; t && t->id != ROOT_ID; t = find_win(t->parent))
+        if (t->parent == w->id) return t->id;
+    return 0;
 }
 
 /* ── focus ────────────────────────────────────────────────────────────────── */
@@ -1507,7 +1546,7 @@ static void process_request_op(XClient *c, const uint8_t *r, int len) {
         }
         uint8_t b[24]; memset(b, 0, sizeof b);
         p32(b, 0, ROOT_ID);                       /* root */
-        p32(b, 4, 0);                             /* child = None */
+        p32(b, 4, child_toward_point(w, X.ptr_x, X.ptr_y));
         p16(b, 8, (uint16_t)X.ptr_x); p16(b, 10, (uint16_t)X.ptr_y);
         p16(b, 12, (uint16_t)(X.ptr_x - ox));
         p16(b, 14, (uint16_t)(X.ptr_y - oy));
@@ -1525,7 +1564,7 @@ static void process_request_op(XClient *c, const uint8_t *r, int len) {
         win_origin(dst, &dx, &dy);
         int x = gs16(r, 12), y = gs16(r, 14);
         uint8_t b[24]; memset(b, 0, sizeof b);
-        p32(b, 0, 0);                             /* child = None */
+        p32(b, 0, child_toward_point(dst, sx + x, sy + y));
         p16(b, 4, (uint16_t)(sx + x - dx));
         p16(b, 6, (uint16_t)(sy + y - dy));
         send_reply(c, 1, b, NULL, 0);
