@@ -1201,6 +1201,22 @@ var COMPAT_SP_EXPORT = "__lot_compat_stack_pointer";
 var SIGINFO_BYTES = 128;
 var UCONTEXT_BYTES = 176;
 var has_siginfo_trampoline_abi = (module) => WebAssembly.Module.imports(module).some((i) => i.module === "linux" && i.name === "copy_siginfo");
+var is_fpcast = (module) => WebAssembly.Module.exports(module).some((e) => e.name === "__lot_fpcast");
+function table_call_adapter(f, fpcast) {
+  if (!fpcast) return { call: f, arity: f.length };
+  const n = f.length;
+  return {
+    arity: -1,
+    call: (...args) => {
+      const a = new Array(n).fill(0n);
+      args.forEach((v, i) => {
+        if (i < n) a[i] = BigInt(v | 0);
+      });
+      const r = f(...a);
+      return typeof r === "bigint" ? Number(BigInt.asIntN(32, r)) : r;
+    }
+  };
+}
 function user_imports({
   kernel_memory,
   get_kernel_instance,
@@ -1577,9 +1593,11 @@ function user_imports({
           assert(instance);
           const { __indirect_function_table } = instance.exports;
           assert(__indirect_function_table instanceof WebAssembly.Table, "Invalid function table");
-          const f = __indirect_function_table.get(fn >>> 0);
-          assert(typeof f === "function" && f.length === 1, "Invalid function signature");
-          f(arg);
+          const raw = __indirect_function_table.get(fn >>> 0);
+          assert(typeof raw === "function", "Invalid function signature");
+          const f = table_call_adapter(raw, !!context && is_fpcast(context.module));
+          assert(f.arity === 1 || f.arity === -1, "Invalid function signature");
+          f.call(arg);
           console.warn("thread entrypoint reached the end without exiting");
         };
       },
@@ -1588,17 +1606,22 @@ function user_imports({
         assert(instance);
         const { __indirect_function_table } = instance.exports;
         assert(__indirect_function_table instanceof WebAssembly.Table, "Invalid function table");
-        const f = __indirect_function_table.get(fn >>> 0);
-        assert(typeof f === "function" && f.length === 1, "Invalid function signature");
-        f(sig);
+        const raw = __indirect_function_table.get(fn >>> 0);
+        assert(typeof raw === "function", "Invalid function signature");
+        const f = table_call_adapter(raw, !!context && is_fpcast(context.module));
+        assert(f.arity === 1 || f.arity === -1, "Invalid function signature");
+        f.call(sig);
       },
       call_siginfo_handler(trampoline, fn, sig) {
         assert(instance && context);
         const { __indirect_function_table } = instance.exports;
         assert(__indirect_function_table instanceof WebAssembly.Table, "Invalid function table");
         if (!has_siginfo_trampoline_abi(context.module)) {
-          const handler = __indirect_function_table.get(fn >>> 0);
-          assert(typeof handler === "function" && handler.length === 3, "Invalid siginfo handler");
+          const raw_handler = __indirect_function_table.get(fn >>> 0);
+          assert(typeof raw_handler === "function", "Invalid siginfo handler");
+          const adapted = table_call_adapter(raw_handler, is_fpcast(context.module));
+          assert(adapted.arity === 3 || adapted.arity === -1, "Invalid siginfo handler");
+          const handler = adapted.call;
           const kernel = get_kernel_instance().exports;
           const stack_pointer = instance.exports[COMPAT_SP_EXPORT];
           if (!(stack_pointer instanceof WebAssembly.Global)) {
@@ -1628,8 +1651,11 @@ function user_imports({
             kernel.clear_siginfo();
           }
         }
-        const f = __indirect_function_table.get(trampoline >>> 0);
-        assert(typeof f === "function" && f.length === 2, "Invalid siginfo trampoline");
+        const raw_trampoline = __indirect_function_table.get(trampoline >>> 0);
+        assert(typeof raw_trampoline === "function", "Invalid siginfo trampoline");
+        const adapted_trampoline = table_call_adapter(raw_trampoline, is_fpcast(context.module));
+        assert(adapted_trampoline.arity === 2 || adapted_trampoline.arity === -1, "Invalid siginfo trampoline");
+        const f = adapted_trampoline.call;
         siginfo_copy_results.push(null);
         try {
           f(fn, sig);

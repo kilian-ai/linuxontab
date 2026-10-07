@@ -97,6 +97,31 @@ const UCONTEXT_BYTES = 176; // old sysroot sizeof(ucontext_t) = 168, 16-byte rou
 const has_siginfo_trampoline_abi = (module: WebAssembly.Module) =>
   WebAssembly.Module.imports(module).some((i) => i.module === "linux" && i.name === "copy_siginfo");
 
+// LinuxOnTab: modules post-processed with binaryen's --fpcast-emu export
+// __lot_fpcast. GTK 2 code calls functions through pointers of other types
+// all the time (one-argument class_init functions called with two, signal
+// handlers with fewer parameters than the marshaller passes); on wasm such a
+// call_indirect traps. fpcast-emu routes every indirect call through a thunk
+// taking max-func-params i64 values and returning i64, so the table entries
+// the host calls from JS (thread entry, signal handlers, the siginfo
+// trampoline) take BigInts, padded to the thunk's arity.
+const is_fpcast = (module: WebAssembly.Module) =>
+  WebAssembly.Module.exports(module).some((e) => e.name === "__lot_fpcast");
+type TableFn = (...args: number[]) => unknown;
+function table_call_adapter(f: Function, fpcast: boolean): { call: TableFn; arity: number } {
+  if (!fpcast) return { call: f as TableFn, arity: f.length };
+  const n = f.length;
+  return {
+    arity: -1,
+    call: (...args: number[]) => {
+      const a = new Array<bigint>(n).fill(0n);
+      args.forEach((v, i) => { if (i < n) a[i] = BigInt(v | 0); });
+      const r = (f as (...b: bigint[]) => unknown)(...a);
+      return typeof r === "bigint" ? Number(BigInt.asIntN(32, r)) : r;
+    },
+  };
+}
+
 export interface ForkRewind {
   bufPtr: number;
   retPtr: number;
@@ -612,10 +637,12 @@ const NR_WASM_GET_ARGS = 245;
           const { __indirect_function_table } = instance.exports;
           assert(__indirect_function_table instanceof WebAssembly.Table, "Invalid function table");
 
-          const f = __indirect_function_table.get(fn >>> 0);
-          assert(typeof f === "function" && f.length === 1, "Invalid function signature");
+          const raw = __indirect_function_table.get(fn >>> 0);
+          assert(typeof raw === "function", "Invalid function signature");
+          const f = table_call_adapter(raw, !!context && is_fpcast(context.module));
+          assert(f.arity === 1 || f.arity === -1, "Invalid function signature");
 
-          f(arg);
+          f.call(arg);
 
           // throw new Error("thread entrypoint reached the end without exiting");
           console.warn("thread entrypoint reached the end without exiting");
@@ -629,10 +656,12 @@ const NR_WASM_GET_ARGS = 245;
         const { __indirect_function_table } = instance.exports;
         assert(__indirect_function_table instanceof WebAssembly.Table, "Invalid function table");
 
-        const f = __indirect_function_table.get(fn >>> 0);
-        assert(typeof f === "function" && f.length === 1, "Invalid function signature");
+        const raw = __indirect_function_table.get(fn >>> 0);
+        assert(typeof raw === "function", "Invalid function signature");
+        const f = table_call_adapter(raw, !!context && is_fpcast(context.module));
+        assert(f.arity === 1 || f.arity === -1, "Invalid function signature");
 
-        f(sig);
+        f.call(sig);
       },
       call_siginfo_handler(trampoline, fn, sig) {
         assert(instance && context);
@@ -641,8 +670,11 @@ const NR_WASM_GET_ARGS = 245;
         assert(__indirect_function_table instanceof WebAssembly.Table, "Invalid function table");
 
         if (!has_siginfo_trampoline_abi(context.module)) {
-          const handler = __indirect_function_table.get(fn >>> 0);
-          assert(typeof handler === "function" && handler.length === 3, "Invalid siginfo handler");
+          const raw_handler = __indirect_function_table.get(fn >>> 0);
+          assert(typeof raw_handler === "function", "Invalid siginfo handler");
+          const adapted = table_call_adapter(raw_handler, is_fpcast(context.module));
+          assert(adapted.arity === 3 || adapted.arity === -1, "Invalid siginfo handler");
+          const handler = adapted.call;
           const kernel = get_kernel_instance().exports;
           const stack_pointer = (instance.exports as Record<string, unknown>)[COMPAT_SP_EXPORT];
           if (!(stack_pointer instanceof WebAssembly.Global)) {
@@ -677,8 +709,11 @@ const NR_WASM_GET_ARGS = 245;
           }
         }
 
-        const f = __indirect_function_table.get(trampoline >>> 0);
-        assert(typeof f === "function" && f.length === 2, "Invalid siginfo trampoline");
+        const raw_trampoline = __indirect_function_table.get(trampoline >>> 0);
+        assert(typeof raw_trampoline === "function", "Invalid siginfo trampoline");
+        const adapted_trampoline = table_call_adapter(raw_trampoline, is_fpcast(context.module));
+        assert(adapted_trampoline.arity === 2 || adapted_trampoline.arity === -1, "Invalid siginfo trampoline");
+        const f = adapted_trampoline.call;
 
         siginfo_copy_results.push(null);
         try {
