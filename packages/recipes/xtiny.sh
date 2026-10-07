@@ -5,7 +5,10 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.9.0"   # 1.9.0: what LibreOffice's X11 backend needs — PropertyNotify (the
+VERSION="1.10.0"  # 1.10.0: mouse wheel (X buttons 4-7: NetSurf, xterm, GTK scroll);
+                  # X pointer semantics — press/release propagate to the first
+                  # ancestor that selected them, implicit grab, Enter/LeaveNotify
+                  # 1.9.0: what LibreOffice's X11 backend needs — PropertyNotify (the
                   # server-time handshake it blocks on before mapping a window),
                   # override-redirect popups (menus at their own position, no frame),
                   # active pointer/keyboard grabs; Writer in the Apps menu while the
