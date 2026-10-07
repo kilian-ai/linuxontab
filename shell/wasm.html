@@ -690,7 +690,7 @@ class WispSlirp {
   }
 
   constructor(url = 'wss://linuxontab-net.fly.dev/wisp', dnsResolver = null,
-              corsProxy = WispSlirp.RELAY_CORS) {
+              corsProxy = WispSlirp.PAGE_TLS) {
     this.#url = url;
     this.#dnsResolver = dnsResolver;
     this.#corsProxy = corsProxy;
@@ -1842,14 +1842,12 @@ class WispSlirp {
   // an origin that refuses (no CORS headers) goes through #corsProxy, and it
   // is remembered so later requests skip the doomed direct attempt.
   //
-  // #corsProxy is relay.linuxontab.com by default. With ?wisp= it is
-  // WispSlirp.PAGE_TLS: a guest pointed at its own backend chose not to
-  // route through linuxontab.com, so a refused origin is fetched with TLS in
-  // the page over a WISP stream instead (#tlsFetch; same rule as #6 for DNS).
-  // ?cors=tls selects that anywhere, ?cors=relay the relay, ?cors=off no
+  // #corsProxy is WispSlirp.PAGE_TLS: a refused origin is fetched with TLS in
+  // the page over a WISP stream (#tlsFetch), so the WISP backend carries only
+  // ciphertext and no proxy ever sees the plaintext. (This replaced the
+  // relay.linuxontab.com /cors proxy, now retired.) ?cors=off gives no
   // fallback at all (a refused origin gets a 403), and ?cors=<prefix> names
   // your own proxy (the URL is appended, encoded).
-  static RELAY_CORS = 'https://relay.linuxontab.com/cors?url=';
   static PAGE_TLS = 'tls';
 
   async #gatewayFetch(url, method, hops = 0) {
@@ -1870,13 +1868,13 @@ class WispSlirp {
     if (!this.#corsProxy) {
       const err = new Error(
         'blocked: ' + origin + ' does not allow direct browser fetches, and this ' +
-        'page has no fallback (?cors=off). Use ?cors=tls to fetch it with TLS in ' +
-        'the page over the WISP backend, ?cors=relay for the relay, or ' +
-        '?cors=<your proxy prefix> for your own proxy.');
+        'page has no fallback (?cors=off). Drop ?cors to fetch it with TLS in ' +
+        'the page over the WISP backend, or use ?cors=<your proxy prefix> for ' +
+        'your own proxy.');
       err.gatewayStatus = '403 Forbidden';
       throw err;
     }
-    console.log('[HTTP-GW] via proxy', this.#corsProxy === WispSlirp.RELAY_CORS ? 'relay' : this.#corsProxy, url);
+    console.log('[HTTP-GW] via proxy', this.#corsProxy, url);
     return fetch(this.#corsProxy + encodeURIComponent(url), opts);
   }
 
@@ -3420,17 +3418,14 @@ async function doBoat() {
     : dnsOpt ? dnsOpt
     : new URLSearchParams(location.search).has('wisp') ? '1.1.1.1'
     : null;
-  // The same rule for the HTTP gateway's fallback for origins that refuse
-  // browser fetches (WispSlirp #gatewayFetch): relay.linuxontab.com by
-  // default, TLS in the page over the WISP backend with ?wisp=.
-  // ?cors=tls | relay | off | <proxy prefix> overrides.
+  // The HTTP gateway's fallback for origins that refuse browser fetches
+  // (WispSlirp #gatewayFetch) is TLS in the page over the WISP backend, on
+  // every page. ?cors=off | <proxy prefix> overrides; ?cors=tls is the
+  // default, and the retired ?cors=relay falls back to it too.
   const corsOpt = new URLSearchParams(location.search).get('cors');
-  const corsProxy = corsOpt === 'relay' ? WispSlirp.RELAY_CORS
-    : corsOpt === 'tls' ? WispSlirp.PAGE_TLS
-    : (corsOpt === 'off' || corsOpt === 'none') ? null
+  const corsProxy = (corsOpt === 'off' || corsOpt === 'none') ? null
     : (corsOpt && /^https?:\/\//i.test(corsOpt)) ? corsOpt
-    : new URLSearchParams(location.search).has('wisp') ? WispSlirp.PAGE_TLS
-    : WispSlirp.RELAY_CORS;
+    : WispSlirp.PAGE_TLS;
   // Per-packet network logging (VIRTIO/ETH/HTCP/RELAYWS/INJECT). MUST stay off
   // by default: at bulk-transfer rates the logging stalls the main thread long
   // enough that WS message dispatch stops and the WISP watchdog tears down a
@@ -4856,6 +4851,15 @@ $('tn-run-btn').onclick = () => {
     publicEndpoints: Object.fromEntries(publicEndpoints) });
 
   function stopJsTunnel() {
+    // Give the public ports back now (the relay would hold them for an hour).
+    if (tunnelCode && publicEndpoints.size) {
+      try {
+        fetch(TUNNEL_EXPOSE_ENDPOINTS[0] + '/port/unexpose', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: tunnelCode }), keepalive: true,
+        }).catch(() => {});
+      } catch (_) {}
+    }
     active = false;
     if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
     if (refillTimer) { clearTimeout(refillTimer); refillTimer = null; }
@@ -4875,6 +4879,8 @@ $('tn-run-btn').onclick = () => {
 
   // Allow other UI modules (e.g., X display) to pause tunnel traffic.
   window.stopJsTunnel = stopJsTunnel;
+  // Closing the tab ends remote access: release its public port right away.
+  window.addEventListener('pagehide', () => { if (active) stopJsTunnel(); });
   // Exposed for automation/tests: switch the tunnel to a different guest port
   // (e.g. stopJsTunnel(); startJsTunnel(8080) to expose an in-guest web app).
   window.startJsTunnel = startJsTunnel;
@@ -4961,7 +4967,12 @@ $('tn-run-btn').onclick = () => {
     const btn = $('ssh-enable'); btn.disabled = true;
     try {
       status('checking for an SSH server in the guest…');
-      if (!await probeSshd()) {
+      // A few tries: until the images are rebuilt, sshd runs as rc's
+      // one-connection sshd-session fallback, which is briefly not listening
+      // between connections.
+      let up = false;
+      for (let i = 0; i < 3 && !up; i++) { if (i) await new Promise(r => setTimeout(r, 2000)); up = await probeSshd(); }
+      if (!up) {
         status('No SSH server is answering on port 22 in this tab. The full disk (?disk=full) runs one; on the lean image try `apk add openssh` first.', 'err');
         return;
       }

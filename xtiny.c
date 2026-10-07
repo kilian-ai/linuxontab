@@ -2559,8 +2559,6 @@ static const App BUILTIN_APPS[] = {
     /* clawlite opens its REPL without a key and says where to put one
      * (~/.config/clawlite/config); the terminal window stays up meanwhile. */
     { "claw",    "AI Assistant",   "claw LLM agent (needs API key)", "claw",                     "claw",     1, 0xD97757, 0, 0 },
-    /* asks for the account on first start (neomutt-setup), then NeoMutt */
-    { "neomutt", "Mail",           "NeoMutt mail client (IMAP/SMTP)", "neomutt-setup --run",        "neomutt",  1, 0x1F7A8C, 0, 0 },
     { "lotplay", "Videos",         "Video player (ffmpeg)",        "lotplay",                    "lotplay",  0, 0xE63946, 0, 0 },
     { "wolf3d",  "Wolfenstein 3D", "Shareware episode 1",          "wolf3d",                     "wolf3d",   0, 0x9B1C1C, 0, 0 },
     { "tetris",  "Tetris",         "vitetris, in colour",          "tetris",                     "vitetris", 1, 0xC77700, 0, 0 },
