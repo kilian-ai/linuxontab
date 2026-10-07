@@ -2809,7 +2809,8 @@
       relay_url: relayUrl,
       dns_method: 'doh',
       doh_server: 'relay.linuxontab.com',
-      cors_proxy: 'https://relay.linuxontab.com/cors?url=',
+      // no cors_proxy: v86 reads it only in "fetch" mode (?relay=fetch), and
+      // the relay's /cors proxy is retired; fetch mode fetches directly.
     };
     if (doRestore) {
       const blob = remoteSnapBuffer || await idbGet(snapKey);
