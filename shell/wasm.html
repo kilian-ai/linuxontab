@@ -276,6 +276,8 @@
       <div class="hint">or without the public port (needs <a href="https://github.com/vi/websocat" target="_blank" rel="noopener">websocat</a>):</div>
       <div class="row"><code id="ssh-ws-cmd"></code><button data-copy="ssh-ws-cmd">copy</button></div>
       <div class="row">password <code id="ssh-pw"></code><button data-copy="ssh-pw">copy</button></div>
+      <div class="row">host key <code id="ssh-fp"></code></div>
+      <div class="hint">On the first connection ssh shows this fingerprint: answer yes only if it matches. Every tab gets its own key.</div>
       <div class="row"><button id="ssh-disable">stop SSH access</button></div>
       <div class="warn">Anyone with this command and password can log in to this tab as root. Stop when you are done; closing the tab also ends it.</div>
     </div>
@@ -4908,6 +4910,33 @@ $('tn-run-btn').onclick = () => {
     let out = ''; for (const x of b) out += alphabet[x % alphabet.length];
     return out;
   };
+  // A fresh Ed25519 SSH host key (WebCrypto) in OpenSSH's own formats:
+  // { priv: "-----BEGIN OPENSSH PRIVATE KEY-----…", pub: "ssh-ed25519 AAAA… comment",
+  //   fp: "SHA256:…" (what ssh shows on first connect) }.
+  async function genHostKey(comment) {
+    const kp = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify']);
+    const pub = new Uint8Array(await crypto.subtle.exportKey('raw', kp.publicKey));
+    const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', kp.privateKey));
+    const seed = pkcs8.slice(pkcs8.length - 32);            // PKCS#8 Ed25519 ends in the 32-byte seed
+    const enc = new TextEncoder();
+    const u32 = (n) => new Uint8Array([n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, n & 255]);
+    const str = (b) => { b = typeof b === 'string' ? enc.encode(b) : b; return cat(u32(b.length), b); };
+    function cat(...parts) { const o = new Uint8Array(parts.reduce((a, p) => a + p.length, 0)); let i = 0; for (const p of parts) { o.set(p, i); i += p.length; } return o; }
+    const b64 = (b) => { let s = ''; for (const x of b) s += String.fromCharCode(x); return btoa(s); };
+    const blob = cat(str('ssh-ed25519'), str(pub));        // public key blob
+    const check = crypto.getRandomValues(new Uint8Array(4));
+    let priv = cat(check, check, str('ssh-ed25519'), str(pub), str(cat(seed, pub)), str(comment));
+    const pad = []; for (let i = 1; (priv.length + pad.length) % 8; i++) pad.push(i);
+    priv = cat(priv, new Uint8Array(pad));
+    const body = cat(enc.encode('openssh-key-v1\0'), str('none'), str('none'), str(''), u32(1), str(blob), str(priv));
+    const lines = b64(body).match(/.{1,70}/g);
+    const fp = 'SHA256:' + b64(new Uint8Array(await crypto.subtle.digest('SHA-256', blob))).replace(/=+$/, '');
+    return {
+      priv: '-----BEGIN OPENSSH PRIVATE KEY-----\n' + lines.join('\n') + '\n-----END OPENSSH PRIVATE KEY-----\n',
+      pub: 'ssh-ed25519 ' + b64(blob) + ' ' + comment,
+      fp,
+    };
+  }
   // Is an SSH server answering on guest port 22? (banner starts with "SSH-")
   function probeSshd(timeoutMs = 8000) {
     return new Promise((resolve) => {
@@ -4978,9 +5007,30 @@ $('tn-run-btn').onclick = () => {
       }
       const pw = rand(8, 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789');
       const salt = rand(2, 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./');
-      status('setting a random root password in the guest (typed into the terminal)…');
-      const ok = await guestRun(`sed -i "s#^root:[^:]*:#root:$(cryptpw -m des '${pw}' '${salt}'):#" /etc/shadow`);
+      // A host key of this tab's own: the images all ship the same one.
+      let hk = null;
+      try { hk = await genHostKey('linuxontab-tab'); } catch (_) { /* no WebCrypto Ed25519: keep the image's key */ }
+      status('setting a random root password' + (hk ? ' and a new host key' : '') + ' in the guest (typed into the terminal)…');
+      if (hk) {
+        guestSend(` cat > /tmp/.lot-hostkey <<'EOF'\n${hk.priv}EOF`);
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      // sshd's listener hands its startup keys to every session, so it has to
+      // restart for the new key; SIGHUP would be cleaner but this build's
+      // handler sits at wasm table index 1, which the kernel reads as SIG_IGN.
+      // On SIGTERM rc's loop serves one connection with sshd-session (which
+      // reads the key files itself) and then restarts the daemon.
+      const keyCmd = hk ? ` && chmod 600 /tmp/.lot-hostkey && mv /tmp/.lot-hostkey /etc/ssh/ssh_host_ed25519_key && echo '${hk.pub}' > /etc/ssh/ssh_host_ed25519_key.pub && (kill $(cat /run/sshd.pid 2>/dev/null) 2>/dev/null; true)` : '';
+      const ok = await guestRun(`sed -i "s#^root:[^:]*:#root:$(cryptpw -m des '${pw}' '${salt}'):#" /etc/shadow${keyCmd}`);
       if (!ok) { status('Could not set the password: is the guest shell at a prompt? Try again from an idle shell.', 'err'); return; }
+      if (hk) {
+        // Use up rc's one-connection fallback, then wait for the daemon.
+        status('restarting sshd with the new host key…');
+        await new Promise((r) => setTimeout(r, 1500));
+        await probeSshd();
+        let back = false;
+        for (let i = 0; i < 8 && !back; i++) { await new Promise((r) => setTimeout(r, 1500)); back = await probeSshd(); }
+      }
       status('opening the tunnel…');
       window.__lotSshActive = true;
       const info = window.getTunnelInfo ? window.getTunnelInfo() : {};
@@ -4988,11 +5038,15 @@ $('tn-run-btn').onclick = () => {
       else await window.exposePublic(22);
       const pub = await waitPublic();
       if (!pub) { status('The relay did not hand out a public port; try again in a moment.', 'err'); window.__lotSshActive = false; window.stopJsTunnel && window.stopJsTunnel(); return; }
-      $('ssh-cmd').textContent = `ssh -p ${pub.publicPort} -o PubkeyAuthentication=no root@${pub.host}`;
-      $('sftp-cmd').textContent = `sftp -P ${pub.publicPort} root@${pub.host}`;
+      // Public ports are reused by other tabs: key the known_hosts entry to
+      // this tab's host key instead of host:port, so ssh never mixes them up.
+      const alias = hk ? ` -o HostKeyAlias=linuxontab-${hk.fp.slice(7).replace(/[^A-Za-z0-9]/g, '').slice(0, 10)}` : '';
+      $('ssh-cmd').textContent = `ssh -p ${pub.publicPort}${alias} -o PubkeyAuthentication=no root@${pub.host}`;
+      $('sftp-cmd').textContent = `sftp -P ${pub.publicPort}${alias} root@${pub.host}`;
+      $('ssh-fp').textContent = hk ? hk.fp : '(the image\'s shared key: this browser has no WebCrypto Ed25519)';
       const t = window.getTunnelInfo();
       const wsUrl = `${String(t.relay).replace(/^http/, 'ws')}/port/client?code=${t.code}&port=22`;
-      $('ssh-ws-cmd').textContent = `ssh -o ProxyCommand="websocat --binary -E '${wsUrl}'" -o PubkeyAuthentication=no root@linuxontab`;
+      $('ssh-ws-cmd').textContent = `ssh -o ProxyCommand="websocat --binary -E '${wsUrl}'"${alias} -o PubkeyAuthentication=no root@linuxontab`;
       $('ssh-pw').textContent = pw;
       $('ssh-btn').textContent = 'ssh ●';
       show(true); status('');
