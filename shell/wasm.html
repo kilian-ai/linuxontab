@@ -6498,6 +6498,36 @@ document.addEventListener('mouseup', (e) => {
 });
 $('x-canvas').addEventListener('contextmenu', (e) => e.preventDefault());
 
+// Mouse wheel → X buttons 4/5 (up/down) and 6/7 (left/right): RFB pointer
+// mask bits 3..6, one press+release per click. Deltas accumulate so a
+// trackpad's small steps add up; 100 px (a mouse notch in Chrome) is one
+// click, as on a native X desktop.
+let xWheelY = 0, xWheelX = 0;
+$('x-canvas').addEventListener('wheel', (e) => {
+  if (!xRfbClient) return;
+  e.preventDefault();
+  const [x, y] = xPointerXY(e);
+  const px = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;   // lines / pages → px
+  xWheelY += e.deltaY * px;
+  xWheelX += e.deltaX * px;
+  const held = xDragFromCanvas ? (e.buttons & 7) : 0;
+  const STEP = 100;
+  for (let n = 0; Math.abs(xWheelY) >= STEP && n < 10; n++) {
+    const bit = xWheelY < 0 ? 8 : 16;
+    xWheelY -= Math.sign(xWheelY) * STEP;
+    xRfbClient.sendPointer(held | bit, x, y);
+    xRfbClient.sendPointer(held, x, y);
+  }
+  for (let n = 0; Math.abs(xWheelX) >= STEP && n < 10; n++) {
+    const bit = xWheelX < 0 ? 32 : 64;
+    xWheelX -= Math.sign(xWheelX) * STEP;
+    xRfbClient.sendPointer(held | bit, x, y);
+    xRfbClient.sendPointer(held, x, y);
+  }
+  if (Math.abs(xWheelY) < STEP) xWheelY *= 0.5;   // let stale remainders fade
+  if (Math.abs(xWheelX) < STEP) xWheelX *= 0.5;
+}, { passive: false });
+
 // Scale the canvas to fit its panel, keeping the aspect ratio. In the
 // panel it only shrinks (so the whole desktop stays reachable); in
 // fullscreen it also grows to fill the screen. xPointerXY maps through the

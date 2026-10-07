@@ -3541,6 +3541,42 @@ static void on_pointer(rfb_server *s, int buttons, int x, int y) {
         X.btn_state = (uint16_t)(now ? (X.btn_state | bit) : (X.btn_state & ~bit));
     }
 
+    /* Wheel: RFB mask bits 3..6 are X buttons 4..7 (up, down, left, right);
+     * the viewer sends each click as the bit set, then cleared. X clients
+     * (NetSurf, GTK, xterm, Xt scrollbars) expect a ButtonPress + Release
+     * pair per click, routed like any press — active grab, implicit grab,
+     * propagation to the first window that selected ButtonPress — with the
+     * release going to the window that got the press, as the implicit grab
+     * would, and no grab left behind. Press state is the state before the
+     * click; the release adds Button4/5Mask (6/7 have no mask bit). */
+    {
+        static int prev_wheel = 0;
+        int wheel = (buttons >> 3) & 0xf;
+        for (int b = 0; b < 4; b++) {
+            if (!((wheel >> b) & 1) || ((prev_wheel >> b) & 1)) continue;
+            int xb = 4 + b;
+            XWindow *ew = NULL;
+            uint32_t child = 0;
+            int grabbed = 0;
+            if (grab_redirect) {
+                ew = gw; grabbed = 1;                 /* active grab: always reported */
+            } else if (ig && !gw) {
+                if (ig->evmask & 0x4) ew = ig;
+            } else {
+                ew = pointer_target(w, 0x4, &child);
+            }
+            if (!ew) continue;
+            uint16_t st = (uint16_t)(X.btn_state | X.mod_state);
+            send_pointer_ev(ew, 4, xb, child, x, y, st);
+            if (grabbed || (ew->evmask & 0x8)) {
+                uint16_t rst = st;
+                if (xb <= 5) rst |= (uint16_t)(0x100 << (xb - 1));
+                send_pointer_ev(ew, 5, xb, child, x, y, rst);
+            }
+        }
+        prev_wheel = wheel;
+    }
+
     /* MotionNotify */
     {
         uint32_t need = 0x40;                                  /* PointerMotion */
