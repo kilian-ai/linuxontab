@@ -88,6 +88,7 @@ static void p32(uint8_t *b, int o, uint32_t v) {
 }
 static void p16(uint8_t *b, int o, uint32_t v) { b[o]=v; b[o+1]=v>>8; }
 static int pad4(int n) { return (n + 3) & ~3; }
+#define MAX_CLIP_RECTS 64       /* more: their bounding box (overdraws, never loses pixels) */
 
 /* ── X resources ──────────────────────────────────────────────────────────── */
 typedef struct {
@@ -132,6 +133,8 @@ typedef struct {
     int creator;
     uint32_t clip;              /* clip-mask bitmap, 0 = None */
     int clip_x, clip_y;         /* clip origin */
+    int crect_on, ncrect;       /* SetClipRectangles: drawing only inside these */
+    struct { int16_t x, y; uint16_t w, h; } crect[MAX_CLIP_RECTS];
 } XGC;
 
 typedef struct {
@@ -440,22 +443,39 @@ static int resolve_drawable(uint32_t id, Drawable *d) {
 }
 
 /* ── drawing primitives (into drawable buffers, X pixel = 0x00RRGGBB) ────── */
+/* The GC of the drawing request being processed (see process_request): its
+ * clip rectangles / clip mask apply to every pixel the request stores. GTK 2
+ * repaints through a double-buffer pixmap copied back with a clip region;
+ * ignoring the clip copied stale pixmap contents over the window. */
+static const void *cur_draw_gc;
+static int gc_clip_ok_fwd(const void *gc, int x, int y);
 static void dput(Drawable *d, int x, int y, uint32_t pix) {
     if (!d->px || (unsigned)x >= (unsigned)d->w || (unsigned)y >= (unsigned)d->h)
         return;
+    if (cur_draw_gc && !gc_clip_ok_fwd(cur_draw_gc, x, y)) return;
     d->px[y * d->w + x] = pix;
 }
 /* GC clip mask (SetClipMask/clip origin): FOX draws icons with transparency
  * as a CopyArea through their shape bitmap. Outside the mask = clipped. */
 static XPixmap *find_pix(uint32_t id);
 static int gc_clip_ok(const XGC *gc, int x, int y) {
-    if (!gc || !gc->clip) return 1;
+    if (!gc) return 1;
+    if (gc->crect_on) {
+        int px = x - gc->clip_x, py = y - gc->clip_y;
+        for (int i = 0; i < gc->ncrect; i++)
+            if (px >= gc->crect[i].x && px < gc->crect[i].x + gc->crect[i].w &&
+                py >= gc->crect[i].y && py < gc->crect[i].y + gc->crect[i].h)
+                return 1;
+        return 0;
+    }
+    if (!gc->clip) return 1;
     XPixmap *m = find_pix(gc->clip);
     if (!m || !m->px) return 1;
     int mx = x - gc->clip_x, my = y - gc->clip_y;
     if ((unsigned)mx >= (unsigned)m->w || (unsigned)my >= (unsigned)m->h) return 0;
     return m->px[my * m->w + mx] != 0;
 }
+static int gc_clip_ok_fwd(const void *gc, int x, int y) { return gc_clip_ok((const XGC *)gc, x, y); }
 static void dfill_rect(Drawable *d, int x, int y, int w, int h, uint32_t pix) {
     for (int j = 0; j < h; j++)
         for (int i = 0; i < w; i++)
@@ -949,7 +969,19 @@ static void keep_on_screen(XWindow *w) {
 /* ── request processing ───────────────────────────────────────────────────── */
 static int xtrace = 0;   /* set by XTINY_TRACE=1 in the environment */
 
+static void process_request_op(XClient *c, const uint8_t *r, int len);
 static void process_request(XClient *c, const uint8_t *r, int len) {
+    /* drawing requests: the GC's clip applies to every stored pixel (dput) */
+    uint8_t op = r[0];
+    XGC *gc = NULL;
+    if (op == 62 || op == 63) gc = find_gc(g32(r, 12));            /* CopyArea/CopyPlane */
+    else if (op >= 64 && op <= 77 && op != 73) gc = find_gc(g32(r, 8));
+    cur_draw_gc = (gc && (gc->crect_on || gc->clip)) ? gc : NULL;
+    process_request_op(c, r, len);
+    cur_draw_gc = NULL;
+}
+
+static void process_request_op(XClient *c, const uint8_t *r, int len) {
     uint8_t op = r[0];
     c->seq++;
     if (xtrace && op != 38) {   /* QueryPointer floods — logged on change */
@@ -1621,6 +1653,7 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
         for (int i = 0; i < MAX_GCS; i++)
             if (!X.gc[i].id) { slot = &X.gc[i]; break; }
         if (!slot) { send_error(c, 11, gid, op); return; }
+        memset(slot, 0, sizeof *slot);
         slot->id = gid; slot->fg = 0; slot->bg = 0xffffff;
         slot->creator = (int)(c - X.cl);
         uint32_t vmask = g32(r, 12);
@@ -1632,7 +1665,7 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
             if (bit == 3) slot->bg = v & 0xffffff;
             if (bit == 17) slot->clip_x = (int16_t)v;
             if (bit == 18) slot->clip_y = (int16_t)v;
-            if (bit == 19) slot->clip = v;
+            if (bit == 19) { slot->clip = v; slot->crect_on = 0; }
         }
         break;
     }
@@ -1648,7 +1681,7 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
             if (bit == 3) gc->bg = v & 0xffffff;
             if (bit == 17) gc->clip_x = (int16_t)v;
             if (bit == 18) gc->clip_y = (int16_t)v;
-            if (bit == 19) gc->clip = v;
+            if (bit == 19) { gc->clip = v; gc->crect_on = 0; }
         }
         break;
     }
@@ -1657,10 +1690,43 @@ static void process_request(XClient *c, const uint8_t *r, int len) {
         if (src && dst) {
             dst->fg = src->fg; dst->bg = src->bg;
             dst->clip = src->clip; dst->clip_x = src->clip_x; dst->clip_y = src->clip_y;
+            dst->crect_on = src->crect_on; dst->ncrect = src->ncrect;
+            memcpy(dst->crect, src->crect, sizeof dst->crect);
         }
         break;
     }
-    case 59: break; /* SetClipRectangles — ignore */
+    case 59: { /* SetClipRectangles */
+        XGC *gc = find_gc(g32(r, 4));
+        if (!gc) { send_error(c, 13, g32(r, 4), op); return; }
+        int n = (len - 12) / 8;
+        gc->clip = 0;
+        gc->crect_on = 1;
+        gc->clip_x = gs16(r, 8);
+        gc->clip_y = gs16(r, 10);
+        if (n <= MAX_CLIP_RECTS) {
+            gc->ncrect = n < 0 ? 0 : n;
+            for (int i = 0; i < gc->ncrect; i++) {
+                gc->crect[i].x = gs16(r, 12 + i*8);
+                gc->crect[i].y = gs16(r, 14 + i*8);
+                gc->crect[i].w = g16(r, 16 + i*8);
+                gc->crect[i].h = g16(r, 18 + i*8);
+            }
+        } else {                                  /* too many: their bounding box */
+            int x0 = 32767, y0 = 32767, x1 = -32768, y1 = -32768;
+            for (int i = 0; i < n; i++) {
+                int x = gs16(r, 12 + i*8), y = gs16(r, 14 + i*8);
+                int xe = x + g16(r, 16 + i*8), ye = y + g16(r, 18 + i*8);
+                if (x < x0) x0 = x;
+                if (y < y0) y0 = y;
+                if (xe > x1) x1 = xe;
+                if (ye > y1) y1 = ye;
+            }
+            gc->ncrect = 1;
+            gc->crect[0].x = (int16_t)x0; gc->crect[0].y = (int16_t)y0;
+            gc->crect[0].w = (uint16_t)(x1 - x0); gc->crect[0].h = (uint16_t)(y1 - y0);
+        }
+        break;
+    }
     case 60: { /* FreeGC */
         XGC *gc = find_gc(g32(r, 4));
         if (gc) memset(gc, 0, sizeof *gc);
@@ -3286,6 +3352,14 @@ static void resize_apply(rfb_server *s, int force) {
 static void send_pointer_ev(XWindow *ew, int type, int detail, uint32_t child,
                             int x, int y, uint16_t state) {
     XClient *c = win_client(ew);
+    static int ptrace = -1;                    /* XTINY_PTRTRACE=1: log pointer events */
+    if (ptrace < 0) { const char *e = getenv("XTINY_PTRTRACE"); ptrace = e && *e == '1'; }
+    if (ptrace) {
+        printf("[xtiny] ptr ev %d detail %d win 0x%x (mask 0x%x parent 0x%x %d,%d %dx%d) child 0x%x at %d,%d state 0x%x%s\n",
+               type, detail, ew->id, ew->evmask, ew->parent, ew->x, ew->y, ew->w, ew->h,
+               child, x, y, state, c ? "" : " (no client)");
+        fflush(stdout);
+    }
     if (!c) return;
     int ox, oy;
     win_origin(ew, &ox, &oy);
@@ -3372,6 +3446,7 @@ static void pointer_crossing(XWindow *from, XWindow *to, int x, int y, uint16_t 
 
 static void on_pointer(rfb_server *s, int buttons, int x, int y) {
     X.srv = s;
+    int moved = x != X.ptr_x || y != X.ptr_y;
     X.ptr_x = x; X.ptr_y = y;
     static int prev_btn1 = 0;
     static int swallow_drag = 0;      /* press consumed by a button/taskbar */
@@ -3519,6 +3594,26 @@ static void on_pointer(rfb_server *s, int buttons, int x, int y) {
         }
     }
 
+    /* MotionNotify, BEFORE the button changes and only when the pointer
+     * moved (a viewer reports a click at a new spot as one update): GTK 2
+     * hit-tests its client-side windows on motion, so a press without the
+     * motion that led there never reached the button under it. */
+    if (moved) {
+        uint16_t ms = X.btn_state;                             /* buttons held during the move */
+        uint32_t need = 0x40;                                  /* PointerMotion */
+        if (ms) need |= 0x2000;                                /* ButtonMotion */
+        need |= ms & (0x100 | 0x200 | 0x400);                  /* Button1..3Motion */
+        XWindow *ew = NULL;
+        uint32_t child = 0;
+        if (grab_redirect) {
+            if (X.pgrab_mask & need) ew = gw;
+        } else if (ig && !gw) {
+            if (ig->evmask & need) ew = ig;
+        } else {
+            ew = pointer_target(w, need, &child);
+        }
+        if (ew) send_pointer_ev(ew, 6, 0, child, x, y, (uint16_t)(ms | X.mod_state));
+    }
     /* ButtonPress / ButtonRelease */
     for (int b = 0; b < 3; b++) {
         uint16_t bit = (uint16_t)(0x100 << b);
@@ -3577,22 +3672,6 @@ static void on_pointer(rfb_server *s, int buttons, int x, int y) {
         prev_wheel = wheel;
     }
 
-    /* MotionNotify */
-    {
-        uint32_t need = 0x40;                                  /* PointerMotion */
-        if (newstate) need |= 0x2000;                          /* ButtonMotion */
-        need |= newstate & (0x100 | 0x200 | 0x400);            /* Button1..3Motion */
-        XWindow *ew = NULL;
-        uint32_t child = 0;
-        if (grab_redirect) {
-            if (X.pgrab_mask & need) ew = gw;
-        } else if (ig && !gw) {
-            if (ig->evmask & need) ew = ig;
-        } else {
-            ew = pointer_target(w, need, &child);
-        }
-        if (ew) send_pointer_ev(ew, 6, 0, child, x, y, (uint16_t)(newstate | X.mod_state));
-    }
     X.btn_state = newstate;
     if (!newstate) X.igrab_win = 0;
 
