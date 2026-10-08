@@ -259,14 +259,15 @@
     <span id="dl-progress" hidden><span id="dl-track"><span id="dl-fill"></span></span><span id="dl-label" class="hint"></span></span>
     <span class="stat" style="margin-left:auto"></span>
     <button id="storage-btn">storage</button>
-    <button id="ssh-btn" disabled title="let a terminal on your computer ssh/sftp into this tab">ssh</button>
+    <button id="ssh-btn" disabled title="remote access: ssh/sftp into this tab, or forward a guest web app to a public URL">remote</button>
     <button id="tunnels" disabled>tunnels</button>
     <button id="lot-bridge-btn" disabled>lot-bridge</button>
     <button id="x-display-btn" disabled>X display</button>
     <button id="web-view-btn" disabled title="render a guest web server (e.g. sqlite-web on :8080) in the page">web view</button>
   </div>
   <div id="ssh-panel" hidden>
-    <div class="row"><b>SSH into this tab</b><button id="ssh-close" style="margin-left:auto">close</button></div>
+    <div class="row"><b>Remote access</b><button id="ssh-close" style="margin-left:auto">close</button></div>
+    <div class="row" style="margin-top:2px"><b style="font-size:11px;color:#9aa4ae">SSH</b></div>
     <div id="ssh-off">
       <div class="hint">Lets ssh/sftp on your computer log in to this tab as root through the LinuxOnTab relay. Off until you turn it on; a fresh random password is set each time.</div>
       <div class="hint" style="margin-top:6px">Your ssh-ed25519 public key (optional, one per line) to log in without the password:</div>
@@ -286,6 +287,14 @@
       <div class="warn">Anyone with this command and password can log in to this tab as root. Stop when you are done; closing the tab also ends it.</div>
     </div>
     <div id="ssh-status" class="hint"></div>
+    <div style="border-top:1px solid #2a2f36;margin-top:10px;padding-top:8px">
+      <div class="row"><b style="font-size:11px;color:#9aa4ae">Web apps</b></div>
+      <div class="hint">Forward a web server in this tab to a public http:// address. It must listen on 0.0.0.0 (all interfaces), not 127.0.0.1.</div>
+      <div class="row"><input id="fwd-port" type="number" min="1" max="65535" placeholder="8080" style="width:90px;background:#14181d;color:#e6edf3;border:1px solid #2a2f36;border-radius:4px;padding:4px 6px;font:inherit"><button id="fwd-add">forward port</button></div>
+      <div id="fwd-list"></div>
+      <div id="fwd-status" class="hint"></div>
+      <div class="warn" id="fwd-warn" hidden>Anyone with an address above can open that app. Stop it when you are done; closing the tab also ends it.</div>
+    </div>
   </div>
   <div id="term"></div>
   <div id="x-view" hidden>
@@ -4621,18 +4630,17 @@ $('tn-run-btn').onclick = () => {
   const POOL_SIZE = Number.isInteger(_poolOverride) && _poolOverride > 0 ? _poolOverride : 6;
   const MIN_POOL_SIZE = 2;
   let tunnelCode  = null;
-  let tunnelPort  = 22;
-  let pool        = [];
+  let tunnelPort  = 22;      // the port startJsTunnel() was last asked for
   let active      = false;
-  let dialInFlight = 0;
-  let refillTimer = null;
   let healthTimer = null;
-  let cooloffUntil = 0;
-  let closeBurst = [];
+  // One code, several forwarded guest ports: the relay keeps a standby pool
+  // per (code, port), so the page keeps one per port too.
+  const pools = new Map();   // guestPort -> { list, dialInFlight, refillTimer, cooloffUntil, closeBurst }
+  const newPoolState = () => ({ list: [], dialInFlight: 0, refillTimer: null, cooloffUntil: 0, closeBurst: [] });
   const publicEndpoints = new Map();  // guestPort -> { host, publicPort }
 
-  function targetPoolSize(now = Date.now()) {
-    return now < cooloffUntil ? MIN_POOL_SIZE : POOL_SIZE;
+  function targetPoolSize(st, now = Date.now()) {
+    return now < st.cooloffUntil ? MIN_POOL_SIZE : POOL_SIZE;
   }
 
   function decodeCtrlFrame(data) {
@@ -4648,12 +4656,12 @@ $('tn-run-btn').onclick = () => {
     return '';
   }
 
-  function notePoolClose(now = Date.now()) {
-    closeBurst.push(now);
+  function notePoolClose(st, now = Date.now()) {
+    st.closeBurst.push(now);
     const cutoff = now - 8000;
-    while (closeBurst.length && closeBurst[0] < cutoff) closeBurst.shift();
-    if (closeBurst.length >= 4) {
-      cooloffUntil = now + 12000;
+    while (st.closeBurst.length && st.closeBurst[0] < cutoff) st.closeBurst.shift();
+    if (st.closeBurst.length >= 4) {
+      st.cooloffUntil = now + 12000;
       jtnLog('pool cooloff: detected close burst, temporarily reducing idle sockets', 'hint');
     }
   }
@@ -4670,43 +4678,50 @@ $('tn-run-btn').onclick = () => {
     try { fetch('/log', { method: 'POST', body: '[jtn] ' + msg }).catch(()=>{}); } catch(_) {}
   }
 
-  function scheduleRefill(ms = 250) {
-    if (!active) return;
-    if (refillTimer) return;
-    refillTimer = setTimeout(() => {
-      refillTimer = null;
-      fillPool();
+  function scheduleRefill(port, ms = 250) {
+    const st = pools.get(port);
+    if (!active || !st) return;
+    if (st.refillTimer) return;
+    st.refillTimer = setTimeout(() => {
+      st.refillTimer = null;
+      fillPoolFor(port);
     }, ms);
   }
 
   function fillPool() {
-    if (!active || !tunnelCode) return;
-    const deficit = targetPoolSize() - (pool.length + dialInFlight);
-    for (let i = 0; i < deficit; i++) addPoolWs();
+    for (const port of pools.keys()) fillPoolFor(port);
   }
 
-  function addPoolWs() {
-    if (!active || !tunnelCode) return;
-    dialInFlight += 1;
+  function fillPoolFor(port) {
+    const st = pools.get(port);
+    if (!active || !tunnelCode || !st) return;
+    const deficit = targetPoolSize(st) - (st.list.length + st.dialInFlight);
+    for (let i = 0; i < deficit; i++) addPoolWs(port);
+  }
+
+  function addPoolWs(port) {
+    const st = pools.get(port);
+    if (!active || !tunnelCode || !st) return;
+    st.dialInFlight += 1;
     const ws = new WebSocket(
-      tunnelRelayWs + '/port/guest?code=' + tunnelCode + '&port=' + tunnelPort
+      tunnelRelayWs + '/port/guest?code=' + tunnelCode + '&port=' + port
     );
     ws.binaryType = 'arraybuffer';
     let settled = false;
     const settleDial = () => {
       if (settled) return;
       settled = true;
-      dialInFlight = Math.max(0, dialInFlight - 1);
+      st.dialInFlight = Math.max(0, st.dialInFlight - 1);
     };
 
     ws.onopen = () => {
       settleDial();
-      if (!active) {
+      if (!active || pools.get(port) !== st) {
         try { ws.close(); } catch (_) {}
         return;
       }
-      pool.push(ws);
-      jtnLog('guest WS open (pool=' + pool.length + ')', 'hint');
+      st.list.push(ws);
+      jtnLog('guest WS open :' + port + ' (pool=' + st.list.length + ')', 'hint');
       // Pool WS stays idle until the CF Worker signals a client has arrived.
       // injectConnect is called lazily to avoid dropbear's unauthenticated-
       // session timeout (default ~30s) cycling the entire pool.
@@ -4742,17 +4757,17 @@ $('tn-run-btn').onclick = () => {
         }
       }, 5000);
       ws._sessKa = sessKa;
-      pool = pool.filter(w => w !== ws);
-      scheduleRefill(0);  // refill pool slot immediately
-      jtnLog('client arrived — connecting ssh (pool=' + pool.length + ')', 'hint');
+      st.list = st.list.filter(w => w !== ws);
+      scheduleRefill(port, 0);  // refill pool slot immediately
+      jtnLog('client arrived on :' + port + ' (pool=' + st.list.length + ')', 'hint');
       const slirp = window.__slirp;
       if (!slirp) { jtnLog('WispSlirp not ready — boot the guest first', 'tn-relay-err'); ws.close(); return; }
-      slirp.injectConnect(tunnelPort, ws);
+      slirp.injectConnect(port, ws);
       // injectConnect sets ws.onclose; chain a close logger on top.
       const injClose = ws.onclose;
       ws.onclose = (e2) => {
         if (ws._sessKa) { clearInterval(ws._sessKa); ws._sessKa = null; }
-        jtnLog('SSH session closed code=' + (e2.code || '?') + ' ' + (e2.reason || ''), 'hint');
+        jtnLog('session on :' + port + ' closed code=' + (e2.code || '?') + ' ' + (e2.reason || ''), 'hint');
         if (injClose) injClose.call(ws, e2);
       };
     };
@@ -4762,18 +4777,20 @@ $('tn-run-btn').onclick = () => {
       // Idle pool WS closed before any client arrived (e.g. CF WS timeout).
       if (ws._ka) { clearInterval(ws._ka); ws._ka = null; }
       if (ws._sessKa) { clearInterval(ws._sessKa); ws._sessKa = null; }
-      pool = pool.filter(w => w !== ws);
-      jtnLog('guest WS closed code=' + (e.code || '?') + ' ' + (e.reason || '') + ' (pool=' + pool.length + ')', 'hint');
-      if (active) {
-        notePoolClose();
-        const delay = Date.now() < cooloffUntil ? 4000 : 1200;
-        scheduleRefill(delay);
+      st.list = st.list.filter(w => w !== ws);
+      jtnLog('guest WS closed :' + port + ' code=' + (e.code || '?') + ' ' + (e.reason || '') + ' (pool=' + st.list.length + ')', 'hint');
+      if (active && pools.get(port) === st) {
+        notePoolClose(st);
+        const delay = Date.now() < st.cooloffUntil ? 4000 : 1200;
+        scheduleRefill(port, delay);
       }
     };
   }
 
   async function startJsTunnel(port) {
     tunnelPort = port || 22;
+    // Already running: forward one more port under the same code.
+    if (active && tunnelCode) return addForward(tunnelPort);
     let regErr = null;
     tunnelCode = null;
     for (const cand of RELAY_CANDIDATES) {
@@ -4799,6 +4816,7 @@ $('tn-run-btn').onclick = () => {
       return;
     }
     active = true;
+    pools.set(tunnelPort, newPoolState());
     if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
     healthTimer = setInterval(() => { if (active) fillPool(); }, 1000);
     const codeEl = $('jtn-code');
@@ -4813,7 +4831,49 @@ $('tn-run-btn').onclick = () => {
     fillPool();
     // Auto-expose a PUBLIC endpoint so the guest is reachable "in the wild"
     // with no host-side tunnel-listen. Fire-and-forget; surfaces the URL when ready.
-    exposePublic(tunnelPort);
+    return exposePublic(tunnelPort);
+  }
+
+  // Forward another guest port under the running tunnel's code: register it
+  // with the relay (same session), open its standby pool, expose it publicly.
+  async function addForward(port) {
+    if (!active || !tunnelCode) return startJsTunnel(port);
+    if (!pools.has(port)) {
+      try {
+        const resp = await fetch(tunnelRelay + '/port/register', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: tunnelCode, ports: [port] }),
+        });
+        if (!resp.ok) { jtnLog('register :' + port + ' failed: ' + resp.status, 'tn-relay-err'); return null; }
+      } catch (e) { jtnLog('register :' + port + ' error: ' + e.message, 'tn-relay-err'); return null; }
+      pools.set(port, newPoolState());
+      jtnLog('forwarding guest port ' + port, 'tn-relay-ok');
+      fillPoolFor(port);
+    }
+    return exposePublic(port);
+  }
+
+  // Stop forwarding one port: release its public port, close its pool. The
+  // last one stops the whole tunnel.
+  function removeForward(port) {
+    const st = pools.get(port);
+    if (!st) return;
+    const pub = publicEndpoints.get(port);
+    if (pub) {
+      try {
+        fetch(TUNNEL_EXPOSE_ENDPOINTS[0] + '/port/unexpose', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ publicPort: pub.publicPort }), keepalive: true,
+        }).catch(() => {});
+      } catch (_) {}
+    }
+    pools.delete(port);
+    if (st.refillTimer) clearTimeout(st.refillTimer);
+    for (const ws of st.list) try { ws.close(); } catch (_) {}
+    publicEndpoints.delete(port);
+    window.dispatchEvent(new CustomEvent('lot-public-clear', { detail: { port } }));
+    jtnLog('stopped forwarding guest port ' + port, 'hint');
+    if (!pools.size) stopJsTunnel();
   }
 
   // Ask the relay to allocate a public TCP port that bridges to this guest port
@@ -4853,8 +4913,10 @@ $('tn-run-btn').onclick = () => {
     }
   }
   window.exposePublic = exposePublic;
-  window.getTunnelInfo = () => ({ code: tunnelCode, port: tunnelPort, relay: tunnelRelay, active,
+  window.getTunnelInfo = () => ({ code: tunnelCode, port: tunnelPort, ports: [...pools.keys()], relay: tunnelRelay, active,
     publicEndpoints: Object.fromEntries(publicEndpoints) });
+  window.addForward = addForward;
+  window.removeForward = removeForward;
 
   function stopJsTunnel() {
     // Give the public ports back now (the relay would hold them for an hour).
@@ -4868,12 +4930,11 @@ $('tn-run-btn').onclick = () => {
     }
     active = false;
     if (healthTimer) { clearInterval(healthTimer); healthTimer = null; }
-    if (refillTimer) { clearTimeout(refillTimer); refillTimer = null; }
-    dialInFlight = 0;
-    cooloffUntil = 0;
-    closeBurst = [];
-    for (const ws of pool) try { ws.close(); } catch (_) {}
-    pool = [];
+    for (const st of pools.values()) {
+      if (st.refillTimer) clearTimeout(st.refillTimer);
+      for (const ws of st.list) try { ws.close(); } catch (_) {}
+    }
+    pools.clear();
     tunnelCode = null;
     publicEndpoints.clear();
     const codeEl = $('jtn-code'); if (codeEl) codeEl.textContent = '';
@@ -5018,7 +5079,7 @@ $('tn-run-btn').onclick = () => {
   async function enable() {
     if (busy) return;                       // one run at a time
     const cur = window.getTunnelInfo ? window.getTunnelInfo() : {};
-    if (window.__lotSshActive && cur.active && cur.port === 22 && $('ssh-pw').textContent) {
+    if (window.__lotSshActive && cur.active && (cur.ports || []).includes(22) && $('ssh-pw').textContent) {
       show(true); return;                   // already on: keep the session and password
     }
     const ak = parseAuthorizedKeys($('ssh-keys').value);
@@ -5078,11 +5139,9 @@ $('tn-run-btn').onclick = () => {
       }
       status('opening the tunnel…');
       window.__lotSshActive = true;
-      const info = window.getTunnelInfo ? window.getTunnelInfo() : {};
-      if (!info.active || info.port !== 22) { window.stopJsTunnel && window.stopJsTunnel(); window.__lotSshActive = true; await window.startJsTunnel(22); }
-      else await window.exposePublic(22);
+      await window.addForward(22);   // starts the tunnel if nothing runs yet
       const pub = await waitPublic();
-      if (!pub) { status('The relay did not hand out a public port; try again in a moment.', 'err'); window.__lotSshActive = false; window.stopJsTunnel && window.stopJsTunnel(); return; }
+      if (!pub) { status('The relay did not hand out a public port; try again in a moment.', 'err'); window.__lotSshActive = false; window.removeForward && window.removeForward(22); return; }
       // Public ports are reused by other tabs: key the known_hosts entry to
       // this tab's host key instead of host:port, so ssh never mixes them up.
       const alias = hk ? ` -o HostKeyAlias=linuxontab-${hk.fp.slice(7).replace(/[^A-Za-z0-9]/g, '').slice(0, 10)}` : '';
@@ -5098,20 +5157,106 @@ $('tn-run-btn').onclick = () => {
       $('ssh-pw').textContent = pw;
       $('ssh-keyrow').hidden = !ak.keys.length;
       $('ssh-keyinfo').textContent = ak.keys.length + (ak.keys.length === 1 ? ' key' : ' keys') + ' in authorized_keys (the password works too)';
-      $('ssh-btn').textContent = 'ssh ●';
+      updateRemoteBadge();
       show(true); status('');
     } finally { btn.disabled = false; busy = false; }
   }
   function disable() {
     window.__lotSshActive = false;
-    if (typeof window.stopJsTunnel === 'function') window.stopJsTunnel();
+    if (typeof window.removeForward === 'function') window.removeForward(22);
   }
-  window.addEventListener('lot-public-clear', () => {
+  window.addEventListener('lot-public-clear', (e) => {
+    const port = e.detail && e.detail.port;
+    if (port != null && port !== 22) return;   // a web forward stopped, not SSH
     window.__lotSshActive = false;
     $('ssh-pw').textContent = '';
-    $('ssh-btn').textContent = 'ssh';
+    updateRemoteBadge();
     show(false); status('SSH access is off.');
   });
+  // ── Web apps: forward guest ports to public http:// addresses ──
+  const fwdStatus = (t, cls) => { const el = $('fwd-status'); el.textContent = t || ''; el.className = cls || 'hint'; };
+  function updateRemoteBadge() {
+    const ports = (window.getTunnelInfo && window.getTunnelInfo().ports) || [];
+    $('ssh-btn').textContent = ports.length ? 'remote ●' : 'remote';
+  }
+  // Does an HTTP server answer on this guest port? (any "HTTP/" status line)
+  function probeHttp(port, timeoutMs = 8000) {
+    return new Promise((resolve) => {
+      const slirp = window.__slirp;
+      if (!slirp) return resolve(false);
+      let done = false, buf = '';
+      const finish = (ok) => {
+        if (done) return; done = true;
+        setTimeout(() => { try { adapter.onclose && adapter.onclose(); } catch (_) {} }, 0);
+        resolve(ok);
+      };
+      const adapter = {
+        binaryType: 'arraybuffer',
+        readyState: WebSocket.OPEN,
+        send(g) {
+          buf += new TextDecoder().decode(g instanceof Uint8Array ? g : new Uint8Array(g));
+          if (buf.length >= 5) finish(buf.startsWith('HTTP/'));
+        },
+        close() { finish(buf.startsWith('HTTP/')); },
+      };
+      slirp.injectConnect(port, adapter);
+      const req = new TextEncoder().encode('HEAD / HTTP/1.0\r\nHost: localhost\r\n\r\n');
+      if (adapter.onmessage) adapter.onmessage({ data: req.buffer });
+      setTimeout(() => finish(false), timeoutMs);
+    });
+  }
+  function renderForwards() {
+    const info = window.getTunnelInfo ? window.getTunnelInfo() : { ports: [], publicEndpoints: {} };
+    const list = $('fwd-list'); list.textContent = '';
+    const web = (info.ports || []).filter((p) => p !== 22);
+    for (const port of web) {
+      const pub = info.publicEndpoints[port];
+      const url = pub ? `http://${pub.host}:${pub.publicPort}/` : '';
+      const row = document.createElement('div'); row.className = 'row';
+      const label = document.createElement('span'); label.textContent = ':' + port; label.style.minWidth = '42px';
+      const code = document.createElement('code'); code.textContent = url || 'waiting for a public port…';
+      row.append(label, code);
+      if (url) {
+        const open = document.createElement('a'); open.href = url; open.target = '_blank'; open.rel = 'noopener'; open.textContent = 'open'; open.style.color = '#7ab8f5';
+        const copy = document.createElement('button'); copy.textContent = 'copy';
+        copy.onclick = () => navigator.clipboard.writeText(url).then(() => fwdStatus('copied'), () => fwdStatus('copy failed — select the text instead', 'err'));
+        row.append(open, copy);
+      }
+      const stop = document.createElement('button'); stop.textContent = 'stop';
+      stop.onclick = () => { window.removeForward(port); };
+      row.append(stop);
+      list.append(row);
+    }
+    $('fwd-warn').hidden = !web.length;
+    updateRemoteBadge();
+  }
+  let fwdBusy = false;
+  async function addWebForward() {
+    if (fwdBusy) return;
+    const port = parseInt($('fwd-port').value || $('fwd-port').placeholder, 10);
+    if (!(port > 0 && port < 65536)) { fwdStatus('Enter a port between 1 and 65535.', 'err'); return; }
+    if (port === 22) { fwdStatus('Port 22 is SSH: use enable SSH access above.', 'err'); return; }
+    const cur = window.getTunnelInfo ? window.getTunnelInfo() : {};
+    if ((cur.ports || []).includes(port)) { fwdStatus('Port ' + port + ' is already forwarded.'); return; }
+    if ((cur.ports || []).filter((p) => p !== 22).length >= 4) { fwdStatus('Up to 4 web ports per tab: stop one first.', 'err'); return; }
+    fwdBusy = true; $('fwd-add').disabled = true;
+    try {
+      fwdStatus('checking for a web server on port ' + port + '…');
+      let up = false;
+      for (let i = 0; i < 2 && !up; i++) { if (i) await new Promise((r) => setTimeout(r, 1500)); up = await probeHttp(port); }
+      if (!up) { fwdStatus('No web server answers on port ' + port + '. Start it first, listening on 0.0.0.0 (e.g. python3 -m http.server ' + port + ').', 'err'); return; }
+      fwdStatus('opening a public address…');
+      const pub = await window.addForward(port);
+      renderForwards();
+      fwdStatus(pub ? '' : 'The relay did not hand out a public port; try again in a moment.', pub ? 'hint' : 'err');
+      if (!pub) window.removeForward(port);
+    } finally { fwdBusy = false; $('fwd-add').disabled = false; }
+  }
+  $('fwd-add').onclick = addWebForward;
+  $('fwd-port').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); addWebForward(); } });
+  window.addEventListener('lot-public', renderForwards);
+  window.addEventListener('lot-public-clear', renderForwards);
+
   // Hand the keyboard back to the terminal after every click here: a focused
   // panel button would otherwise turn the next Enter/Space typed "into the
   // terminal" into another enable/copy.
@@ -5890,7 +6035,8 @@ function xConnect() {
   // The JS tunnel pool can generate constant websocket churn in autoboot mode.
   // Pause it while using the in-browser VNC path to avoid starving RFB parsing.
   try {
-    if (!window.__lotSshActive && typeof window.stopJsTunnel === 'function') window.stopJsTunnel();
+    const userPorts = (window.getTunnelInfo && window.getTunnelInfo().ports) || [];
+    if (!window.__lotSshActive && !userPorts.some((p) => p !== 22) && typeof window.stopJsTunnel === 'function') window.stopJsTunnel();
   } catch (_) {}
 
   $('x-status').textContent = 'connecting to :5900…';
