@@ -15,12 +15,13 @@
 # a first-run helper (neomutt-setup) that writes ~/.config/neomutt/neomuttrc.
 #
 # Platform shims: dlmalloc (mallocng's >128 KB path traps without mmap; big
-# mails and IMAP buffers hit it), ld128 (long-double printf), and the
-# asyncify fork thunk (neomutt forks for $editor, pipes and sendmail).
+# mails and IMAP buffers hit it) and the asyncify fork thunk (neomutt forks
+# for $editor, pipes and sendmail). The sysroot's libc does binary128 long
+# double itself since 7ccde12f, so the wasm_ld128 compat object is gone.
 
 NAME="neomutt"
 NEOMUTT_TAG="20260616"
-VERSION="${NEOMUTT_TAG}"
+VERSION="${NEOMUTT_TAG}-r1"   # r1: relinked on the binary128 long-double libc (7ccde12f)
 DESCRIPTION="NeoMutt mail client (IMAP, POP, SMTP over TLS)"
 SOURCE_URL="https://github.com/neomutt/neomutt/archive/refs/tags/${NEOMUTT_TAG}.tar.gz"
 SOURCE_SHA256="2c34fdd2166d5765e6bfdc21d1248bc4e92ddc0a33537b9418c17cd90e2dda80"
@@ -78,7 +79,7 @@ build() {
 
     # ── 3. shims ─────────────────────────────────────────────────────────────
     SHIMS=""
-    for f in wasm_dlmalloc wasm_ld128 wasm_fork; do
+    for f in wasm_dlmalloc wasm_fork; do
         $CC $CFLAGS -w -c "$REPO_ROOT/sysroot/$f.c" -o "$SRC/lot-$f.o"
         SHIMS="$SHIMS $SRC/lot-$f.o"
     done

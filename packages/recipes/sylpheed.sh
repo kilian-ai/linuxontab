@@ -18,7 +18,7 @@
 # with the __lot_fpcast table-call adapter (Pages a6d7b781+).
 
 NAME="sylpheed"
-VERSION="3.7.0"
+VERSION="3.7.0-r1"   # r1: relinked on the binary128 long-double libc (7ccde12f)
 DESCRIPTION="Sylpheed: lightweight graphical mail client (GTK 2) for the xtiny desktop"
 SOURCE_URL="local:"
 DEPENDS=""
