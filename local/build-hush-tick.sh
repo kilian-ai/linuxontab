@@ -6,7 +6,7 @@
 set -e
 REPO=/Users/kilian/.ai/LinuxOnTab-kernel
 SRC=/nix/store/pi1mxz9962avhkd24csbrzyw1cswv7hc-tombl-busybox-master
-WORK=/tmp/lot-hush-build
+WORK="${LOT_HUSH_WORK:-/tmp/lot-hush-build}"; LOGS="$WORK.logs"; mkdir -p "$LOGS"
 CLANG=$(find /nix/store -maxdepth 3 -path "*/bin/clang" ! -path "*wrapper*" 2>/dev/null | grep clang-19 | sort | head -1)
 SYSROOT=$REPO/toolchain/musl-sysroot-fixed
 BUILTINS=$(find "$SYSROOT/lib/clang" -name "libclang_rt.builtins.a" 2>/dev/null | head -1)
@@ -19,12 +19,12 @@ rm -rf "$WORK"; mkdir -p "$WORK"; cp -R "$SRC/." "$WORK/"; chmod -R u+w "$WORK";
 patch -p1 < "$REPO/toolchain/patches/busybox-hush-nommu-pipe-next-infd.patch" >/dev/null 2>&1 || true
 find . -name "*.S" -delete   # x86 asm, useless on wasm
 sed -i.bak "/hash_sha1_x86-64.o/d; /hash_sha1_hwaccel_x86/d; /hash_sha256_hwaccel_x86/d" libbb/Kbuild.src   # x86 hash asm not buildable on wasm
-python3 /tmp/hush-patch.py shell/hush.c
-printf '#include <sys/types.h>\npid_t fork(void);\npid_t vfork(void);\n#define xvfork vfork\n' > /tmp/hush-fork.h
-CC_WASM="$CLANG -target wasm32 --sysroot=$SYSROOT -fuse-ld=lld -include /tmp/hush-fork.h"
+python3 "$REPO/local/hush-tick-cmdsubst.patch.py" shell/hush.c
+printf '#include <sys/types.h>\npid_t fork(void);\npid_t vfork(void);\n#define xvfork vfork\n' > $LOGS/hush-fork.h
+CC_WASM="$CLANG -target wasm32 --sysroot=$SYSROOT -fuse-ld=lld -include $LOGS/hush-fork.h"
 
 # allnoconfig = everything OFF, then enable only what hush needs.
-make HOSTCC=cc allnoconfig >/tmp/hush-cfg.log 2>&1
+make HOSTCC=cc allnoconfig >$LOGS/cfg.log 2>&1
 en(){ grep -v "^$1=" .config | grep -v "^# $1 is not set" > .c && mv .c .config; echo "$1=y" >> .config; }
 for o in CONFIG_HUSH CONFIG_SH_IS_HUSH CONFIG_HUSH_TICK CONFIG_HUSH_BASH_COMPAT \
          CONFIG_HUSH_BRACE_EXPANSION CONFIG_HUSH_INTERACTIVE CONFIG_HUSH_SAVEHISTORY \
@@ -40,13 +40,28 @@ for o in CONFIG_HUSH CONFIG_SH_IS_HUSH CONFIG_HUSH_TICK CONFIG_HUSH_BASH_COMPAT 
          CONFIG_PLATFORM_LINUX CONFIG_NOMMU CONFIG_LFS CONFIG_FEATURE_BUFFERS_USE_MALLOC; do en "$o"; done
 dis(){ grep -v "^$1=" .config | grep -v "^# $1 is not set" > .c && mv .c .config; echo "# $1 is not set" >> .config; }
 for o in CONFIG_SHA1_HWACCEL CONFIG_SHA256_HWACCEL CONFIG_SHA1_SMALL CONFIG_SHA3_SMALL; do dis "$o"; done
-yes "" | make HOSTCC=cc oldconfig >/tmp/hush-cfg2.log 2>&1 || true
+yes "" | make HOSTCC=cc oldconfig >$LOGS/cfg2.log 2>&1 || true
 echo "TICK=$(grep -c '^CONFIG_HUSH_TICK=y' .config) HUSH=$(grep -c '^CONFIG_HUSH=y' .config) SH_IS_HUSH=$(grep -c '^CONFIG_SH_IS_HUSH=y' .config)"
 
 # Build objects (busybox's own trylink often fails for exotic targets, so we
 # build objects then link manually).
 make -j"$(sysctl -n hw.logicalcpu)" CC="$CC_WASM" HOSTCC=cc LD="$LLDBIN/wasm-ld" \
-     AR="$LLVM_AR" SKIP_STRIP=y busybox >/tmp/hush-make.log 2>/tmp/hush-make.err || true
+     AR="$LLVM_AR" SKIP_STRIP=y busybox >$LOGS/make.log 2>$LOGS/make.err || true
 echo "=== objs: $(find . -name '*.o' | wc -l)"
-echo "=== busybox built by make? ==="; ls -la busybox busybox_unstripped 2>/dev/null
-echo "=== errors:"; grep -nE "fatal error:|undefined symbol|error:|Error [0-9]" /tmp/hush-make.err 2>/dev/null | grep -viE "warning|note:" | head -12
+echo "=== busybox built by make? ==="; ls -la busybox busybox_unstripped 2>/dev/null || true
+echo "=== errors:"; grep -nE "fatal error:|undefined symbol|error:|Error [0-9]" $LOGS/make.err 2>/dev/null | grep -viE "warning|note:" | head -12 || true
+
+# busybox's trylink can't find the wasm32 compiler-rt, so link by hand: every
+# built-in.o plus every lib.a (twice — wasm-ld 19 has no --start-group), with
+# the standard package link flags (64 KB default stack, 256 MiB max memory).
+LIBS=$(find . -name lib.a | sort)
+"$CLANG" -target wasm32 --sysroot="$SYSROOT" -fuse-ld=lld -o "$WORK/hush-tick.raw" \
+    $(find . -name built-in.o | sort) $LIBS $LIBS \
+    -nostdlib -static -Wl,--import-memory -Wl,--export-memory -Wl,--export-table \
+    -Wl,--export=__heap_base -Wl,--export=__data_end -Wl,--shared-memory \
+    -Wl,--max-memory=268435456 "$CRT1" -lc "$BUILTINS"
+# plain --asyncify (no -O1), as the shipped rootfs/bin/hush-tick always was
+wasm-opt --enable-exception-handling --asyncify "$WORK/hush-tick.raw" -o "$WORK/hush-tick"
+chmod 755 "$WORK/hush-tick"
+ls -la "$WORK/hush-tick"
+echo "install: cp $WORK/hush-tick $REPO/rootfs/bin/hush-tick"
