@@ -952,6 +952,18 @@
       ],
       "depends": [],
       "status": "available"
+    },
+    "sylpheed": {
+      "version": "3.7.0",
+      "description": "Sylpheed: lightweight graphical mail client (GTK 2) for the xtiny desktop",
+      "url": "https://linuxontab.com/packages/sylpheed-3.7.0.tar.gz",
+      "size": 5376482,
+      "sha256": "7b5c755de92f9a850cf823a5f65be21260e084b6a2ca8e8cb5178dbd221cff52",
+      "bins": [
+        "sylpheed"
+      ],
+      "depends": [],
+      "status": "available"
     }
   }
 }

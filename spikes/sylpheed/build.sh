@@ -239,6 +239,31 @@ PY
   ls -la /work/gtk/sylroot/usr/bin/sylpheed
 }
 
+stage() {
+  # the package tree (packages/recipes/sylpheed.sh): the binary, DejaVu and a
+  # fontconfig setup (the same files the xfe package ships; apk keeps a file
+  # another installed package still lists), and the Apps menu entry
+  O=/work/gtk/stage
+  rm -rf $O && mkdir -p $O/usr/local/bin $O/usr/share/fonts/dejavu $O/etc/fonts \
+      $O/var/cache/fontconfig $O/usr/share/applications $O/usr/share/pixmaps
+  install -m755 /work/gtk/sylroot/usr/bin/sylpheed $O/usr/local/bin/sylpheed
+  cp /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf /usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf \
+     /usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf $O/usr/share/fonts/dejavu/
+  cp /usr/share/doc/fonts-dejavu-core/copyright $O/usr/share/fonts/dejavu/LICENSE 2>/dev/null || true
+  cp /lot/spike/xfe/fonts.conf $O/etc/fonts/fonts.conf
+  cp /work/gtk/sylroot/usr/share/pixmaps/sylpheed.png $O/usr/share/pixmaps/
+  cat > $O/usr/share/applications/sylpheed.desktop <<'DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=Sylpheed
+Comment=Graphical mail client (IMAP/SMTP)
+Exec=sylpheed
+Terminal=false
+X-LinuxOnTab-Package=sylpheed
+DESKTOP
+  find $O -type f | sed "s|^$O||" | sort
+}
+
 gtktest() {
   # spikes/sylpheed/test/gtkbtn.c: GTK 2 button/dialog event probe for xtiny
   mkdir -p $B/gtktest && cd $B/gtktest
@@ -253,7 +278,7 @@ gtktest() {
 # each step in its own shell: set -e is ignored inside anything called
 # from an || list, which silently turned failed steps into "ok"
 if [ "${1:-}" = __step ]; then $2; exit 0; fi
-steps="${*:-prep ffi glib fribidi harfbuzz pixman cairo pango atk gdkpixbuf gtk openssl sylpheed}"
+steps="${*:-prep ffi glib fribidi harfbuzz pixman cairo pango atk gdkpixbuf gtk openssl sylpheed stage}"
 for s in $steps; do
   echo "=== $s"
   if sh "$0" __step "$s" > $B/$s.log 2>&1; then echo "ok: $s"
