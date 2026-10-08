@@ -289,7 +289,7 @@
     <div id="ssh-status" class="hint"></div>
     <div style="border-top:1px solid #2a2f36;margin-top:10px;padding-top:8px">
       <div class="row"><b style="font-size:11px;color:#9aa4ae">Web apps</b></div>
-      <div class="hint">Forward a web server in this tab to a public http:// address. It must listen on 0.0.0.0 (all interfaces), not 127.0.0.1.</div>
+      <div class="hint">Forward a web server in this tab to public https:// and http:// addresses. It must listen on 0.0.0.0 (all interfaces), not 127.0.0.1.</div>
       <div class="row"><input id="fwd-port" type="number" min="1" max="65535" placeholder="8080" style="width:90px;background:#14181d;color:#e6edf3;border:1px solid #2a2f36;border-radius:4px;padding:4px 6px;font:inherit"><button id="fwd-add">forward port</button></div>
       <div id="fwd-list"></div>
       <div id="fwd-status" class="hint"></div>
@@ -4638,6 +4638,7 @@ $('tn-run-btn').onclick = () => {
   const pools = new Map();   // guestPort -> { list, dialInFlight, refillTimer, cooloffUntil, closeBurst }
   const newPoolState = () => ({ list: [], dialInFlight: 0, refillTimer: null, cooloffUntil: 0, closeBurst: [] });
   const publicEndpoints = new Map();  // guestPort -> { host, publicPort }
+  const httpsEndpoints = new Map();   // guestPort -> { host, publicPort } (relay TLS slot, web apps)
 
   function targetPoolSize(st, now = Date.now()) {
     return now < st.cooloffUntil ? MIN_POOL_SIZE : POOL_SIZE;
@@ -4836,8 +4837,12 @@ $('tn-run-btn').onclick = () => {
 
   // Forward another guest port under the running tunnel's code: register it
   // with the relay (same session), open its standby pool, expose it publicly.
-  async function addForward(port) {
-    if (!active || !tunnelCode) return startJsTunnel(port);
+  async function addForward(port, opts = {}) {
+    if (!active || !tunnelCode) {
+      const info = await startJsTunnel(port);
+      if (info && opts.https) await exposePublic(port, { tls: true });
+      return info;
+    }
     if (!pools.has(port)) {
       try {
         const resp = await fetch(tunnelRelay + '/port/register', {
@@ -4850,7 +4855,9 @@ $('tn-run-btn').onclick = () => {
       jtnLog('forwarding guest port ' + port, 'tn-relay-ok');
       fillPoolFor(port);
     }
-    return exposePublic(port);
+    const info = await exposePublic(port);
+    if (info && opts.https) await exposePublic(port, { tls: true });
+    return info;
   }
 
   // Stop forwarding one port: release its public port, close its pool. The
@@ -4858,8 +4865,8 @@ $('tn-run-btn').onclick = () => {
   function removeForward(port) {
     const st = pools.get(port);
     if (!st) return;
-    const pub = publicEndpoints.get(port);
-    if (pub) {
+    for (const pub of [publicEndpoints.get(port), httpsEndpoints.get(port)]) {
+      if (!pub) continue;
       try {
         fetch(TUNNEL_EXPOSE_ENDPOINTS[0] + '/port/unexpose', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -4868,6 +4875,7 @@ $('tn-run-btn').onclick = () => {
       } catch (_) {}
     }
     pools.delete(port);
+    httpsEndpoints.delete(port);
     if (st.refillTimer) clearTimeout(st.refillTimer);
     for (const ws of st.list) try { ws.close(); } catch (_) {}
     publicEndpoints.delete(port);
@@ -4881,9 +4889,10 @@ $('tn-run-btn').onclick = () => {
   // This is the "expose in the wild" path — anyone can connect to host:publicPort,
   // no pairing code / tunnel-listen needed. Relies on the relay sending
   // '__connected__' to the guest bridge (server.js _completeClientPair parity).
-  async function exposePublic(port) {
+  async function exposePublic(port, opts = {}) {
     if (!active || !tunnelCode) return null;
     const p = port || tunnelPort;
+    const tls = !!opts.tls;
     try {
       // Expose ALWAYS goes to Fly — CF has no raw TCP ingress. Fly stores the
       // public-port→code assignment and, on each inbound TCP connection, bridges
@@ -4894,12 +4903,22 @@ $('tn-run-btn').onclick = () => {
         headers: { 'Content-Type': 'application/json' },
         // Port 22 is reserved by Fly for machine SSH, so prefer the stable
         // public 2222 for the guest's sshd; other ports try same-number.
-        body: JSON.stringify({ code: tunnelCode, port: p, preferPort: p === 22 ? 2222 : p }),
+        // tls: an HTTPS slot (the relay's TLS-terminated ports) for web apps.
+        body: JSON.stringify(tls ? { code: tunnelCode, port: p, tls: true }
+                                 : { code: tunnelCode, port: p, preferPort: p === 22 ? 2222 : p }),
       });
-      if (!resp.ok) { jtnLog('expose failed: ' + resp.status, 'tn-relay-err'); return null; }
+      if (!resp.ok) { jtnLog('expose' + (tls ? ' https' : '') + ' failed: ' + resp.status, tls ? 'hint' : 'tn-relay-err'); return null; }
       const j = await resp.json();
       if (!j || !j.publicPort) { jtnLog('expose: invalid response', 'tn-relay-err'); return null; }
-      const info = { host: j.host, publicPort: j.publicPort, port: p };
+      // An older relay ignores tls and hands back a raw slot: don't call it https.
+      if (tls && j.tls !== true) return null;
+      const info = { host: j.host, publicPort: j.publicPort, port: p, tls };
+      if (tls) {
+        httpsEndpoints.set(p, info);
+        jtnLog('PUBLIC https ' + p + ' → https://' + j.host + ':' + j.publicPort + '/', 'tn-relay-ok');
+        window.dispatchEvent(new CustomEvent('lot-public', { detail: info }));
+        return info;
+      }
       publicEndpoints.set(p, info);
       jtnLog('PUBLIC ' + p + ' → ' + j.host + ':' + j.publicPort +
         (p === 22 ? '  (ssh -p ' + j.publicPort + ' root@' + j.host + ')' : ''), 'tn-relay-ok');
@@ -4914,7 +4933,7 @@ $('tn-run-btn').onclick = () => {
   }
   window.exposePublic = exposePublic;
   window.getTunnelInfo = () => ({ code: tunnelCode, port: tunnelPort, ports: [...pools.keys()], relay: tunnelRelay, active,
-    publicEndpoints: Object.fromEntries(publicEndpoints) });
+    publicEndpoints: Object.fromEntries(publicEndpoints), httpsEndpoints: Object.fromEntries(httpsEndpoints) });
   window.addForward = addForward;
   window.removeForward = removeForward;
 
@@ -4937,6 +4956,7 @@ $('tn-run-btn').onclick = () => {
     pools.clear();
     tunnelCode = null;
     publicEndpoints.clear();
+    httpsEndpoints.clear();
     const codeEl = $('jtn-code'); if (codeEl) codeEl.textContent = '';
     const cmdEl  = $('jtn-cmd');  if (cmdEl)  cmdEl.textContent  = '';
     const pubEl  = $('jtn-public'); if (pubEl) pubEl.textContent = '';
@@ -5069,7 +5089,7 @@ $('tn-run-btn').onclick = () => {
     return new Promise((resolve) => {
       const have = window.getTunnelInfo && window.getTunnelInfo().publicEndpoints[22];
       if (have) return resolve(have);
-      const on = (e) => { if ((e.detail || {}).port === 22) { cleanup(); resolve(e.detail); } };
+      const on = (e) => { const d = e.detail || {}; if (d.port === 22 && !d.tls) { cleanup(); resolve(d); } };
       const cleanup = () => { window.removeEventListener('lot-public', on); clearTimeout(t); };
       const t = setTimeout(() => { cleanup(); resolve(null); }, timeoutMs);
       window.addEventListener('lot-public', on);
@@ -5209,23 +5229,27 @@ $('tn-run-btn').onclick = () => {
     const info = window.getTunnelInfo ? window.getTunnelInfo() : { ports: [], publicEndpoints: {} };
     const list = $('fwd-list'); list.textContent = '';
     const web = (info.ports || []).filter((p) => p !== 22);
-    for (const port of web) {
-      const pub = info.publicEndpoints[port];
-      const url = pub ? `http://${pub.host}:${pub.publicPort}/` : '';
+    const addrRow = (label, url) => {
       const row = document.createElement('div'); row.className = 'row';
-      const label = document.createElement('span'); label.textContent = ':' + port; label.style.minWidth = '42px';
-      const code = document.createElement('code'); code.textContent = url || 'waiting for a public port…';
-      row.append(label, code);
-      if (url) {
-        const open = document.createElement('a'); open.href = url; open.target = '_blank'; open.rel = 'noopener'; open.textContent = 'open'; open.style.color = '#7ab8f5';
-        const copy = document.createElement('button'); copy.textContent = 'copy';
-        copy.onclick = () => navigator.clipboard.writeText(url).then(() => fwdStatus('copied'), () => fwdStatus('copy failed — select the text instead', 'err'));
-        row.append(open, copy);
-      }
-      const stop = document.createElement('button'); stop.textContent = 'stop';
+      const l = document.createElement('span'); l.textContent = label; l.style.minWidth = '42px';
+      const code = document.createElement('code'); code.textContent = url;
+      const open = document.createElement('a'); open.href = url; open.target = '_blank'; open.rel = 'noopener'; open.textContent = 'open'; open.style.color = '#7ab8f5';
+      const copy = document.createElement('button'); copy.textContent = 'copy';
+      copy.onclick = () => navigator.clipboard.writeText(url).then(() => fwdStatus('copied'), () => fwdStatus('copy failed — select the text instead', 'err'));
+      row.append(l, code, open, copy);
+      return row;
+    };
+    for (const port of web) {
+      const pub = info.publicEndpoints[port], sec = (info.httpsEndpoints || {})[port];
+      const head = document.createElement('div'); head.className = 'row';
+      const label = document.createElement('b'); label.textContent = 'port ' + port; label.style.fontSize = '11px';
+      const stop = document.createElement('button'); stop.textContent = 'stop'; stop.style.marginLeft = 'auto';
       stop.onclick = () => { window.removeForward(port); };
-      row.append(stop);
-      list.append(row);
+      head.append(label, stop);
+      list.append(head);
+      if (sec) list.append(addrRow('https', `https://${sec.host}:${sec.publicPort}/`));
+      if (pub) list.append(addrRow('http', `http://${pub.host}:${pub.publicPort}/`));
+      if (!pub && !sec) { const w = document.createElement('div'); w.className = 'hint'; w.textContent = 'waiting for a public address…'; list.append(w); }
     }
     $('fwd-warn').hidden = !web.length;
     updateRemoteBadge();
@@ -5246,7 +5270,7 @@ $('tn-run-btn').onclick = () => {
       for (let i = 0; i < 2 && !up; i++) { if (i) await new Promise((r) => setTimeout(r, 1500)); up = await probeHttp(port); }
       if (!up) { fwdStatus('No web server answers on port ' + port + '. Start it first, listening on 0.0.0.0 (e.g. python3 -m http.server ' + port + ').', 'err'); return; }
       fwdStatus('opening a public address…');
-      const pub = await window.addForward(port);
+      const pub = await window.addForward(port, { https: true });
       renderForwards();
       fwdStatus(pub ? '' : 'The relay did not hand out a public port; try again in a moment.', pub ? 'hint' : 'err');
       if (!pub) window.removeForward(port);

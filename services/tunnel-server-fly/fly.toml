@@ -13,6 +13,10 @@ primary_region = "sjc"
   # Port 22 is reserved by Fly for machine SSH and cannot be used here.
   TCP_PORTS = "2222,3000,4000,5000,6000,7000,8000,8080,8081,8443,8888,9000,9090,6660,6661,6662,6663,6664,6665,6666,6667,6668,6669"
   TCP_PUBLIC_HOST = "linuxontab-tunnel.fly.dev"
+  # HTTPS slots for forwarded web apps: Fly terminates TLS (tls handler below,
+  # ALPN http/1.1 so the guest app gets plain HTTP/1.1), the relay bridges the
+  # plaintext like a raw TCP port. Each port needs a [[services]] block below.
+  HTTPS_PORTS = "4430,4431,4432,4433,4434,4435,4436,4437,4438,4439"
   # Public wss URL announced to clients — set to the custom domain once mapped:
   # TUNNEL_PUBLIC_URL = "wss://tunnel.linuxontab.com"
   # Second listener that [[services]] TCP proxy hits directly (no http_service proxy).
@@ -188,6 +192,87 @@ primary_region = "sjc"
   internal_port = 6669
   [[services.ports]]
     port = 6669
+
+# HTTPS slots (HTTPS_PORTS): Fly terminates TLS with the app's certificate.
+[[services]]
+  protocol = "tcp"
+  internal_port = 4430
+  [[services.ports]]
+    port = 4430
+    handlers = ["tls"]
+    tls_options = { alpn = ["http/1.1"] }
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 4431
+  [[services.ports]]
+    port = 4431
+    handlers = ["tls"]
+    tls_options = { alpn = ["http/1.1"] }
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 4432
+  [[services.ports]]
+    port = 4432
+    handlers = ["tls"]
+    tls_options = { alpn = ["http/1.1"] }
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 4433
+  [[services.ports]]
+    port = 4433
+    handlers = ["tls"]
+    tls_options = { alpn = ["http/1.1"] }
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 4434
+  [[services.ports]]
+    port = 4434
+    handlers = ["tls"]
+    tls_options = { alpn = ["http/1.1"] }
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 4435
+  [[services.ports]]
+    port = 4435
+    handlers = ["tls"]
+    tls_options = { alpn = ["http/1.1"] }
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 4436
+  [[services.ports]]
+    port = 4436
+    handlers = ["tls"]
+    tls_options = { alpn = ["http/1.1"] }
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 4437
+  [[services.ports]]
+    port = 4437
+    handlers = ["tls"]
+    tls_options = { alpn = ["http/1.1"] }
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 4438
+  [[services.ports]]
+    port = 4438
+    handlers = ["tls"]
+    tls_options = { alpn = ["http/1.1"] }
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 4439
+  [[services.ports]]
+    port = 4439
+    handlers = ["tls"]
+    tls_options = { alpn = ["http/1.1"] }
 
 # Raw TCP proxy to the second Node WS listener (port 4344, not 8787).
 # websocat uses ws://...:4344/port/guest to bypass Fly's HTTP-proxy

@@ -65,6 +65,13 @@ const TCP_PORTS = process.env.TCP_PORTS
   ? process.env.TCP_PORTS.split(',').map(s => parseInt(s.trim(), 10)).filter(p => p > 0 && p < 65536)
   : Array.from({ length: TCP_POOL_SIZE }, (_, i) => TCP_POOL_BASE + i);
 const TCP_PUBLIC_HOST = process.env.TCP_PUBLIC_HOST || ''; // e.g. tunnel.linuxontab.com
+// HTTPS slots for forwarded web apps: fly.toml gives each of these ports a
+// "tls" handler (ALPN http/1.1), so Fly terminates TLS with the app's
+// certificate and hands us plaintext HTTP, which takes the same bridge as
+// the raw TCP pool. Clients get https://<host>:<port>/. Kept apart from
+// TCP_PORTS: a raw (ssh) exposure must never land on a TLS port.
+const HTTPS_PORTS = (process.env.HTTPS_PORTS || '')
+  .split(',').map(s => parseInt(s.trim(), 10)).filter(p => p > 0 && p < 65536);
 
 // ── Token signing (HMAC-SHA256) ────────────────────────────────────────────
 
@@ -897,24 +904,25 @@ function tcpEvictDeadAssignments() {
 // tcpAssignSlot: try preferPort (defaults to internalPort) first, walk up
 // by 1 through any listening port in [want, want+100], then fall back to
 // pool order. This lets "expose port 8080" get public port 8080 when free.
-function tcpAssignSlot(code, internalPort, preferPort, ttlMs) {
+function tcpAssignSlot(code, internalPort, preferPort, ttlMs, tls = false) {
   const now = Date.now();
   const ttl = ttlMs || TCP_ASSIGN_TTL_MS;
   tcpEvictDeadAssignments();
+  const ports = tls ? HTTPS_PORTS : TCP_PORTS;
   const want = (preferPort > 0 && preferPort < 65536) ? preferPort : internalPort;
-  // Walk up from want; collect any listening port in [want, want+100]
+  // Walk up from want; collect any pool port in [want, want+100]
   const tryList = [];
   for (let p = want; p <= want + 100; p++) {
-    if (tcpListeners.has(p)) tryList.push(p);
+    if (ports.includes(p) && tcpListeners.has(p)) tryList.push(p);
   }
   // Append remaining pool ports not already covered
-  for (const p of TCP_PORTS) {
+  for (const p of ports) {
     if (!tryList.includes(p)) tryList.push(p);
   }
   for (const p of tryList) {
     if (!tcpListeners.has(p)) continue;
     if (tcpAssignments.has(p)) continue;
-    const a = { code, internalPort, createdAt: now, expiresAt: now + ttl };
+    const a = { code, internalPort, tls, createdAt: now, expiresAt: now + ttl };
     tcpAssignments.set(p, a);
     return { publicPort: p, ...a };
   }
@@ -1100,7 +1108,7 @@ function bridgeTcpToCf(sock, code, internalPort, publicPort, pairId) {
 }
 
 function startTcpPool() {
-  for (const publicPort of TCP_PORTS) {
+  for (const publicPort of [...TCP_PORTS, ...HTTPS_PORTS.filter(p => !TCP_PORTS.includes(p))]) {
     const srv = net.createServer(async (sock) => {
       // Keep the Fly TCP proxy connection alive during backpressure pauses.
       // Without keepalive, Fly marks the stalled connection as idle and drops it.
@@ -1213,18 +1221,21 @@ const server = http.createServer(async (req, res) => {
     tcpEvictDeadAssignments();
     // Reuse existing assignment for this (code, port) if present so
     // repeat calls are idempotent.
+    // { tls: true } asks for an HTTPS slot (see HTTPS_PORTS) instead of raw TCP.
+    const tls = body.tls === true;
+    if (tls && !HTTPS_PORTS.length) return sendJson(res, { error: 'no HTTPS ports configured' }, 501);
     for (const [p, a] of tcpAssignments) {
-      if (a.code === code && a.internalPort === internalPort) {
+      if (a.code === code && a.internalPort === internalPort && !!a.tls === tls) {
         a.expiresAt = Date.now() + (parseInt(body.ttlMs, 10) || TCP_ASSIGN_TTL_MS);
         const host = TCP_PUBLIC_HOST || (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
-        return sendJson(res, { host, publicPort: p, code, port: internalPort, expiresAt: a.expiresAt, reused: true });
+        return sendJson(res, { host, publicPort: p, tls, code, port: internalPort, expiresAt: a.expiresAt, reused: true });
       }
     }
-    const slot = tcpAssignSlot(code, internalPort, parsePort(body.preferPort), parseInt(body.ttlMs, 10));
-    if (!slot) return sendJson(res, { error: 'TCP pool exhausted' }, 503);
+    const slot = tcpAssignSlot(code, internalPort, parsePort(body.preferPort), parseInt(body.ttlMs, 10), tls);
+    if (!slot) return sendJson(res, { error: tls ? 'HTTPS pool exhausted' : 'TCP pool exhausted' }, 503);
     const host = TCP_PUBLIC_HOST || (req.headers['x-forwarded-host'] || req.headers.host || '').split(':')[0];
-    console.log(`[expose] ${code}:${internalPort} → public :${slot.publicPort} (expires in ${Math.round((slot.expiresAt - Date.now())/1000)}s)`);
-    return sendJson(res, { host, publicPort: slot.publicPort, code, port: internalPort, expiresAt: slot.expiresAt, reused: false });
+    console.log(`[expose] ${code}:${internalPort} → public ${tls ? 'https ' : ''}:${slot.publicPort} (expires in ${Math.round((slot.expiresAt - Date.now())/1000)}s)`);
+    return sendJson(res, { host, publicPort: slot.publicPort, tls, code, port: internalPort, expiresAt: slot.expiresAt, reused: false });
   }
 
   // POST /port/unexpose { publicPort? , code? }
@@ -1251,9 +1262,9 @@ const server = http.createServer(async (req, res) => {
     const list = [];
     for (const [p, a] of tcpAssignments) {
       if (code && a.code !== code) continue;
-      list.push({ host, publicPort: p, code: a.code, port: a.internalPort, expiresAt: a.expiresAt });
+      list.push({ host, publicPort: p, tls: !!a.tls, code: a.code, port: a.internalPort, expiresAt: a.expiresAt });
     }
-    return sendJson(res, { assignments: list, pool_size: TCP_PORTS.length, pool_ports: TCP_PORTS, pool_base: TCP_POOL_BASE });
+    return sendJson(res, { assignments: list, pool_size: TCP_PORTS.length, pool_ports: TCP_PORTS, https_ports: HTTPS_PORTS, pool_base: TCP_POOL_BASE });
   }
 
   // GET /port/debug
