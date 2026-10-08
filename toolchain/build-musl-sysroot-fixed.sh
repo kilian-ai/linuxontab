@@ -17,6 +17,13 @@
 # heap and hit the 256 MiB maximum with only ~54 MiB of brk heap in use
 # (every sbrk-only dlmalloc port — ffmpeg, netsurf, … — was capped there).
 #
+# Also applies toolchain/patches/musl-wasm32-ld128-float-h.patch: the port's
+# bits/float.h described x87 80-bit long double (LDBL_MANT_DIG 64), but clang's
+# wasm32 long double is IEEE binary128. musl picked its ld80 code paths for a
+# binary128 type: frexpl recursed forever (printf("%f") of anything crashed
+# with a stack overflow -> SIGSEGV, e.g. busybox seq) and scalbnl wrote the
+# wrong bits (strtod("1.5") -> inf, so busybox awk/printf printed inf).
+#
 # Also applies toolchain/patches/musl-wasm-pthread-create-zero-tls.patch: on
 # wasm, pthread_create takes the thread's stack + TLS + struct pthread + TSD
 # array from __libc_malloc instead of fresh zeroed mmap pages, but relies on
@@ -63,6 +70,8 @@ echo "==> Applying brk wasm-page-units patch"
 patch -p1 -d "$WORK/src" < "$REPO_ROOT/toolchain/patches/musl-brk-wasm-page-units.patch"
 echo "==> Applying pthread_create zeroed-TLS patch"
 patch -p1 -d "$WORK/src" < "$REPO_ROOT/toolchain/patches/musl-wasm-pthread-create-zero-tls.patch"
+echo "==> Applying binary128 long-double float.h patch"
+patch -p1 -d "$WORK/src" < "$REPO_ROOT/toolchain/patches/musl-wasm32-ld128-float-h.patch"
 
 echo "==> Building musl (wasm32)"
 MUSL_OUT="$WORK/out"
@@ -109,6 +118,7 @@ PY
 for CPP_SYSROOT in "$REPO_ROOT/toolchain/cpp-sysroot-fixed" "$REPO_ROOT/toolchain/cpp-eh-sysroot"; do
     if [ -z "${LOT_SYSROOT_OUT:-}" ] && [ -f "$CPP_SYSROOT/lib/libc.a" ]; then
         cp "$OUT/lib/libc.a" "$CPP_SYSROOT/lib/libc.a"
+        cp "$OUT/include/bits/float.h" "$CPP_SYSROOT/include/bits/float.h"
         echo "==> Updated $CPP_SYSROOT/lib/libc.a"
     fi
 done
