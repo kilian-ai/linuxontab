@@ -81,6 +81,23 @@ const CLONE_VFORK = 0x4000;
 const CLONE_VM = 0x100;
 const FORK_SCRATCH_BYTES = 4 * 1024 * 1024; // legacy binaries without their own buffer
 
+// LinuxOnTab runtime code loading (#14): syscall(NR_LOT_WASM_LOAD, ptr, len)
+// hands the runtime a wasm module from the caller's memory. The worker
+// compiles it, instantiates it against the process's memory and function
+// table, and appends its exported functions, in export order, to THIS
+// thread's __indirect_function_table. Returns the first slot or -errno; the
+// caller then calls them through ordinary function pointers. On a runtime
+// without it the kernel answers -ENOSYS, which is the feature test.
+//   imports allowed: env.memory (declare it shared, min 0, max 65536) and
+//     env.__indirect_function_table (funcref) — nothing else;
+//   the program must be linked with --growable-table (else -ENOSPC);
+//   tables are per thread (each thread is its own instance): load in the
+//     thread that calls, and keep slot maps per thread;
+//   loaded code is not asyncify-instrumented, so it must not be on the stack
+//     across fork(), and a fork child starts without it (fresh instance).
+const NR_LOT_WASM_LOAD = 10001;
+const LOT_WASM_LOAD_MAX = 64 * 1024 * 1024;
+
 // Pre-7.1 SA_SIGINFO compat. 7.1's musl installs its __siginfo_trampoline as
 // sa_restorer, and the kernel delivers SA_SIGINFO signals by calling
 // trampoline(fn, sig), which fetches the siginfo through linux.copy_siginfo.
@@ -318,6 +335,39 @@ const NR_WASM_GET_ARGS = 245;
     return -38;
   }
 
+  // See NR_LOT_WASM_LOAD.
+  function lot_wasm_load(ptr: number, len: number): number {
+    const EFAULT = 14, ENOEXEC = 8, EINVAL = 22, ENOSPC = 28, ENOSYS = 38;
+    if (!context || !instance) return -ENOSYS;
+    const table = (instance.exports as any).__indirect_function_table;
+    if (!(table instanceof WebAssembly.Table)) return -ENOSYS;
+    if (len === 0 || len > LOT_WASM_LOAD_MAX) return -EINVAL;
+    if (ptr + len > context.memory.buffer.byteLength) return -EFAULT;
+    const bytes = new Uint8Array(context.memory.buffer, ptr, len).slice();
+    let module: WebAssembly.Module;
+    try { module = new WebAssembly.Module(bytes); } catch (_) { return -ENOEXEC; }
+    for (const imp of WebAssembly.Module.imports(module)) {
+      const ok = imp.module === "env" &&
+        ((imp.name === "memory" && imp.kind === "memory") ||
+         (imp.name === "__indirect_function_table" && imp.kind === "table"));
+      if (!ok) return -ENOEXEC;
+    }
+    let loaded: WebAssembly.Instance;
+    try {
+      loaded = new WebAssembly.Instance(module, {
+        env: { memory: context.memory, __indirect_function_table: table },
+      });
+    } catch (_) { return -ENOEXEC; }   // LinkError: memory/table type mismatch
+    const fns = WebAssembly.Module.exports(module)
+      .filter((e) => e.kind === "function")
+      .map((e) => loaded.exports[e.name] as Function);
+    if (!fns.length) return -EINVAL;
+    let base: number;
+    try { base = table.grow(fns.length); } catch (_) { return -ENOSPC; }
+    fns.forEach((f, i) => table.set(base + i, f));
+    return base;
+  }
+
   function create_instance(context: UserContext): WebAssembly.Instance {
     const kernel_instance = get_kernel_instance();
     const linux_syscall = (
@@ -333,6 +383,7 @@ const NR_WASM_GET_ARGS = 245;
       // HALT_KERNEL unwind (catch (...), destructors) must not re-enter it.
       if (is_worker_halted()) throw HALT_KERNEL;
       if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
+      if (nr === NR_LOT_WASM_LOAD) return lot_wasm_load(arg0 >>> 0, arg1 >>> 0);
       // Old-ABI fork: clone(SIGCHLD, 0). A real 7.1 clone always has its flags
       // in arg2, so (17, 0, 0) can't be one.
       if (nr === NR_CLONE && arg0 === SIGCHLD && arg1 === 0 && arg2 === 0 && asyncify()?.asyncify_get_state) return raw_clone_fork();
