@@ -1,0 +1,85 @@
+diff --git a/blink/machine.c b/blink/machine.c
+index 4a998e5..a2a940e 100644
+--- a/blink/machine.c
++++ b/blink/machine.c
+@@ -2185,6 +2185,10 @@ void ExecuteInstruction(struct Machine *m) {
+ #if LOG_CPU
+   LogCpu(m);
+ #endif
++#ifdef LOT_WASMJIT
++  WasmJitDispatch(m);
++  return;
++#endif
+ #ifdef HAVE_JIT
+   u8 *dst;
+   nexgen32e_f func;
+diff --git a/blink/machine.h b/blink/machine.h
+index e754eae..6a6546b 100644
+--- a/blink/machine.h
++++ b/blink/machine.h
+@@ -508,6 +508,13 @@ _Noreturn void OpUdImpl(struct Machine *);
+ _Noreturn void OpUd(P);
+ void OpHlt(P);
+ void JitlessDispatch(P);
++#ifdef LOT_WASMJIT
++// LinuxOnTab: hot blocks translated to wasm (blink/wasmjit.c)
++void WasmJitDispatch(struct Machine *);
++void WasmJitPageChanged(i64);
++void WasmJitAfterFork(void);
++void WasmJitAtExit(void);
++#endif
+ void RestoreIp(struct Machine *);
+ void CheckForSignals(struct Machine *);
+ void UnlockRobustFutexes(struct Machine *);
+diff --git a/blink/memorymalloc.c b/blink/memorymalloc.c
+index 4722dc2..caf6d52 100644
+--- a/blink/memorymalloc.c
++++ b/blink/memorymalloc.c
+@@ -663,6 +663,9 @@ static bool FreePage(struct System *s, i64 virt, u64 entry, u64 size,
+   if (entry & PAGE_FILE) UnmarkFilePage(s, virt);
+   if (!(entry & PAGE_XD) && !(entry & PAGE_RSRV)) {
+     *executable_code_was_made_non_executable = true;
++#ifdef LOT_WASMJIT
++    WasmJitPageChanged(virt);
++#endif
+ #ifndef DISABLE_JIT
+     if (!IsJitDisabled(&s->jit)) {
+       ResetJitPage(&s->jit, virt);
+@@ -1265,7 +1268,12 @@ int ProtectVirtual(struct System *s, i64 virt, i64 size, int prot,
+         if (!hostonly) {
+           for (;;) {
+             pt2 = (pt & ~(PAGE_U | PAGE_RW | PAGE_XD)) | key;
+-            if (CasPte(mi, pt, pt2)) break;
++            if (CasPte(mi, pt, pt2)) {
++#ifdef LOT_WASMJIT
++              if (pt != pt2) WasmJitPageChanged(virt);
++#endif
++              break;
++            }
+             pt = LoadPte(mi);
+             if (!(pt & PAGE_V)) {
+               goto MemoryDisappeared;
+diff --git a/blink/syscall.c b/blink/syscall.c
+index bbf41f9..309a839 100644
+--- a/blink/syscall.c
++++ b/blink/syscall.c
+@@ -355,6 +355,9 @@ static void LotVforkUnpin(struct Machine *);
+ 
+ _Noreturn void SysExitGroup(struct Machine *m, int rc) {
+   THR_LOGF("pid=%d tid=%d SysExitGroup", m->system->pid, m->tid);
++#ifdef LOT_WASMJIT
++  WasmJitAtExit();
++#endif
+   ClearChildTid(m);
+   if (m->system->isfork) {
+ #ifdef LOT_VFORK
+@@ -783,6 +786,9 @@ static int Fork(struct Machine *m, u64 flags, u64 stack, u64 ctid) {
+ #endif
+   }
+   pid = fork();
++#ifdef LOT_WASMJIT
++  if (!pid) WasmJitAfterFork();
++#endif
+ #ifdef __HAIKU__
+   // haiku wipes tls after fork() in child
+   // https://dev.haiku-os.org/ticket/17896

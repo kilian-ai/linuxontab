@@ -32,7 +32,7 @@ export LOT_CLANG_BIN="$CLANG" LOT_SYSROOT_DIR="$SYSROOT" LOT_CRT1="$SYSROOT/lib/
        LOT_BUILTINS="$SYSROOT/lib/clang/19/lib/wasm32-unknown-linux-musl/libclang_rt.builtins.a"
 export LOT_LDFLAGS="-nostdlib -static -Wl,--import-memory -Wl,--export-memory -Wl,--export-table \
  -Wl,--export=__heap_base -Wl,--export=__data_end -Wl,--shared-memory -Wl,--max-memory=4294967296 \
- -Wl,-z,stack-size=8388608 -Wl,--table-base=2"
+ -Wl,-z,stack-size=8388608 -Wl,--table-base=2 -Wl,--growable-table"
 # --table-base=2: a signal handler at function-table index 1 is SIG_IGN to the
 # kernel (a SIGCHLD handler there makes children auto-reap: waitpid -> ECHILD)
 printf '#!/bin/sh\nexec %s --format=gnu "$@"\n' "$LLVM_AR" > "$W/bin/ar"; chmod +x "$W/bin/ar"
@@ -70,6 +70,18 @@ git apply "$BLINKSPIKE/blink-lot.patch"
 # chromium spike: SOCK_SEQPACKET, PI futex EOPNOTSUPP, prlimit EFAULT,
 # cmpss/cmpps masks, 512 GB reservation cap, crash report before thread kill
 git apply "$HERE/blink-chromium.patch"
+# wasmjit (#14): hot x86 blocks become wasm functions loaded through the
+# runtime's lot_wasm_load (needs --growable-table, above; off by itself on a
+# runtime without it, or with BLINK_WASMJIT=0). Opt in with WASMJIT=1 while
+# it settles.
+WJFLAG=""
+if [ "${WASMJIT:-0}" = 1 ]; then
+  git apply "$HERE/blink-wasmjit.patch"
+  cp "$HERE/wasmjit.c" blink/wasmjit.c
+  WJFLAG="-DLOT_WASMJIT"
+else
+  rm -f blink/wasmjit.c
+fi
 # configure RUNS its probes; cross-compiling, "it linked" is the answer
 sed -i '' 's|     run "o/tool/config/${RUNPROGRAM}"; then|     test -f "o/tool/config/${RUNPROGRAM}"; then|' configure
 rm -rf o && mkdir -p o/tool && cc -o o/tool/flock tool/flock.c   # host tool
@@ -82,7 +94,7 @@ sed -i '' 's|^// #define HAVE_FORK|#define HAVE_FORK|' config.h   # probe can't 
 # two fds per file. Chromium ran into the fd limit, unpinned inode numbers got
 # reused and unrelated regions aliased (duplicated tiles on screen).
 sed -i '' 's|^// #define HAVE_MAP_ANONYMOUS|#define HAVE_MAP_ANONYMOUS|' config.h
-sed -i '' "s|^CPPFLAGS = |CPPFLAGS = -DLOT_VFORK -DLOT_SYSCALLS -include $BLINKSPIKE/lot_mman.h -include $HERE/lot_sjlj.h |; s|^LDFLAGS = .*|LDFLAGS = -static|; s|^LDLIBS = .*|LDLIBS = -lm|" config.mk
+sed -i '' "s|^CPPFLAGS = |CPPFLAGS = -DLOT_VFORK -DLOT_SYSCALLS $WJFLAG -include $BLINKSPIKE/lot_mman.h -include $HERE/lot_sjlj.h |; s|^LDFLAGS = .*|LDFLAGS = -static|; s|^LDLIBS = .*|LDLIBS = -lm|" config.mk
 # MODE=rel by default; MODE= (empty) builds Blink's debug mode, with the
 # syscall tracer (blink -s) and logging (blink -L file)
 MODE="${MODE-rel}"

@@ -1197,6 +1197,8 @@ var SIGCHLD = 17;
 var CLONE_VFORK = 16384;
 var CLONE_VM = 256;
 var FORK_SCRATCH_BYTES = 4 * 1024 * 1024;
+var NR_LOT_WASM_LOAD = 10001;
+var LOT_WASM_LOAD_MAX = 64 * 1024 * 1024;
 var COMPAT_SP_EXPORT = "__lot_compat_stack_pointer";
 var SIGINFO_BYTES = 128;
 var UCONTEXT_BYTES = 176;
@@ -1349,11 +1351,49 @@ function user_imports({
     }
     return -38;
   }
+  function lot_wasm_load(ptr, len) {
+    const EFAULT = 14, ENOEXEC = 8, EINVAL = 22, ENOSPC = 28, ENOSYS = 38;
+    if (!context || !instance) return -ENOSYS;
+    const table = instance.exports.__indirect_function_table;
+    if (!(table instanceof WebAssembly.Table)) return -ENOSYS;
+    if (len === 0 || len > LOT_WASM_LOAD_MAX) return -EINVAL;
+    if (ptr + len > context.memory.buffer.byteLength) return -EFAULT;
+    const bytes = new Uint8Array(context.memory.buffer, ptr, len).slice();
+    let module;
+    try {
+      module = new WebAssembly.Module(bytes);
+    } catch (_) {
+      return -ENOEXEC;
+    }
+    for (const imp of WebAssembly.Module.imports(module)) {
+      const ok = imp.module === "env" && (imp.name === "memory" && imp.kind === "memory" || imp.name === "__indirect_function_table" && imp.kind === "table");
+      if (!ok) return -ENOEXEC;
+    }
+    let loaded;
+    try {
+      loaded = new WebAssembly.Instance(module, {
+        env: { memory: context.memory, __indirect_function_table: table }
+      });
+    } catch (_) {
+      return -ENOEXEC;
+    }
+    const fns = WebAssembly.Module.exports(module).filter((e) => e.kind === "function").map((e) => loaded.exports[e.name]);
+    if (!fns.length) return -EINVAL;
+    let base;
+    try {
+      base = table.grow(fns.length);
+    } catch (_) {
+      return -ENOSPC;
+    }
+    fns.forEach((f, i) => table.set(base + i, f));
+    return base;
+  }
   function create_instance(context2) {
     const kernel_instance = get_kernel_instance();
     const linux_syscall = (nr, arg0, arg1, arg2, arg3, arg4, arg5) => {
       if (is_worker_halted()) throw HALT_KERNEL;
       if (nr === NR_WASM_FORK || nr === NR_WASM_VFORK) return fork_sentinel(nr, arg0, arg1, arg2);
+      if (nr === NR_LOT_WASM_LOAD) return lot_wasm_load(arg0 >>> 0, arg1 >>> 0);
       if (nr === NR_CLONE && arg0 === SIGCHLD && arg1 === 0 && arg2 === 0 && asyncify()?.asyncify_get_state) return raw_clone_fork();
       if (nr === NR_CLONE && arg2 & CLONE_VFORK && arg2 & CLONE_VM && asyncify()?.asyncify_get_state && !instance?.exports?.__lot_clone_sets_sp) {
         arg2 &= ~CLONE_VM;

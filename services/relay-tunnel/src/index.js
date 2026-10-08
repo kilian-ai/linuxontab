@@ -26,6 +26,9 @@
 // Set via: npx wrangler secret put TUNNEL_SECRET
 
 const TOKEN_TTL_SECS = 86400 * 30;
+// How long a client waits for a guest bridge when the port's pool is drained
+// before getting a 503. Replacement guests can take a few seconds under a burst.
+const CLIENT_WAIT_FOR_GUEST_MS = 15000;
 
 async function _getHmacKey(secret) {
   return crypto.subtle.importKey(
@@ -133,6 +136,7 @@ export class PortSession {
     this.created = Date.now();
     this.registeredPorts = new Set();
     this.guestQueue = new Map();   // port → Array<WS>  (idle guests, FIFO)
+    this.guestWaiters = new Map(); // port → Set<wake fn>  (clients waiting on a drained port)
     this.pairs = new Map();        // WS → WS  (bidirectional)
     // Pre-pair buffer: bytes received from a guest before any client has
     // dequeued it (e.g. sshd banner sent eagerly on TCP accept). Keyed by
@@ -259,16 +263,17 @@ export class PortSession {
         return null;
       };
       let guest = popFreshGuest();
-      // Pool may be momentarily empty between guest respawns. Wait briefly
-      // for tunnel-up.sh's respawn loop to refill (typical refill ~100ms),
-      // so small POOL_SIZE values still tolerate parallel-capable clients.
+      // Pool empty (a burst used it up): wait for the browser's replacement
+      // guest WSes. Under a burst those take seconds to arrive — this DO also
+      // relays every byte — so the old 2.5 s poll turned bursts of parallel
+      // HTTP requests into 503s while the replacements were already in flight.
+      // Waiters are woken by each arriving guest (one guest, one waiter), with
+      // a 1 s safety re-check, instead of every waiter polling every 100 ms.
       if (!guest) {
-        const start = Date.now();
-        const deadline = 2500;
-        while (Date.now() - start < deadline) {
-          await new Promise(r => setTimeout(r, 100));
+        const deadline = Date.now() + CLIENT_WAIT_FOR_GUEST_MS;
+        while (!guest && Date.now() < deadline) {
+          await this._waitForGuest(port, Math.min(1000, deadline - Date.now()));
           guest = popFreshGuest();
-          if (guest) break;
         }
       }
       if (!guest) {
@@ -322,7 +327,27 @@ export class PortSession {
     let q = this.guestQueue.get(port);
     if (!q) { q = []; this.guestQueue.set(port, q); }
     q.push(guest);
+    this._wakeGuestWaiter(port);
     return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+
+  // Clients waiting for a guest on a drained port: _waitForGuest resolves on
+  // the next enqueued guest (FIFO among waiters) or after ms.
+  _waitForGuest(port, ms) {
+    return new Promise((resolve) => {
+      let set = this.guestWaiters.get(port);
+      if (!set) { set = new Set(); this.guestWaiters.set(port, set); }
+      const done = () => { clearTimeout(timer); set.delete(done); if (!set.size) this.guestWaiters.delete(port); resolve(); };
+      const timer = setTimeout(done, Math.max(0, ms));
+      set.add(done);
+    });
+  }
+
+  _wakeGuestWaiter(port) {
+    const set = this.guestWaiters.get(port);
+    if (!set || !set.size) return;
+    const [first] = set;
+    first();
   }
 
   // Hibernation API handlers — Cloudflare invokes these for any acceptWebSocket'd
