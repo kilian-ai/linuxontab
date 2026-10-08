@@ -182,7 +182,7 @@ Debugging aids that found them:
 Blink on wasm32 is a pure interpreter (its JIT emits native code). `wasmjit.c`
 (+ `blink-wasmjit.patch`, built in with `WASMJIT=1 sh build.sh`; opt-in
 while it settles) is a call-threaded backend: a block start reached
-`BLINK_WASMJIT_HOT` times (default 1024) is recorded while it runs, then
+`BLINK_WASMJIT_HOT` times (default 256) is recorded while it runs, then
 emitted as one wasm function that sets `ip`/`oplen`, calls each op's handler
 through Blink's own function table, commits stashed writes and returns to the
 interpreter as soon as `ip` leaves the straight line. The runtime compiles it
@@ -195,22 +195,31 @@ executable, non-writable pages are translated, and munmap/mprotect bump a
 per-page generation that retires that page's blocks. `BLINK_WASMJIT=0`
 turns it off at run time, `BLINK_WASMJIT_STATS=1` prints counters at exit.
 
-Measured in the guest (same binaries, old vs new Blink):
+The most common integer ops are emitted inline instead of calling their
+handlers: 32/64-bit register forms of mov, add/or/and/sub/xor, cmp/test
+(register and immediate), mov reg,imm, lea, jcc and jmp. They can't fault, so
+they skip the ip/oplen bookkeeping, and they compute flags exactly as
+blink/alu.c does (CF ZF SF OF AF, plus the result's low byte in bits 24-31
+for PF), so handler ops after them see the same state. `alu.c` (an x86 test
+that runs each of these with random operands and hashes results + pushfq
+flags) prints the same hash under the old and the new Blink.
 
-| workload | interpreter | wasmjit |
-|---|---|---|
-| primes < 200000 (spikes/x86-blink/bench.c) | 1.87 s | 1.23 s |
-| hashing + qsort + snprintf (mix.c) | 2.99 s | 1.83 s |
-| Node 24 `--jitless`, small JS workload | 4.11 s | 2.54 s |
-| Node 24 Sparkplug (default), same | 3.76 s | 2.29 s |
-| nodetest.js (11/11), start-up bound | 3.60 s | 3.34 s (HOT 2048) |
+Measured in the guest (same binaries, old vs new Blink, interleaved):
+
+| workload | interpreter | wasmjit, calls only | + inline ops |
+|---|---|---|---|
+| primes < 200000 (spikes/x86-blink/bench.c) | 1.83 s | 1.23 s | 0.72 s |
+| hashing + qsort + snprintf (mix.c) | 3.00 s | 1.83 s | 1.22 s |
+| Node 24 Sparkplug (default), small JS workload | 3.69 s | 2.29 s | 1.76 s |
+| Node 24 `--jitless`, same | 4.11 s | 2.54 s | 1.87 s |
+| nodetest.js (11/11), start-up bound | 3.48 s | 3.34 s | 2.68 s |
 
 Correctness: same outputs, `sha256sum` matches native, threads, fork+threads,
-faulttest 7/7, sigchld, nodetest 11/11. A module costs ~30-40 us to
-compile, which is why the threshold is high: at HOT=32 start-up-bound runs
-got slower (nodetest 4.27 s). Next: inline the common ops (register ALU,
-mov, lea, jcc) instead of calling their handlers, chain blocks, batch
-several blocks per module.
+faulttest 7/7, sigchld, nodetest 11/11 (also with BLINK_WASMJIT_HOT=2, where
+almost everything is translated). A module costs ~30-40 us to compile, which
+sets the threshold: at 32 start-up-bound runs got slower. Next: memory
+operands inline (the TLB fast path), chaining blocks, several blocks per
+module. Code V8 generates stays interpreted (its pages stay writable).
 
 ## Open
 
