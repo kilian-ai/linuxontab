@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Packages — LinuxOnTab</title>
+<meta name="description" content="Software you can install in LinuxOnTab with apk: every package is compiled to WebAssembly and runs on the Linux kernel in your browser tab.">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#0b0d10">
+<meta name="color-scheme" content="dark">
+<link rel="canonical" href="https://linuxontab.com/packages/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="LinuxOnTab">
+<meta property="og:title" content="LinuxOnTab — Packages">
+<meta property="og:description" content="Install software in a browser tab: apk add, all compiled to WebAssembly.">
+<meta property="og:url" content="https://linuxontab.com/packages/">
+<meta property="og:image" content="https://linuxontab.com/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://linuxontab.com/og.png">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%230b0d10'/%3E%3Ctext x='50%25' y='58%25' font-family='monospace' font-size='34' font-weight='700' fill='%234ade80' text-anchor='middle'%3E_$%3C/text%3E%3C/svg%3E">
+<style>
+  :root { color-scheme: dark; --bg:#0b0d10; --fg:#d5d8dc; --mut:#8a929e; --line:#2a2f36; --accent:#4ade80; --accent2:#7dd3fc; --card:#11151a; }
+  *,*::before,*::after { box-sizing:border-box; }
+  html,body { margin:0; padding:0; background:var(--bg); color:var(--fg); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif; line-height:1.55; }
+  a { color:var(--accent2); text-decoration:none; }
+  a:hover { text-decoration:underline; }
+  code { background:#0e1217; border:1px solid var(--line); border-radius:4px; padding:1px 6px; font-size:.92em; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header.site { padding:14px 24px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+  header.site .brand { font-weight:700; letter-spacing:.2px; }
+  header.site .brand .glyph { color:var(--accent); }
+  header.site nav a { color:var(--mut); margin-left:18px; font-size:14px; }
+  header.site nav a:hover { color:var(--fg); }
+  main { max-width:980px; margin:0 auto; padding:40px 16px 56px; }
+  h1 { font-size:clamp(26px, 4vw, 38px); margin:0 0 10px; letter-spacing:-.4px; }
+  h1 .glyph { color:var(--accent); }
+  .lead { color:#c4cad2; margin:0 0 22px; max-width:720px; }
+  .how { display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); margin:0 0 28px; }
+  .how div { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; font-size:14px; color:#aab2bd; }
+  .how b { color:var(--fg); display:block; margin-bottom:4px; }
+  .bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+  .bar input { flex:1 1 260px; background:#0e1217; border:1px solid var(--line); border-radius:8px; padding:10px 14px; color:var(--fg); font-size:15px; outline:none; }
+  .bar input:focus { border-color:var(--accent); }
+  .count { color:var(--mut); font-size:13px; }
+  ul.pkgs { list-style:none; margin:0; padding:0; }
+  ul.pkgs li { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 16px; padding:14px 4px; border-bottom:1px solid var(--line); }
+  .name { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-weight:600; color:var(--fg); }
+  .ver { color:var(--mut); font-size:13px; margin-left:8px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  .desc { grid-column:1; color:#aab2bd; font-size:14px; overflow-wrap:anywhere; }
+  .meta { grid-column:1; color:var(--mut); font-size:12px; }
+  .acts { grid-column:2; grid-row:1 / span 3; display:flex; gap:8px; align-items:flex-start; }
+  .acts button, .acts a { font:inherit; font-size:13px; white-space:nowrap; border-radius:6px; padding:5px 10px; cursor:pointer; }
+  .acts button { background:transparent; color:var(--fg); border:1px solid var(--line); font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  .acts button:hover { border-color:var(--mut); }
+  .acts a { background:var(--accent); color:#0b0d10; font-weight:600; border:1px solid var(--accent); }
+  .acts a:hover { background:#22c55e; text-decoration:none; }
+  .empty, .err { color:var(--mut); padding:20px 4px; }
+  footer.site { padding:30px 16px 50px; color:var(--mut); font-size:13px; text-align:center; }
+  footer.site a { color:var(--mut); }
+  @media (max-width:600px) {
+    header.site nav a { margin-left:12px; }
+    ul.pkgs li { grid-template-columns:minmax(0,1fr); }
+    .acts { grid-column:1; grid-row:auto; margin-top:6px; }
+  }
+</style>
+</head>
+<body>
+<header class="site">
+  <a href="/" style="color:inherit"><div class="brand"><span class="glyph">_$</span> LinuxOnTab</div></a>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/changelog/">Changelog</a>
+    <a href="https://github.com/kilian-ai/linuxontab" rel="noopener" target="_blank">GitHub</a>
+  </nav>
+</header>
+
+<main>
+  <h1><span class="glyph">_$</span> Packages</h1>
+  <p class="lead">
+    Software you can install in a LinuxOnTab tab. Every package is compiled to WebAssembly and
+    runs on the real Linux kernel in your browser; nothing is installed on your computer.
+  </p>
+  <div class="how">
+    <div><b>In the shell</b><code>apk browse</code> to pick from a list, or <code>apk search &lt;word&gt;</code> then <code>apk add &lt;name&gt;</code>.</div>
+    <div><b>On the X desktop</b>Apps → Install Software. Apps you haven't installed yet install themselves when you open them.</div>
+    <div><b>Straight from here</b>"Try it" opens a fresh tab with that package already installed.</div>
+  </div>
+
+  <div class="bar">
+    <input id="q" type="search" placeholder="Search packages (name or description)" autocomplete="off" aria-label="Search packages">
+    <span class="count" id="count"></span>
+  </div>
+  <ul class="pkgs" id="list"></ul>
+  <noscript><p class="err">This list needs JavaScript. The raw index is at <a href="index.json">index.json</a>.</p></noscript>
+</main>
+
+<footer class="site">
+  Generated live from <a href="index.json">index.json</a>, the same index <code>apk</code> uses.
+  Missing something? <a href="https://github.com/kilian-ai/linuxontab/issues" rel="noopener">Open an issue</a>.
+</footer>
+
+<script>
+(() => {
+  const TAB = 'https://next.linuxontab.com/?autoboot&image=';
+  const list = document.getElementById('list');
+  const q = document.getElementById('q');
+  const count = document.getElementById('count');
+  let pkgs = [];
+
+  const el = (tag, cls, text) => {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  };
+  const size = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+
+  function render() {
+    const words = q.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const shown = pkgs.filter((p) => words.every((w) => p.hay.includes(w)));
+    list.replaceChildren();
+    for (const p of shown) {
+      const li = el('li');
+      const head = el('div');
+      head.append(el('span', 'name', p.name), el('span', 'ver', p.version));
+      li.append(head, el('div', 'desc', p.description || ''));
+      const meta = [size(p.size || 0)];
+      if (p.depends && p.depends.length) meta.push('needs ' + p.depends.join(', '));
+      li.append(el('div', 'meta', meta.join(' · ')));
+      const acts = el('div', 'acts');
+      const cmd = 'apk add ' + p.name;
+      const copy = el('button', '', cmd);
+      copy.type = 'button';
+      copy.title = 'Copy the install command';
+      copy.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(cmd); copy.textContent = 'copied'; }
+        catch (_) { copy.textContent = cmd; }
+        setTimeout(() => { copy.textContent = cmd; }, 1200);
+      });
+      const tryIt = el('a', '', 'Try it');
+      tryIt.href = TAB + encodeURIComponent(p.name);
+      tryIt.target = '_blank';
+      tryIt.rel = 'noopener';
+      tryIt.title = 'Open a new LinuxOnTab tab with ' + p.name + ' installed';
+      acts.append(copy, tryIt);
+      li.append(acts);
+      list.append(li);
+    }
+    count.textContent = shown.length === pkgs.length
+      ? pkgs.length + ' packages'
+      : shown.length + ' of ' + pkgs.length;
+    if (!shown.length) list.append(el('li', 'empty', 'Nothing matches "' + q.value + '".'));
+  }
+
+  q.addEventListener('input', () => {
+    render();
+    try { history.replaceState(null, '', q.value ? '#q=' + encodeURIComponent(q.value) : location.pathname); } catch (_) {}
+  });
+  const m = /[#&]q=([^&]*)/.exec(location.hash);
+  if (m) q.value = decodeURIComponent(m[1]);
+
+  fetch('index.json', { cache: 'no-cache' })
+    .then((r) => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then((idx) => {
+      pkgs = Object.entries(idx.packages || {})
+        .filter(([, p]) => p && p.status !== 'hidden')
+        .map(([name, p]) => ({ name, ...p, hay: (name + ' ' + (p.description || '')).toLowerCase() }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      render();
+    })
+    .catch((e) => {
+      list.replaceChildren(el('li', 'err', 'Could not load the package index (' + e.message + '). The raw file is at index.json.'));
+    });
+})();
+</script>
+</body>
+</html>
