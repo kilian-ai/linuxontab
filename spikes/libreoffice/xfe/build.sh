@@ -11,7 +11,10 @@ mkdir -p $B $P $R
 export CC=/lot/spike/bin/wasm-cc CXX=/lot/spike/bin/wasm-c++
 export AR=llvm-ar RANLIB=llvm-ranlib NM=llvm-nm STRIP=llvm-strip OBJDUMP=llvm-objdump
 export PKG_CONFIG_LIBDIR=$P/lib/pkgconfig:/work/xprefix/lib/pkgconfig
-export CFLAGS="-O2" CXXFLAGS="-O2" CPPFLAGS="-I$P/include -I$P/include/freetype2" LDFLAGS="-L$P/lib -L/work/xprefix/lib"
+# wasm-cc defines __linux__ (for LibreOffice), which makes Xfuncproto.h pick
+# NARROWPROTO; the X libraries (packages/libX11 & co) were built without it,
+# i.e. with wide prototypes. Keep the headers on the libraries' ABI.
+export CFLAGS="-O2" CXXFLAGS="-O2" CPPFLAGS="-DNeedWidePrototypes=1 -I$P/include -I$P/include/freetype2" LDFLAGS="-L$P/lib -L/work/xprefix/lib"
 XDIRS="--x-includes=/work/xprefix/include --x-libraries=/work/xprefix/lib"
 export CC_BUILD=gcc CC_FOR_BUILD=gcc CXX_FOR_BUILD=g++
 HOST="--host=wasm32-unknown-linux-musl --build=aarch64-unknown-linux-gnu"
@@ -131,7 +134,7 @@ fox() {
 xfe() {
   # our libX11 is built without xlibi18n: the symbols it still references
   $CC -O2 -c /lot/spike/xfe/x11_compat.c -o $B/x11_compat.o
-  $CC -O2 -I/work/xprefix/include -c /lot/spike/xfe/x11_im_compat.c -o $B/x11_im_compat.o
+  $CC -O2 $CPPFLAGS -I/work/xprefix/include -c /lot/spike/xfe/x11_im_compat.c -o $B/x11_im_compat.o
   $CC -O2 -c /lot/sysroot/wasm_syscall_cp.c -o $B/wasm_syscall_cp.o
   rm -f $P/lib/libX11compat.a
   $AR rcs $P/lib/libX11compat.a $B/x11_compat.o $B/x11_im_compat.o $B/wasm_syscall_cp.o

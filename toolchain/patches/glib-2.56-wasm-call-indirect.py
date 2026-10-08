@@ -29,7 +29,7 @@ g__wasm_compare_data_thunk (gconstpointer a, gconstpointer b, gpointer user_data
 
 def patch(path, subs, prelude=None, anchor=None):
     s = open(path).read()
-    if prelude and prelude.strip().splitlines()[1] not in s:
+    if prelude and prelude.strip() not in s:   # whole text: line 2 alone ("static gint") is in every file
         assert anchor in s, f"anchor missing in {path}"
         s = s.replace(anchor, anchor + prelude, 1)
     for old, new in subs:
@@ -65,7 +65,7 @@ assert s.count('(GCompareDataFunc)compare_func,') == 2
 s = s.replace('''(GCompareDataFunc)compare_func,
                      NULL)''', '''g__wasm_compare_data_thunk,
                      (gpointer) compare_func)''')
-if 'g__wasm_compare_data_thunk' in s and CMPDATA.strip().splitlines()[1] not in s:
+if 'g__wasm_compare_data_thunk' in s and CMPDATA.strip() not in s:
     s = s.replace('#include "gmessages.h"', '#include "gmessages.h"' + CMPDATA, 1)
 open('glib/garray.c','w').write(s)
 

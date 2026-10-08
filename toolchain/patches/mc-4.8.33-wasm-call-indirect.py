@@ -3,7 +3,7 @@
 # glib-2.56-wasm-call-indirect.py). Run from the extracted mc source root.
 def patch(path, subs, prelude=None, anchor=None):
     s = open(path).read()
-    if prelude and prelude.strip().splitlines()[1] not in s:
+    if prelude and prelude.strip() not in s:   # whole text: line 2 alone ("static void") is in every file
         assert anchor in s, f"anchor missing: {path}"
         s = s.replace(anchor, anchor + prelude, 1)
     for old, new in subs:
