@@ -416,13 +416,24 @@ cmd_del() {
         [ -f "$APK_DB/installed/$pkg" ] || { echo "apk: $pkg is not installed"; continue; }
         local manifest="$APK_DB/files/$pkg"
         if [ -f "$manifest" ]; then
+            # Keep files another installed package still lists (sylpheed and
+            # xfe ship the same DejaVu fonts and fonts.conf): delete only
+            # what no other manifest names. The sentinel keeps the keep-list
+            # non-empty, or awk's NR==FNR would read the manifest as it.
+            echo "__apk_keep__" > /tmp/.apk-keep
+            for _o in "$APK_DB/files/"*; do
+                [ -f "$_o" ] || continue
+                [ "$_o" = "$manifest" ] && continue
+                cat "$_o" >> /tmp/.apk-keep
+            done
+            awk 'NR == FNR { keep[$0] = 1; next } !($0 in keep)' /tmp/.apk-keep "$manifest" > /tmp/.apk-del
             while read -r f; do
                 [ -z "$f" ] && continue
                 # Manifests written before the metadata fix list /info.
                 [ "$f" = /info ] && continue
                 rm -f "$f" && _ok "Removed: $f"
-            done < "$manifest"
-            rm -f "$manifest"
+            done < /tmp/.apk-del
+            rm -f /tmp/.apk-keep /tmp/.apk-del "$manifest"
         fi
         rm -f "$APK_DB/installed/$pkg"
         _ok "$pkg removed"
