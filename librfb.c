@@ -152,19 +152,34 @@ static void push_keepalive(rfb_server *s) {
     write_all(s, &bell, 1);
 }
 
+/* Sleep for us microseconds, but keep an app with an on_idle hook served
+ * every IDLE_SLICE_US meanwhile. xtiny answers its X clients from on_idle:
+ * a flat 30 ms pacing sleep after every empty update meant each synchronous
+ * X round trip (GetImage, GetInputFocus, ...) could wait 30 ms, and a GTK 2
+ * menu, which makes hundreds of them, took ~10 s to paint. */
+#define IDLE_SLICE_US 2000
+static void rfb_pace_sleep(rfb_server *s, long us) {
+    if (!s->cfg.on_idle) { usleep(us); return; }
+    for (long t = 0; t < us; t += IDLE_SLICE_US) {
+        s->cfg.on_idle(s);
+        usleep(IDLE_SLICE_US);
+    }
+}
+
 static int read_all(rfb_server *s, void *buf, size_t n) {
     char *p = buf;
     long stalled = 0, ka_mark = 0;
+    long step = s->cfg.on_idle ? IDLE_SLICE_US : POLL_US;
     while (n) {
         ssize_t r = read(s->cfd, p, n);
         if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            if ((stalled += POLL_US) >= IO_STALL_LIMIT_US) return 0;
+            if ((stalled += step) >= IO_STALL_LIMIT_US) return 0;
             if (stalled - ka_mark >= 300000) {   /* 300 ms of silence */
                 ka_mark = stalled;
                 push_keepalive(s);
             }
             if (s->cfg.on_idle) s->cfg.on_idle(s);
-            usleep(POLL_US);
+            usleep(step);
             continue;
         }
         if (r == 0) return 0;
@@ -1203,7 +1218,7 @@ static void serve_client(rfb_server *s) {
              * when nothing changed, just yield when something did. The
              * sleep doubles as the asyncify yield that lets queued input
              * events be delivered. */
-            usleep(sent ? 1000 : 30000);
+            rfb_pace_sleep(s, sent ? 1000 : 30000);
             break;
         }
         case 4: { /* KeyEvent */

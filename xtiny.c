@@ -3444,9 +3444,15 @@ static int pointer_chain(XWindow *w, XWindow **out) {     /* w, its parent, ... 
     return n;
 }
 
+/* During an owner_events grab the grabbing client's own windows hear their
+ * crossings as usual (GTK menus: the pointer entering the menu's toplevel is
+ * how GDK starts tracking items under it); -1 = no such grab. */
+static int crossing_owner = -1;
+
 static void crossing_one(XWindow *w, int type, int detail, uint32_t child,
                          int x, int y, uint16_t state, XWindow *only) {
-    if (!w || w->id == ROOT_ID || (only && w != only)) return;
+    if (!w || w->id == ROOT_ID) return;
+    if (only && w != only && !(crossing_owner >= 0 && w->creator == crossing_owner)) return;
     if (!(w->evmask & (type == 7 ? 0x10 : 0x20))) return;   /* Enter/LeaveWindowMask */
     send_pointer_ev(w, type, detail, child, x, y, state);
 }
@@ -3628,7 +3634,9 @@ static void on_pointer(rfb_server *s, int buttons, int x, int y) {
     {
         XWindow *pw = X.ptr_win ? find_win(X.ptr_win) : NULL;
         if (w != pw) {
+            crossing_owner = (gw && X.pgrab_owner) ? gw->creator : -1;
             pointer_crossing(pw, w, x, y, st0, gw ? gw : ig);
+            crossing_owner = -1;
             X.ptr_win = w ? w->id : 0;
         }
     }

@@ -3,6 +3,7 @@
  * GtkDialog signals, to stderr. */
 #include <gtk/gtk.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static gboolean on_ev(GtkWidget *w, GdkEvent *e, gpointer name) {
   const char *t = "?";
@@ -40,13 +41,67 @@ static void watch(GtkWidget *b, const char *name) {
   g_signal_connect(b, "clicked", G_CALLBACK(on_sig), "clicked");
 }
 
+static void on_item(GtkMenuItem *it, gpointer name) {
+  (void)it;
+  fprintf(stderr, "[gtkbtn] menu item %s activated\n", (char *)name);
+}
+static void on_menu_vis(GtkWidget *m, gpointer name) {
+  GdkEvent *cur = gtk_get_current_event();
+  fprintf(stderr, "[gtkbtn] menu %s %s (current event %d", (char *)name,
+          GTK_WIDGET_VISIBLE(m) ? "shown" : "hidden", cur ? (int)cur->type : -1);
+  if (cur && (cur->type == GDK_BUTTON_PRESS || cur->type == GDK_BUTTON_RELEASE))
+    fprintf(stderr, " button at %.0f,%.0f time %u", cur->button.x, cur->button.y, cur->button.time);
+  if (cur && (cur->type == GDK_ENTER_NOTIFY || cur->type == GDK_LEAVE_NOTIFY))
+    fprintf(stderr, " crossing mode %d detail %d", cur->crossing.mode, cur->crossing.detail);
+  fprintf(stderr, ")\n");
+  if (cur) gdk_event_free(cur);
+}
+static gboolean on_grab_broken(GtkWidget *w, GdkEvent *e, gpointer name) {
+  (void)w;
+  fprintf(stderr, "[gtkbtn] grab-broken on %s (keyboard %d implicit %d)\n", (char *)name,
+          e->grab_broken.keyboard, e->grab_broken.implicit);
+  return FALSE;
+}
+static void on_deactivate(GtkMenuShell *ms, gpointer name) {
+  (void)ms;
+  GdkEvent *cur = gtk_get_current_event();
+  fprintf(stderr, "[gtkbtn] %s deactivate (current event %d)\n", (char *)name, cur ? (int)cur->type : -1);
+  if (cur) gdk_event_free(cur);
+}
+static GtkWidget *add_menu(GtkWidget *bar, const char *title, const char **items) {
+  GtkWidget *top = gtk_menu_item_new_with_mnemonic(title);
+  GtkWidget *menu = gtk_menu_new();
+  for (; *items; items++) {
+    GtkWidget *it = gtk_menu_item_new_with_label(*items);
+    g_signal_connect(it, "activate", G_CALLBACK(on_item), (gpointer)*items);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), it);
+  }
+  g_signal_connect(menu, "show", G_CALLBACK(on_menu_vis), (gpointer)title);
+  g_signal_connect(menu, "hide", G_CALLBACK(on_menu_vis), (gpointer)title);
+  g_signal_connect(menu, "grab-broken-event", G_CALLBACK(on_grab_broken), (gpointer)title);
+  gtk_menu_item_set_submenu(GTK_MENU_ITEM(top), menu);
+  gtk_menu_shell_append(GTK_MENU_SHELL(bar), top);
+  return top;
+}
+
 int main(int argc, char **argv) {
   gtk_init(&argc, &argv);
   /* like Sylpheed's setup wizard: a modal dialog over a main window */
   GtkWidget *main_win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
   gtk_window_set_title(GTK_WINDOW(main_win), "gtkbtn main");
   gtk_window_set_default_size(GTK_WINDOW(main_win), 500, 350);
+  GtkWidget *vbox = gtk_vbox_new(FALSE, 0);
+  GtkWidget *bar = gtk_menu_bar_new();
+  static const char *file_items[] = { "Open", "Save", "Quit", NULL };
+  static const char *edit_items[] = { "Cut", "Copy", "Paste", NULL };
+  add_menu(bar, "_File", file_items);
+  add_menu(bar, "_Edit", edit_items);
+  g_signal_connect(bar, "deactivate", G_CALLBACK(on_deactivate), "menubar");
+  g_signal_connect(bar, "grab-broken-event", G_CALLBACK(on_grab_broken), "menubar");
+  gtk_box_pack_start(GTK_BOX(vbox), bar, FALSE, FALSE, 0);
+  gtk_container_add(GTK_CONTAINER(main_win), vbox);
   gtk_widget_show_all(main_win);
+  if (getenv("GTKBTN_NODIALOG")) { gtk_main(); return 0; }
   GtkWidget *d = gtk_dialog_new();
   gtk_window_set_modal(GTK_WINDOW(d), TRUE);
   gtk_window_set_transient_for(GTK_WINDOW(d), GTK_WINDOW(main_win));
