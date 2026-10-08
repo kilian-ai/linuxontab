@@ -929,11 +929,11 @@
       "status": "available"
     },
     "neomutt": {
-      "version": "20260616-r1",
+      "version": "20260616-r2",
       "description": "NeoMutt mail client (IMAP, POP, SMTP over TLS)",
-      "url": "https://linuxontab.com/packages/neomutt-20260616-r1.tar.gz",
-      "size": 1643517,
-      "sha256": "e51dd1301a74ad7c88699dd8a2048c5afb6f1cc02356801137d7190e5bf98d23",
+      "url": "https://linuxontab.com/packages/neomutt-20260616-r2.tar.gz",
+      "size": 1643529,
+      "sha256": "8d73205703367c696eb3bfe0f35de9aba4b88c3c738bebd3aeff4beacf23f138",
       "bins": [
         "neomutt",
         "neomutt-setup"
@@ -942,11 +942,11 @@
       "status": "available"
     },
     "sylpheed": {
-      "version": "3.7.0-r1",
+      "version": "3.7.0-r2",
       "description": "Sylpheed: lightweight graphical mail client (GTK 2) for the xtiny desktop",
-      "url": "https://linuxontab.com/packages/sylpheed-3.7.0-r1.tar.gz",
-      "size": 5376515,
-      "sha256": "53b74cbbc3716480cbeede493c0a8bc80c0aea8eb6e99349f528aae3f3168706",
+      "url": "https://linuxontab.com/packages/sylpheed-3.7.0-r2.tar.gz",
+      "size": 5376547,
+      "sha256": "bf9d7d6df3fee088398f0ec1200019b1acbd6e100e32f336bcf341caf4614e1f",
       "bins": [
         "sylpheed"
       ],
