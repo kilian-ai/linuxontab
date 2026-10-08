@@ -139,6 +139,7 @@
   #ssh-panel code { flex:1; background:#14181d; border:1px solid #2a2f36; border-radius:4px; padding:5px 7px; font-size:12px; word-break:break-all; color:#e6edf3; }
   #ssh-panel .warn { color:#f0b429; font-size:11px; margin-top:8px; }
   #ssh-panel .err { color:#f87171; }
+  #ssh-panel textarea { width:100%; box-sizing:border-box; min-height:52px; resize:vertical; background:#14181d; color:#e6edf3; border:1px solid #2a2f36; border-radius:4px; padding:5px 7px; font:11px ui-monospace,monospace; }
   #tunnels-hdr { display:flex; gap:8px; align-items:center; padding:6px 10px; background:#161a1f; border-bottom:1px solid #2a2f36; font-size:12px; }
   #tunnels-hdr button { background:#222830; color:#ddd; border:1px solid #3a424d; border-radius:4px; padding:3px 10px; font:inherit; cursor:pointer; }
   #tunnels-hdr button:hover:not(:disabled) { background:#2d343d; }
@@ -268,6 +269,8 @@
     <div class="row"><b>SSH into this tab</b><button id="ssh-close" style="margin-left:auto">close</button></div>
     <div id="ssh-off">
       <div class="hint">Lets ssh/sftp on your computer log in to this tab as root through the LinuxOnTab relay. Off until you turn it on; a fresh random password is set each time.</div>
+      <div class="hint" style="margin-top:6px">Your ssh-ed25519 public key (optional, one per line) to log in without the password:</div>
+      <textarea id="ssh-keys" spellcheck="false" placeholder="ssh-ed25519 AAAA… you@laptop"></textarea>
       <div class="row"><button id="ssh-enable">enable SSH access</button></div>
     </div>
     <div id="ssh-on" hidden>
@@ -277,6 +280,7 @@
       <div class="row"><code id="ssh-ws-cmd"></code><button data-copy="ssh-ws-cmd">copy</button></div>
       <div class="row">password <code id="ssh-pw"></code><button data-copy="ssh-pw">copy</button></div>
       <div class="row">host key <code id="ssh-fp"></code></div>
+      <div class="row" id="ssh-keyrow" hidden>key login <code id="ssh-keyinfo"></code></div>
       <div class="hint">On the first connection ssh shows this fingerprint: answer yes only if it matches. Every tab gets its own key.</div>
       <div class="row"><button id="ssh-disable">stop SSH access</button></div>
       <div class="warn">Anyone with this command and password can log in to this tab as root. Stop when you are done; closing the tab also ends it.</div>
@@ -4937,6 +4941,31 @@ $('tn-run-btn').onclick = () => {
       fp,
     };
   }
+  // Pasted public keys: one OpenSSH line each. Anything else is rejected
+  // before it gets near the guest shell (and the keys travel base64-encoded).
+  // The guest's OpenSSH is built without OpenSSL: ssh-ed25519 only (RSA,
+  // ECDSA and FIDO sk- keys would be stored and then silently refused).
+  const KEY_TYPES = /^ssh-ed25519$/;
+  const OTHER_TYPES = /^(ssh-rsa|ssh-dss|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)$/;
+  function parseAuthorizedKeys(text) {
+    const keys = [], bad = [], unsupported = [];
+    for (const raw of String(text || '').split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith('#')) continue;
+      const [type, b64, ...rest] = line.split(/\s+/);
+      let ok = KEY_TYPES.test(type) && /^[A-Za-z0-9+/]+={0,2}$/.test(b64 || '');
+      if (ok) {
+        // The base64 blob starts with the key type again: catches pasted
+        // private keys, truncated lines and mismatched types.
+        try { const bin = atob(b64); const n = (bin.charCodeAt(0) << 24 | bin.charCodeAt(1) << 16 | bin.charCodeAt(2) << 8 | bin.charCodeAt(3)) >>> 0; ok = bin.slice(4, 4 + n) === type; } catch (_) { ok = false; }
+      }
+      if (ok) keys.push([type, b64, rest.join(' ').replace(/[^\w@.+:-]+/g, ' ').trim()].filter(Boolean).join(' '));
+      else if (OTHER_TYPES.test(type)) unsupported.push(type);
+      else bad.push(line.slice(0, 24) + (line.length > 24 ? '…' : ''));
+    }
+    return { keys, bad, unsupported };
+  }
+  try { $('ssh-keys').value = localStorage.getItem('lot-ssh-pubkeys') || ''; } catch (_) {}
   // Is an SSH server answering on guest port 22? (banner starts with "SSH-")
   function probeSshd(timeoutMs = 8000) {
     return new Promise((resolve) => {
@@ -4992,6 +5021,10 @@ $('tn-run-btn').onclick = () => {
     if (window.__lotSshActive && cur.active && cur.port === 22 && $('ssh-pw').textContent) {
       show(true); return;                   // already on: keep the session and password
     }
+    const ak = parseAuthorizedKeys($('ssh-keys').value);
+    if (ak.bad.length) { status('Not an OpenSSH public key: ' + ak.bad.join(', ') + ' (paste the .pub file, e.g. ~/.ssh/id_ed25519.pub)', 'err'); return; }
+    if (ak.unsupported.length) { status('This tab\'s OpenSSH only accepts ssh-ed25519 keys, not ' + [...new Set(ak.unsupported)].join(', ') + '. Make one with: ssh-keygen -t ed25519', 'err'); return; }
+    try { localStorage.setItem('lot-ssh-pubkeys', ak.keys.join('\n')); } catch (_) {}
     busy = true;
     const btn = $('ssh-enable'); btn.disabled = true;
     try {
@@ -5015,13 +5048,25 @@ $('tn-run-btn').onclick = () => {
         guestSend(` cat > /tmp/.lot-hostkey <<'EOF'\n${hk.priv}EOF`);
         await new Promise((r) => setTimeout(r, 1500));
       }
+      if (ak.keys.length) {
+        // base64 in short lines: long RSA keys survive the terminal and no
+        // key text is ever parsed by the shell.
+        const b = btoa(ak.keys.join('\n') + '\n').match(/.{1,64}/g).join('\n');
+        guestSend(` cat > /tmp/.lot-ak.b64 <<'EOF'\n${b}\nEOF`);
+        await new Promise((r) => setTimeout(r, 1500));
+      }
       // sshd's listener hands its startup keys to every session, so it has to
       // restart for the new key; SIGHUP would be cleaner but this build's
       // handler sits at wasm table index 1, which the kernel reads as SIG_IGN.
       // On SIGTERM rc's loop serves one connection with sshd-session (which
       // reads the key files itself) and then restarts the daemon.
       const keyCmd = hk ? ` && chmod 600 /tmp/.lot-hostkey && mv /tmp/.lot-hostkey /etc/ssh/ssh_host_ed25519_key && echo '${hk.pub}' > /etc/ssh/ssh_host_ed25519_key.pub && (kill $(cat /run/sshd.pid 2>/dev/null) 2>/dev/null; true)` : '';
-      const ok = await guestRun(`sed -i "s#^root:[^:]*:#root:$(cryptpw -m des '${pw}' '${salt}'):#" /etc/shadow${keyCmd}`);
+      // authorized_keys: sshd's StrictModes wants root's home and ~/.ssh owned
+      // by root (the image carries the builder's uid); keep earlier keys,
+      // drop duplicates.
+      const akf = '/root/.ssh/authorized_keys';
+      const akCmd = ak.keys.length ? ` && mkdir -p /root/.ssh && chown root:root /root /root/.ssh && chmod 700 /root/.ssh && touch ${akf} && base64 -d /tmp/.lot-ak.b64 >> ${akf} && awk '!s[$0]++' ${akf} > /tmp/.lot-ak && mv /tmp/.lot-ak ${akf} && chown root:root ${akf} && chmod 600 ${akf} && rm -f /tmp/.lot-ak.b64` : '';
+      const ok = await guestRun(`sed -i "s#^root:[^:]*:#root:$(cryptpw -m des '${pw}' '${salt}'):#" /etc/shadow${akCmd}${keyCmd}`);
       if (!ok) { status('Could not set the password: is the guest shell at a prompt? Try again from an idle shell.', 'err'); return; }
       if (hk) {
         // Use up rc's one-connection fallback, then wait for the daemon.
@@ -5041,13 +5086,18 @@ $('tn-run-btn').onclick = () => {
       // Public ports are reused by other tabs: key the known_hosts entry to
       // this tab's host key instead of host:port, so ssh never mixes them up.
       const alias = hk ? ` -o HostKeyAlias=linuxontab-${hk.fp.slice(7).replace(/[^A-Za-z0-9]/g, '').slice(0, 10)}` : '';
-      $('ssh-cmd').textContent = `ssh -p ${pub.publicPort}${alias} -o PubkeyAuthentication=no root@${pub.host}`;
+      // With a pasted key, let ssh offer it; otherwise skip agent keys so a
+      // full agent can't hit MaxAuthTries before the password prompt.
+      const noPk = ak.keys.length ? '' : ' -o PubkeyAuthentication=no';
+      $('ssh-cmd').textContent = `ssh -p ${pub.publicPort}${alias}${noPk} root@${pub.host}`;
       $('sftp-cmd').textContent = `sftp -P ${pub.publicPort}${alias} root@${pub.host}`;
       $('ssh-fp').textContent = hk ? hk.fp : '(the image\'s shared key: this browser has no WebCrypto Ed25519)';
       const t = window.getTunnelInfo();
       const wsUrl = `${String(t.relay).replace(/^http/, 'ws')}/port/client?code=${t.code}&port=22`;
-      $('ssh-ws-cmd').textContent = `ssh -o ProxyCommand="websocat --binary -E '${wsUrl}'"${alias} -o PubkeyAuthentication=no root@linuxontab`;
+      $('ssh-ws-cmd').textContent = `ssh -o ProxyCommand="websocat --binary -E '${wsUrl}'"${alias}${noPk} root@linuxontab`;
       $('ssh-pw').textContent = pw;
+      $('ssh-keyrow').hidden = !ak.keys.length;
+      $('ssh-keyinfo').textContent = ak.keys.length + (ak.keys.length === 1 ? ' key' : ' keys') + ' in authorized_keys (the password works too)';
       $('ssh-btn').textContent = 'ssh ●';
       show(true); status('');
     } finally { btn.disabled = false; busy = false; }
