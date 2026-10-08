@@ -5,7 +5,11 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.11.0"  # 1.11.0: Apps > Mail (NeoMutt); what GTK 2 needs (Sylpheed) — GC clip
+VERSION="1.11.1"  # 1.11.1: GTK 2 menus — X clients served every 2 ms instead of after a
+                  # 30 ms pacing sleep (a menu took ~10 s to paint), and an
+                  # owner_events grab reports crossings on the grabbing client's
+                  # own windows (submenus and item highlight)
+                  # 1.11.0: Apps > Mail (NeoMutt); what GTK 2 needs (Sylpheed) — GC clip
                   # rectangles, motion before the press, QueryPointer's child, dialogs
                   # kept above their parent (WM_TRANSIENT_FOR), 24 properties a window
                   # 1.10.0: mouse wheel (X buttons 4-7: NetSurf, xterm, GTK scroll);
