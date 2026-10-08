@@ -177,6 +177,41 @@ Debugging aids that found them:
   (lean image, `memory access out of bounds` in the console): boot
   `?disk=full` for these tests.
 
+## Translating hot x86 blocks to wasm (wasmjit, #14)
+
+Blink on wasm32 is a pure interpreter (its JIT emits native code). `wasmjit.c`
+(+ `blink-wasmjit.patch`, built in with `WASMJIT=1 sh build.sh`; opt-in
+while it settles) is a call-threaded backend: a block start reached
+`BLINK_WASMJIT_HOT` times (default 1024) is recorded while it runs, then
+emitted as one wasm function that sets `ip`/`oplen`, calls each op's handler
+through Blink's own function table, commits stashed writes and returns to the
+interpreter as soon as `ip` leaves the straight line. The runtime compiles it
+via `syscall(10001)` (`lot_wasm_load`, shell/linux-dist-7.1/src/kernel/
+worker.ts) and the returned table slot is the C function pointer. Blocks end
+at branches, before syscall-class ops and at page boundaries; a block that
+jumps back to its own start loops inside wasm while `m->attention` is clear.
+Per thread (each thread is its own wasm instance and table); only
+executable, non-writable pages are translated, and munmap/mprotect bump a
+per-page generation that retires that page's blocks. `BLINK_WASMJIT=0`
+turns it off at run time, `BLINK_WASMJIT_STATS=1` prints counters at exit.
+
+Measured in the guest (same binaries, old vs new Blink):
+
+| workload | interpreter | wasmjit |
+|---|---|---|
+| primes < 200000 (spikes/x86-blink/bench.c) | 1.87 s | 1.23 s |
+| hashing + qsort + snprintf (mix.c) | 2.99 s | 1.83 s |
+| Node 24 `--jitless`, small JS workload | 4.11 s | 2.54 s |
+| Node 24 Sparkplug (default), same | 3.76 s | 2.29 s |
+| nodetest.js (11/11), start-up bound | 3.60 s | 3.34 s (HOT 2048) |
+
+Correctness: same outputs, `sha256sum` matches native, threads, fork+threads,
+faulttest 7/7, sigchld, nodetest 11/11. A module costs ~30-40 us to
+compile, which is why the threshold is high: at HOT=32 start-up-bound runs
+got slower (nodetest 4.27 s). Next: inline the common ops (register ALU,
+mov, lea, jcc) instead of calling their handlers, chain blocks, batch
+several blocks per module.
+
 ## Open
 
 - **Run time is erratic.** Five runs finished in ~41 s (13:05-13:10 local,
