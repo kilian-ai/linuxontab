@@ -11,6 +11,8 @@
  Arch:    wasm32 · Userland: BusyBox + musl libc
  Docs:    https://linuxontab.com/
  Bugs:    https://github.com/kilian-ai/linuxontab/issues
+ Install: apk browse   pick from ~75 WebAssembly packages (or apk search <word>,
+          apk add <pkg>; on the X desktop: Apps > Install Software)
 
  ── Now working (all compiled to wasm32, running natively) ──────────────
    Terminal   tmux (splits/panes) · mc (F10 to quit) · nano · lotfm

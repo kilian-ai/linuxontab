@@ -298,8 +298,9 @@ cat > "$STAGE/etc/motd" << 'EOF'
   This tab booted from a few MB. Software installs itself on first use:
       python3            # downloads + installs python, then runs it
       nano, jq, tmux ... # same — every package is one first-run away
-  Or manage packages explicitly:
-      apk list           # what's available
+  Or browse and install explicitly:
+      apk browse         # pick from the list (X desktop: Apps > Install Software)
+      apk search <word>  # find a package
       apk add <pkg>      # install now
   Web servers:  nginx-demo (:8080) · httpd-demo (:8081)  → top bar: web view
   Media:        ffmpeg / ffprobe 7.0 (installs on first use, ~15 MB)

@@ -5,7 +5,8 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.11.2"  # 1.11.2: Apps > Sylpheed (GTK 2 mail client package)
+VERSION="1.11.3"  # 1.11.3: Install Software (apk browse) in Apps + taskbar (#13)
+                  # 1.11.2: Apps > Sylpheed (GTK 2 mail client package)
                   # 1.11.1: GTK 2 menus — X clients served every 2 ms instead of after a
                   # 30 ms pacing sleep (a menu took ~10 s to paint), and an
                   # owner_events grab reports crossings on the grabbing client's

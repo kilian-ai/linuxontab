@@ -2577,6 +2577,9 @@ typedef struct {
 
 static const App BUILTIN_APPS[] = {
     { "xterm",   "Terminal",       "A shell in a window",          "xterm -fn fixed -e /bin/sh", "xterm",    0, 0x3B4252, 1, 0 },
+    /* apk's numbered picker (search, install by number or name) in a
+     * terminal; apk is in every image, so it is always "installed" (#13) */
+    { "software","Install Software", "Browse and install packages", "apk browse",               "",         1, 0x2E7D32, 1, 0 },
     { "netsurf", "Browser",        "NetSurf web browser",          "netsurf",                    "netsurf",  0, 0x2F6FD0, 1, 0 },
     /* No package: lives on the x86 Chromium disk (console "chromium" row,
      * ?xdisk=), so it shows only while that disk is mounted at /opt/x86. */

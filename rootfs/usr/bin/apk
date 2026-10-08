@@ -210,13 +210,8 @@ cmd_update() {
     fi
 }
 
-cmd_list() {
-    local filter="$1" _tmp _pkg _ver _desc _inst _l
-    [ -f "$APK_INDEX" ] || { _info "Index not found — run: apk update"; return 1; }
-    echo "Available packages:"
-    echo "-------------------"
-    _tmp="/tmp/apk-list-$$"
-    # awk extracts pkg|ver|desc lines; pure-shell loop handles install status
+# One "pkg|version|description" line per package in the index.
+_index_rows() {
     awk '
         /"packages": \{/ { in_pkgs=1; next }
         !in_pkgs { next }
@@ -228,12 +223,26 @@ cmd_list() {
             s=$0; sub(/.*"version": "/, "", s); sub(/".*/, "", s); ver=s
         }
         pkg && /"description": "/ {
-            s=$0; sub(/.*"description": "/, "", s); sub(/".*/, "", s); desc=s
+            s=$0; sub(/.*"description": "/, "", s); sub(/"[^"]*$/, "", s)
+            # JSON escapes: dashes/quotes the index writes as \uXXXX, \"
+            gsub(/\\u201[34]/, "-", s); gsub(/\\u201[89]/, "\047", s)
+            gsub(/\\u00b7/, "-", s); gsub(/\\"/, "\"", s); gsub(/\\u[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]/, "?", s)
+            gsub(/\|/, "/", s); desc=s
         }
         pkg && /^[[:space:]]*\}/ && ver != "" {
             print pkg "|" ver "|" desc; pkg=""; ver=""; desc=""
         }
-    ' "$APK_INDEX" > "$_tmp"
+    ' "$APK_INDEX"
+}
+
+cmd_list() {
+    local filter="$1" _tmp _pkg _ver _desc _inst _l
+    [ -f "$APK_INDEX" ] || { _info "Index not found — run: apk update"; return 1; }
+    echo "Available packages:"
+    echo "-------------------"
+    _tmp="/tmp/apk-list-$$"
+    # awk extracts pkg|ver|desc lines; pure-shell loop handles install status
+    _index_rows > "$_tmp"
     while read -r _l; do
         _pkg="${_l%%|*}"
         _ver="${_l#*|}"; _ver="${_ver%%|*}"
@@ -453,6 +462,62 @@ cmd_search() {
     cmd_list "$1"
 }
 
+# Interactive browser: a numbered list (* = installed); a number or a
+# package name installs it, any other word narrows the list. xtiny's
+# Apps > Install Software runs this in a terminal.
+cmd_browse() {
+    local filter="" _all="/tmp/apk-browse-$$" _shown="/tmp/apk-browse-s-$$"
+    local _sel="/tmp/apk-browse-n-$$" _ans _name _l _pkg _ver _desc _i _mark _total
+    [ -f "$APK_INDEX" ] || cmd_update > /dev/null 2>&1
+    [ -f "$APK_INDEX" ] || _err "Package index unavailable — check the network, then: apk update"
+    while true; do
+        _index_rows > "$_all"
+        if [ -n "$filter" ]; then grep -i -- "$filter" "$_all" > "$_shown"; else cp "$_all" "$_shown"; fi
+        wc -l < "$_all" | tr -d ' ' > "$_sel"; read -r _total < "$_sel"
+        echo
+        if [ -n "$filter" ]; then
+            echo " LinuxOnTab software matching '$filter'   (* = installed)"
+        else
+            echo " LinuxOnTab software: $_total packages, all compiled to WebAssembly   (* = installed)"
+        fi
+        echo
+        _i=0
+        while read -r _l; do
+            _i=$((_i + 1))
+            _pkg="${_l%%|*}"
+            _desc="${_l##*|}"
+            _mark=" "
+            [ -f "$APK_DB/installed/$_pkg" ] && _mark="*"
+            printf " %3d %s %-15.15s %.54s\n" "$_i" "$_mark" "$_pkg" "$_desc"
+        done < "$_shown"
+        [ "$_i" -gt 0 ] || echo "   nothing matches '$filter'"
+        echo
+        printf " Number or name to install, a word to search, Enter = all, q = quit: "
+        read -r _ans || break
+        [ "$_ans" = q ] && break
+        [ "$_ans" = Q ] && break
+        if [ -z "$_ans" ]; then filter=""; continue; fi
+        : > "$_sel"
+        if echo "$_ans" | grep -qx '[0-9][0-9]*'; then
+            awk -F'|' -v n="$_ans" 'NR == n { print $1 }' "$_shown" > "$_sel"
+        else
+            awk -F'|' -v n="$_ans" '$1 == n { print $1 }' "$_all" > "$_sel"
+        fi
+        _name=""
+        read -r _name < "$_sel"
+        if [ -n "$_name" ]; then
+            echo
+            /usr/bin/apk add "$_name"
+            echo
+            printf " Press Enter to go back to the list: "
+            read -r _ans
+        else
+            filter="$_ans"
+        fi
+    done
+    rm -f "$_all" "$_shown" "$_sel"
+}
+
 # ── Auto-install stubs (lean boot) ──────────────────────────────────────────
 # The lean image ships a tiny stub script at every package binary path:
 #   #!/bin/sh
@@ -499,6 +564,7 @@ Commands:
   apk del <pkg>...     Remove package(s)
   apk list [filter]    List available packages
   apk search <query>   Search packages by name/description
+  apk browse           Pick packages to install from a numbered list
   apk info <pkg>       Show package details
   apk upgrade          Update index and upgrade all installed packages
   apk version          Show apk version
@@ -528,6 +594,7 @@ case "$CMD" in
     del|remove|delete) cmd_del "$@" ;;
     list)     cmd_list "$@" ;;
     search)   cmd_search "$1" ;;
+    browse)   cmd_browse ;;
     info)     cmd_info "$1" ;;
     upgrade)  cmd_upgrade ;;
     version|-v|--version) cmd_version ;;
