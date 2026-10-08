@@ -185,6 +185,11 @@ void rfb_set_cursor(rfb_server *s, int shape);
 int  rfb_audio_active(rfb_server *s);
 int  rfb_audio_send(rfb_server *s, const void *pcm, size_t bytes);
 void rfb_audio_flush(rfb_server *s);
+/* Ask the viewer to keep only `ms` of sound queued before playing it
+ * (0 = its default cushion, ~100 ms, which video players sync against).
+ * A LinuxOnTab extension: sent with each stream begin, and only to a viewer
+ * that advertised the "LOTA" pseudo-encoding; others never see it. */
+void rfb_audio_latency(rfb_server *s, unsigned ms);
 
 /* Serve forever (accept loop; one client at a time). Returns on fatal
  * socket errors only. */

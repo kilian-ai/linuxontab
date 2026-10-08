@@ -35,6 +35,7 @@
  * advertising standard Tight instead would invite x11vnc to send Tight's
  * zlib subencodings, which the viewer doesn't speak. */
 #define RFB_ENC_LJPG   0x4C4A5047          /* "LJPG" */
+#define RFB_ENC_LOTA   0x4C4F5441          /* "LOTA": audio latency hints */
 #define LJPG_QUALITY   70
 #define TILE           64                  /* classification / repair grid */
 #define REPAIR_MS      1000                /* lossy tile still this long → resend exact (must exceed a slow video frame interval, or the repair resends every frame raw) */
@@ -59,6 +60,8 @@ struct rfb_server {
     int eds_reason, eds_status;
     /* JPEG path (see send_update_ljpg) */
     int ljpg_ok;        /* viewer advertised RFB_ENC_LJPG */
+    int lota_ok;        /* viewer advertised RFB_ENC_LOTA (rfb_audio_latency) */
+    unsigned audio_lat_ms;  /* requested cushion, 0 = viewer default */
     int tcols, trows;   /* tile grid for the current fb size */
     uint8_t *tlossy;    /* per tile: last send was JPEG */
     uint64_t *tdmg;     /* per tile: when it was last damaged */
@@ -1076,12 +1079,28 @@ int rfb_audio_active(rfb_server *s) {
     return s && s->cfd >= 0 && s->audio_adv && s->audio_on && s->audio_fmt_ok;
 }
 
+/* QEMU audio server message with a private op 0x4C54 ("LT") + u32 ms. */
+static void send_audio_latency(rfb_server *s) {
+    if (!s->lota_ok) return;
+    unsigned ms = s->audio_lat_ms;
+    uint8_t m[8] = {255, 1, 0x4C, 0x54,
+                    (uint8_t)(ms >> 24), (uint8_t)(ms >> 16), (uint8_t)(ms >> 8), (uint8_t)ms};
+    write_all(s, m, 8);
+}
+
+void rfb_audio_latency(rfb_server *s, unsigned ms) {
+    if (!s) return;
+    s->audio_lat_ms = ms;
+    if (rfb_audio_active(s) && s->audio_stream) send_audio_latency(s);
+}
+
 int rfb_audio_send(rfb_server *s, const void *pcm, size_t bytes) {
     if (!rfb_audio_active(s) || !bytes) return 0;
     if (!s->audio_stream) {
         uint8_t begin[4] = {255, 1, 0, 1};
         write_all(s, begin, 4);
         s->audio_stream = 1;
+        if (s->audio_lat_ms) send_audio_latency(s);
     }
     uint8_t hdr[8] = {255, 1, 0, 2,
                       (uint8_t)(bytes >> 24), (uint8_t)(bytes >> 16),
@@ -1139,6 +1158,7 @@ static void serve_client(rfb_server *s) {
     s->eds_ok = 0;       /* re-announced if this viewer supports it */
     s->eds_pending = 0;
     s->ljpg_ok = 0;      /* ditto the JPEG path */
+    s->lota_ok = 0;
     s->audio_adv = s->audio_ack = s->audio_on = s->audio_fmt_ok = s->audio_stream = 0;
     free(s->tlossy); s->tlossy = NULL;
     if (s->cfg.on_connect) s->cfg.on_connect(s);
@@ -1167,6 +1187,7 @@ static void serve_client(rfb_server *s) {
                  * is understood here. Only for apps that can resize — and
                  * never revoked: the Bell nudge answer is an empty list. */
                 if (enc == (int32_t)RFB_ENC_LJPG) s->ljpg_ok = 1;
+                if (enc == (int32_t)RFB_ENC_LOTA) s->lota_ok = 1;
                 if (enc == -259 && s->cfg.audio && !s->audio_adv) {
                     s->audio_adv = 1;
                     s->audio_ack = 1;

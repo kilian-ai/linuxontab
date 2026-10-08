@@ -5,7 +5,10 @@
 # builds the full-image copy.
 
 NAME="xtiny"
-VERSION="1.11.3"  # 1.11.3: Install Software (apk browse) in Apps + taskbar (#13)
+VERSION="1.11.3"  # 1.11.3: Install Software (apk browse) in Apps + taskbar (#13);
+                  # low-latency sound: a source may send "LOTA" + u32 ms to ask
+                  # for a shorter viewer cushion (~30 ms instead of 100), and
+                  # lot-audio-probe measures the path end to end (#12)
                   # 1.11.2: Apps > Sylpheed (GTK 2 mail client package)
                   # 1.11.1: GTK 2 menus — X clients served every 2 ms instead of after a
                   # 30 ms pacing sleep (a menu took ~10 s to paint), and an
@@ -54,7 +57,12 @@ build() {
     $CC $CFLAGS -o "$SRC/xtiny" librfb.c xtiny.c sysroot/wasm_fork.c sysroot/wasm_dlmalloc.c \
         $LDFLAGS -Wl,-z,stack-size=8388608 $CRT1 -lc $BUILTINS \
         || { echo "xtiny build failed" >&2; exit 1; }
+    # latency probe for the sound path (#12): paced silence + clicks
+    $CC $CFLAGS -o "$SRC/lot-audio-probe" tools/lot-audio-probe.c \
+        $LDFLAGS $CRT1 -lc $BUILTINS \
+        || { echo "lot-audio-probe build failed" >&2; exit 1; }
     mkdir -p "$STAGE/usr/local/bin"
     install -m755 "$SRC/xtiny" "$STAGE/usr/local/bin/xtiny"
+    install -m755 "$SRC/lot-audio-probe" "$STAGE/usr/local/bin/lot-audio-probe"
     rmdir "$STAGE/bin" 2>/dev/null || true
 }

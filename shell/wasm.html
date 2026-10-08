@@ -5627,7 +5627,10 @@ class RfbClient {
       // -259 is QEMU's audio extension: a server that can send sound
       // confirms with a -259 pseudo-rect, and only then do we send the
       // audio client messages (255/1) an older server would choke on.
-      this._send(new Uint8Array([2, 0, 0, 6,
+      // LOTA (librfb) lets a sound source ask for a shorter playback
+      // cushion (op 0x4C54 in the audio stream, see xAudioLatency).
+      this._send(new Uint8Array([2, 0, 0, 7,
+                                 0x4c, 0x4f, 0x54, 0x41,     // "LOTA" audio latency hints
                                  0x4c, 0x4a, 0x50, 0x47,     // "LJPG"
                                  0, 0, 0, 2,                 // RRE
                                  0, 0, 0, 0,                 // Raw
@@ -5690,6 +5693,10 @@ class RfbClient {
           xAudioPush(b.subarray(8, 8 + n));
           this._stats.audio += n;
           this._consume(8 + n);
+        } else if (op === 0x4C54) { // LOTA: u32 ms of cushion wanted (0 = default)
+          if (b.length < 8) return false;
+          xAudioLatency(this._u32(4));
+          this._consume(8);
         } else {                   // 0 = stream end (drop the queue), 1 = begin
           if (op === 0) xAudioStop();
           this._consume(4);
@@ -5965,9 +5972,12 @@ class RfbClient {
 // Browsers start an AudioContext only from a user gesture, so it is created
 // or resumed on the connect click and on any click or key in the X view.
 const X_AUDIO_RATE = 48000;
-const X_AUDIO_JITTER = 0.10;   // seconds of cushion after an underrun
+const X_AUDIO_JITTER = 0.10;   // default cushion (s): what lotplay's A/V sync expects
+// A source can ask for less (LOTA header → op 0x4C54, #12): games and synths
+// want ~30 ms. The cushion then grows 10 ms per underrun and drifts back
+// toward the request while playback runs clean.
 const xAudio = { ctx: null, gain: null, next: 0, sources: [], muted: false,
-                 underruns: 0, depth: 0 };
+                 underruns: 0, depth: 0, req: 0, cushion: X_AUDIO_JITTER };
 try { xAudio.muted = localStorage.getItem('lot.xsound') === 'off'; } catch (_) {}
 window.__xAudio = xAudio;   // debug: ctx state, underruns
 
@@ -5998,11 +6008,15 @@ function xAudioPush(bytes) {
     r[i] = dv.getInt16(i * 4 + 2, true) / 32768;
   }
   const now = ctx.currentTime;
+  const T = xAudio.cushion;
   let skip = 0;                             // frames to drop from this chunk's start
-  if (xAudio.next < now + 0.02) {           // underrun (or first chunk)
-    if (xAudio.next) xAudio.underruns++;
-    xAudio.next = now + X_AUDIO_JITTER;
-    xAudio.depth = X_AUDIO_JITTER;
+  if (xAudio.next < now + Math.min(0.02, T * 0.25)) {   // underrun (or first chunk)
+    if (xAudio.next) {
+      xAudio.underruns++;
+      if (xAudio.req) xAudio.cushion = Math.min(Math.max(0.15, xAudio.req), xAudio.cushion + 0.01);
+    }
+    xAudio.next = now + xAudio.cushion;
+    xAudio.depth = xAudio.cushion;
   } else {
     // Steer the queue depth seen at each arrival toward X_AUDIO_JITTER.
     // The guest sends audio exactly that far ahead of its time (lotplay
@@ -6011,17 +6025,21 @@ function xAudioPush(bytes) {
     // left audio up to ~180 ms late, depending on that chunk's luck.
     const q = xAudio.next - now;
     xAudio.depth = xAudio.depth * 0.9 + q * 0.1;
-    const err = xAudio.depth - X_AUDIO_JITTER;
-    if (err > 0.03) {                       // too deep: drop a little
-      skip = Math.min(frames - 1, Math.round(Math.min(err, 0.02) * X_AUDIO_RATE));
+    if (xAudio.req && T > xAudio.req)       // clean run: drift back, 5 ms per second
+      xAudio.cushion = Math.max(xAudio.req, T - 0.005 * frames / X_AUDIO_RATE);
+    const err = xAudio.depth - T;
+    const tol = Math.max(0.004, T * 0.3), step = Math.max(0.004, Math.min(0.02, T * 0.2));
+    if (err > tol) {                        // too deep: drop a little
+      skip = Math.min(frames - 1, Math.round(Math.min(err, step) * X_AUDIO_RATE));
       xAudio.depth -= skip / X_AUDIO_RATE;
-    } else if (err < -0.03) {               // too shallow: leave a short gap
-      const gap = Math.min(-err, 0.02);
+    } else if (err < -tol) {                // too shallow: leave a short gap
+      const gap = Math.min(-err, step);
       xAudio.next += gap;
       xAudio.depth += gap;
     }
   }
   if (xAudio.next > now + 1.0) return;     // runaway backlog: drop
+  if (window.__xAudioProbe) xAudioProbe(l, skip, xAudio.next);
   const src = ctx.createBufferSource();
   src.buffer = buf;
   src.connect(xAudio.gain);
@@ -6034,11 +6052,33 @@ function xAudioPush(bytes) {
   };
 }
 
+// Latency probe (tools/lot-audio-probe, #12): with window.__xAudioProbe set
+// to an array, push the wall-clock time each click (first loud sample after
+// silence) is scheduled to leave the speaker, output latency included.
+function xAudioProbe(ch, skip, at) {
+  const ctx = xAudio.ctx;
+  const out = (ctx.outputLatency || 0) + (ctx.baseLatency || 0);
+  for (let i = skip; i < ch.length; i++) {
+    const loud = Math.abs(ch[i]) > 0.5;
+    if (loud && !xAudio.probeLoud)
+      window.__xAudioProbe.push(Date.now() + (at + (i - skip) / X_AUDIO_RATE - ctx.currentTime + out) * 1000);
+    xAudio.probeLoud = loud;
+  }
+}
+
 // Stream end (pause, seek, source closed): drop everything still queued.
 function xAudioStop() {
   for (const src of xAudio.sources) { try { src.stop(); } catch (_) {} }
   xAudio.sources = [];
   xAudio.next = 0;
+  xAudioLatency(0);
+}
+
+// The source's requested cushion in ms (0 = default). Takes effect from the
+// next chunk; a shorter queue drains by the usual drop steering.
+function xAudioLatency(ms) {
+  xAudio.req = ms ? Math.min(0.5, Math.max(0.01, ms / 1000)) : 0;
+  xAudio.cushion = xAudio.req || X_AUDIO_JITTER;
 }
 
 function xSoundButton() {

@@ -151,6 +151,8 @@ static struct {
     int au_lfd, au_fd;          /* sound socket /tmp/.lot-audio (see audio_poll) */
     uint8_t au_part[4];         /* a partial stereo frame carried to the next read */
     int au_npart;
+    int au_hdr;                 /* still looking for the optional LOTA header */
+    uint64_t au_hdr_t;          /* when this source connected */
     XClient cl[MAX_XCLIENTS];
     XWindow win[MAX_WINDOWS];
     XPixmap pix[MAX_PIXMAPS];
@@ -3204,13 +3206,20 @@ static int on_resize(rfb_server *s, int *w, int *h) {
  * sound plays wherever the X display is open. A newer connection replaces
  * the current one; a source closing its socket ends the stream, and the
  * viewer drops what it still has queued (that is how lotplay flushes on
- * pause and seek). Read even with no viewer, so a source never blocks. */
+ * pause and seek). Read even with no viewer, so a source never blocks.
+ *
+ * A source may start with an 8-byte header, "LOTA" + u32 big-endian ms: the
+ * playback cushion it wants (rfb_audio_latency). Interactive sources (games,
+ * synths) ask for ~30 ms; without a header the viewer keeps its default
+ * ~100 ms, which lotplay's A/V sync is built around (#12). */
 #define AUDIO_SOCK "/tmp/.lot-audio"
 
 static void audio_close(rfb_server *s) {
     if (X.au_fd >= 0) close(X.au_fd);
     X.au_fd = -1;
     X.au_npart = 0;
+    X.au_hdr = 0;
+    rfb_audio_latency(s, 0);
     rfb_audio_flush(s);
 }
 
@@ -3223,8 +3232,23 @@ static void audio_poll(rfb_server *s) {
         if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
         fcntl(fd, F_SETFD, FD_CLOEXEC);
         X.au_fd = fd;
+        X.au_hdr = 1;
+        X.au_hdr_t = rfb_now_ms();
     }
     if (X.au_fd < 0) return;
+    if (X.au_hdr) {
+        uint8_t h[8];
+        ssize_t r = recv(X.au_fd, h, sizeof h, MSG_PEEK | MSG_DONTWAIT);
+        if (r == 0) { audio_close(s); return; }
+        /* a header that is still arriving: wait for it, briefly */
+        int maybe = r < 0 || !memcmp(h, "LOTA", r < 4 ? (size_t)r : 4);
+        if (r < 8 && maybe && rfb_now_ms() - X.au_hdr_t < 100) return;
+        X.au_hdr = 0;
+        if (r == 8 && !memcmp(h, "LOTA", 4)) {
+            unsigned ms = (unsigned)h[4] << 24 | (unsigned)h[5] << 16 | (unsigned)h[6] << 8 | h[7];
+            if (read(X.au_fd, h, sizeof h) == 8) rfb_audio_latency(s, ms > 1000 ? 1000 : ms);
+        }
+    }
     uint8_t buf[16384 + 4];
     for (int rounds = 0; rounds < 8; rounds++) {
         memcpy(buf, X.au_part, (size_t)X.au_npart);
