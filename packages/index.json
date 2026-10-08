@@ -827,11 +827,11 @@
       "status": "available"
     },
     "xtiny": {
-      "version": "1.11.1",
+      "version": "1.11.2",
       "description": "Tiny X11 server + desktop on :5900 for real X clients (xterm, netsurf, wolf3d) with an Apps menu; open the X display panel",
-      "url": "https://linuxontab.com/packages/xtiny-1.11.1.tar.gz",
-      "size": 102537,
-      "sha256": "212011ff55885b72a42cd4f9695dfa112b82ddd024bf3043d964b4ddf02774c2",
+      "url": "https://linuxontab.com/packages/xtiny-1.11.2.tar.gz",
+      "size": 102563,
+      "sha256": "99872f9beeff46c0672f57e9f2af52c21ad7eb4f8a509d92d32a17921c21752d",
       "bins": [
         "xtiny"
       ],
@@ -949,6 +949,18 @@
       "bins": [
         "neomutt",
         "neomutt-setup"
+      ],
+      "depends": [],
+      "status": "available"
+    },
+    "sylpheed": {
+      "version": "3.7.0",
+      "description": "Sylpheed: lightweight graphical mail client (GTK 2) for the xtiny desktop",
+      "url": "https://linuxontab.com/packages/sylpheed-3.7.0.tar.gz",
+      "size": 5376482,
+      "sha256": "7b5c755de92f9a850cf823a5f65be21260e084b6a2ca8e8cb5178dbd221cff52",
+      "bins": [
+        "sylpheed"
       ],
       "depends": [],
       "status": "available"
