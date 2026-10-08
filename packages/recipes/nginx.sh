@@ -16,9 +16,9 @@
 # keeps it from picking auto/os/darwin off the host's uname.
 
 NAME="nginx"
-VERSION="1.26.2"
+VERSION="1.26.2-r1"   # r1: relinked on the binary128 long-double libc (printf %f, strtod)
 DESCRIPTION="nginx web server — serves /var/www/lot with nginx-demo (web view, port 8080)"
-SOURCE_URL="https://nginx.org/download/nginx-${VERSION}.tar.gz"
+SOURCE_URL="https://nginx.org/download/nginx-1.26.2.tar.gz"
 SOURCE_SHA256=""
 
 build() {

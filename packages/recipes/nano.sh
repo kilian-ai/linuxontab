@@ -3,7 +3,7 @@
 # Builds static ncurses-6.5 (wasm32) inline as a dependency, then builds nano.
 
 NAME="nano"
-VERSION="8.3"
+VERSION="8.3-r1"   # r1: relinked on the binary128 long-double libc (printf %f, strtod)
 DESCRIPTION="Small and friendly text editor"
 SOURCE_URL="https://ftp.gnu.org/gnu/nano/nano-8.3.tar.gz"
 SOURCE_SHA256=""  # filled after first download

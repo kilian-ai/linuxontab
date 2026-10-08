@@ -14,7 +14,7 @@
 # (xtiny ae9c1426 or later).
 
 NAME="xfe"
-VERSION="2.1.11"
+VERSION="2.1.11-r1"   # r1: relinked on the binary128 long-double libc (printf %f, strtod)
 DESCRIPTION="Xfe file manager (X File Explorer on FOX 1.6) for the xtiny desktop"
 SOURCE_URL="local:"
 DEPENDS="xtiny-apps"

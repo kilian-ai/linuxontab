@@ -27,11 +27,11 @@
       "depends": []
     },
     "curl": {
-      "version": "8.13.0-r1",
+      "version": "8.13.0-r2",
       "description": "Command-line tool for transferring data with URLs (HTTP and HTTPS)",
-      "url": "https://linuxontab.com/packages/curl-8.13.0-r1.tar.gz",
-      "size": 1172611,
-      "sha256": "9addb7390ae97cf42247a455b335913958c2bc348029a757c8fb3e5318bc2d98",
+      "url": "https://linuxontab.com/packages/curl-8.13.0-r2.tar.gz",
+      "size": 1169035,
+      "sha256": "5545e0e8535c7cbef7b7ca00002031c55b66de24fe62376f755189746ff6fcbc",
       "bins": [
         "curl"
       ],
@@ -51,11 +51,11 @@
       "status": "available"
     },
     "nano": {
-      "version": "8.3",
+      "version": "8.3-r1",
       "description": "Small and friendly text editor",
-      "url": "https://linuxontab.com/packages/nano-8.3.tar.gz",
-      "size": 208725,
-      "sha256": "3ee1d7610b550a5030ad23735ebd0441ed814ec1b13e2351628b3f9e98066362",
+      "url": "https://linuxontab.com/packages/nano-8.3-r1.tar.gz",
+      "size": 210151,
+      "sha256": "c46472d04fdd4a7aec4d33932074e49c85c4583c2ee98ddfcd353c6429f8a753",
       "bins": [
         "nano"
       ],
@@ -63,11 +63,11 @@
       "status": "available"
     },
     "lua": {
-      "version": "5.4.7",
+      "version": "5.4.7-r1",
       "description": "Lightweight embeddable scripting language",
-      "url": "https://linuxontab.com/packages/lua-5.4.7.tar.gz",
-      "size": 426522,
-      "sha256": "660c25b7fd077b24abb10afb85c30825098aaff3f83b37344563c1aaad9bb0e3",
+      "url": "https://linuxontab.com/packages/lua-5.4.7-r1.tar.gz",
+      "size": 149862,
+      "sha256": "c26db6af49c1f6b1504de8ec7abec5de2fc17ec71d6f4b7827b5772222c65f26",
       "bins": [
         "lua"
       ],
@@ -270,11 +270,11 @@
       "status": "available"
     },
     "xeyes": {
-      "version": "1.3.0",
+      "version": "1.3.0-r1",
       "description": "X11 eye-follow demo",
-      "url": "https://linuxontab.com/packages/xeyes-1.3.0.tar.gz",
-      "size": 376323,
-      "sha256": "190a3a6b477ceca223d965c91cb82285bd57f9b6d0d204b8123188a1a5b6f64a",
+      "url": "https://linuxontab.com/packages/xeyes-1.3.0-r1.tar.gz",
+      "size": 366140,
+      "sha256": "f4430aac00570cd156ec8ab4fbc9739bd3ba03cac47893b93520d19e909ec759",
       "bins": [
         "xeyes"
       ],
@@ -402,11 +402,11 @@
       "depends": []
     },
     "x11vnc": {
-      "version": "1.0.0",
+      "version": "1.0.0-r1",
       "description": "Minimal X11-to-VNC bridge (RAW RFB 3.8)",
-      "url": "https://linuxontab.com/packages/x11vnc-1.0.0.tar.gz",
-      "size": 87692,
-      "sha256": "a312c9b3de71fc0e6d74398ae5564e9ade67011e2402ffd69062b5c13778e799",
+      "url": "https://linuxontab.com/packages/x11vnc-1.0.0-r1.tar.gz",
+      "size": 88311,
+      "sha256": "68b8e17acb3350b56c4400dc468d2c6ca066395d05689fecac5198c58758ffc5",
       "bins": [
         "x11vnc"
       ],
@@ -560,11 +560,11 @@
       "depends": []
     },
     "mc": {
-      "version": "4.8.33",
+      "version": "4.8.33-r1",
       "description": "GNU Midnight Commander \u2014 visual file manager",
-      "url": "https://linuxontab.com/packages/mc-4.8.33.tar.gz",
-      "size": 1192196,
-      "sha256": "f9ee053b51fe81bd1e58fe1830db26740096e673d3b984a52548e9d5d7714ca7",
+      "url": "https://linuxontab.com/packages/mc-4.8.33-r1.tar.gz",
+      "size": 1206703,
+      "sha256": "004411243f1bcec0dac62ce0256f93f9ffca54c9e3ec623c6865665c2ca095c2",
       "bins": [
         "mc"
       ],
@@ -572,11 +572,11 @@
       "depends": []
     },
     "lotfm": {
-      "version": "1.0",
+      "version": "1.0-r1",
       "description": "Tiny two-pane file manager (ANSI/termios, no ncurses)",
-      "url": "https://linuxontab.com/packages/lotfm-1.0.tar.gz",
-      "size": 66014,
-      "sha256": "514eeb712c4fe5f2e6bfdd99e20b4de28b36c5be66a30046b79412eb9a4dac77",
+      "url": "https://linuxontab.com/packages/lotfm-1.0-r1.tar.gz",
+      "size": 27626,
+      "sha256": "e84f24ff02345d722c1d1b0f4c2556e6f8d5e2fb781fd4cfe34c9b316324ecad",
       "bins": [
         "lotfm"
       ],
@@ -596,11 +596,11 @@
       "status": "available"
     },
     "xterm": {
-      "version": "379-r2",
+      "version": "379-r3",
       "description": "X terminal emulator",
-      "url": "https://linuxontab.com/packages/xterm-379-r2.tar.gz",
-      "size": 762963,
-      "sha256": "ce33652fc932e45fae507c6d192b5610e5b99a41e2bd6369e95beedd4b305865",
+      "url": "https://linuxontab.com/packages/xterm-379-r3.tar.gz",
+      "size": 762988,
+      "sha256": "66c8dc19ffacb5e9d3b80dcdc57b4eb762f59f5b98523007837d1a3366eea18b",
       "bins": [
         "xterm"
       ],
@@ -608,11 +608,11 @@
       "status": "available"
     },
     "redis": {
-      "version": "7.2.5-r2",
+      "version": "7.2.5-r3",
       "description": "Redis key/value database server + CLI",
-      "url": "https://linuxontab.com/packages/redis-7.2.5-r2.tar.gz",
-      "size": 2153687,
-      "sha256": "ece4a0740e43263a2fef60afba860adb55b62f6b00e1d2f3df54fd3a319c9811",
+      "url": "https://linuxontab.com/packages/redis-7.2.5-r3.tar.gz",
+      "size": 2153740,
+      "sha256": "d1425f18bce4c3f1ac3974465111a82bcffecf3d4a6dd142a7b3be0f74f19375",
       "bins": [
         "redis-server",
         "redis-cli"
@@ -621,11 +621,11 @@
       "status": "available"
     },
     "htop": {
-      "version": "3.3.0",
+      "version": "3.3.0-r1",
       "description": "Interactive colorful process viewer (reads the wasm kernel's /proc)",
-      "url": "https://linuxontab.com/packages/htop-3.3.0.tar.gz",
-      "size": 237771,
-      "sha256": "26fa6cdaa91dff8d0b140b4c804a64dc97d10aa669ab3fc9d575c34eaeec4984",
+      "url": "https://linuxontab.com/packages/htop-3.3.0-r1.tar.gz",
+      "size": 237745,
+      "sha256": "eeb153523ba7f22e888578925bd44fa74fcbc9f1afef47962aa91ea971de2f7d",
       "bins": [
         "htop"
       ],
@@ -633,11 +633,11 @@
       "status": "available"
     },
     "vitetris": {
-      "version": "0.59.1",
+      "version": "0.59.1-r1",
       "description": "Terminal Tetris \u2014 colors, 30 block styles, high scores",
-      "url": "https://linuxontab.com/packages/vitetris-0.59.1.tar.gz",
-      "size": 79795,
-      "sha256": "d0095f140e0225397b5c58e9ba7a20ff5a792a8c18cf4e0ae9397ea3fa378cf6",
+      "url": "https://linuxontab.com/packages/vitetris-0.59.1-r1.tar.gz",
+      "size": 79738,
+      "sha256": "e3f0ac800a1b9c396e7704e89525efbe81a0f6cdbffded212002d6b166cb4d20",
       "bins": [
         "tetris"
       ],
@@ -645,11 +645,11 @@
       "status": "available"
     },
     "nginx": {
-      "version": "1.26.2",
+      "version": "1.26.2-r1",
       "description": "nginx web server \u2014 serves /var/www/lot with nginx-demo (web view, port 8080)",
-      "url": "https://linuxontab.com/packages/nginx-1.26.2.tar.gz",
-      "size": 422927,
-      "sha256": "49ac372f85595e2a3d3f89bc839be31178ac6769ceac2141fc23e009e8b00a0f",
+      "url": "https://linuxontab.com/packages/nginx-1.26.2-r1.tar.gz",
+      "size": 422811,
+      "sha256": "9bb6c03258720277b5db49a434d8f7574fa150425b58a1c2d9a3e800423efdd5",
       "bins": [
         "nginx",
         "nginx-demo"
@@ -658,11 +658,11 @@
       "status": "available"
     },
     "httpd": {
-      "version": "2.4.62",
+      "version": "2.4.62-r1",
       "description": "Apache httpd 2.4 web server \u2014 serves /var/www/lot with httpd-demo (web view, port 8081)",
-      "url": "https://linuxontab.com/packages/httpd-2.4.62.tar.gz",
-      "size": 585149,
-      "sha256": "7d96b017ae89818cfec0f59157a02125dfab206a61117253d0d9f86836e4e056",
+      "url": "https://linuxontab.com/packages/httpd-2.4.62-r1.tar.gz",
+      "size": 585202,
+      "sha256": "76bf04be1c531a1bc10d3dc1de25b195b52ce114d2a49e49fc7d2c0a95155dd2",
       "bins": [
         "httpd",
         "httpd-demo"
@@ -671,11 +671,11 @@
       "status": "available"
     },
     "ffmpeg": {
-      "version": "5.1.6-r1",
+      "version": "5.1.6-r2",
       "description": "ffmpeg + ffprobe \u2014 demux/remux/decode any format (no asm, single-threaded)",
-      "url": "https://linuxontab.com/packages/ffmpeg-5.1.6-r1.tar.gz",
-      "size": 15271903,
-      "sha256": "51b5d9da0c1a9f72998a912dcfc6f963832368263a8dd2bd42bcb262f493a83e",
+      "url": "https://linuxontab.com/packages/ffmpeg-5.1.6-r2.tar.gz",
+      "size": 15272100,
+      "sha256": "9e90f22dd529419ab727fb0c4217dbddf4529da04367b9303f2f08a14f4c5fce",
       "bins": [
         "ffmpeg",
         "ffprobe"
@@ -699,11 +699,11 @@
       "status": "available"
     },
     "ffmpeg7": {
-      "version": "7.0.2-r4",
+      "version": "7.0.2-r5",
       "description": "ffmpeg 7.0 + ffprobe 7.0 with pthreads \u2014 installs as ffmpeg7 / ffprobe7",
-      "url": "https://linuxontab.com/packages/ffmpeg7-7.0.2-r4.tar.gz",
-      "size": 16394077,
-      "sha256": "6927d10cd949ff1e9af5b9b66956ecd7c6bd1d655e65f070c06cd2fc12311bd6",
+      "url": "https://linuxontab.com/packages/ffmpeg7-7.0.2-r5.tar.gz",
+      "size": 16394179,
+      "sha256": "31b64b0dcfea90076a26b5d419f6cf47e5bfbefca149c7d6858559c8582e4b39",
       "bins": [
         "ffmpeg7",
         "ffprobe7"
@@ -791,11 +791,11 @@
       "status": "available"
     },
     "vnc-server": {
-      "version": "1.0.2",
+      "version": "1.0.2-r1",
       "description": "VNC demo: eyes that follow your mouse (open the X display panel)",
-      "url": "https://linuxontab.com/packages/vnc-server-1.0.2.tar.gz",
-      "size": 28741,
-      "sha256": "4a2c540359cd51ec9bbb1042d835623074393cb872c81937fc00a2a93592ff16",
+      "url": "https://linuxontab.com/packages/vnc-server-1.0.2-r1.tar.gz",
+      "size": 43902,
+      "sha256": "d54f681a4dd6f4c349941df66ce92859f418afd0fba08e30a6e11e2fa8a07316",
       "bins": [
         "vnc-server"
       ],
@@ -803,11 +803,11 @@
       "status": "available"
     },
     "vnc-snake": {
-      "version": "1.0.2",
+      "version": "1.0.2-r1",
       "description": "VNC demo: snake game on the X display (arrows/WASD, p pause, r restart)",
-      "url": "https://linuxontab.com/packages/vnc-snake-1.0.2.tar.gz",
-      "size": 29735,
-      "sha256": "3a90d385d581366b06abe3ef578c6fe4feda127c36676ccf44e8a2fb5c88bfea",
+      "url": "https://linuxontab.com/packages/vnc-snake-1.0.2-r1.tar.gz",
+      "size": 45359,
+      "sha256": "cc34e61d1283ddd94cbdbc02b55fd6e3e05d85378489ac3f04b3b3038e69971c",
       "bins": [
         "vnc-snake"
       ],
@@ -831,11 +831,11 @@
       "status": "available"
     },
     "wolf3d": {
-      "version": "1.4-20011028-r2",
+      "version": "1.4-20011028-r3",
       "description": "Wolfenstein 3D shareware (episode 1) \u2014 id's raycaster on the X server (run xtiny first)",
-      "url": "https://linuxontab.com/packages/wolf3d-1.4-20011028-r2.tar.gz",
-      "size": 779733,
-      "sha256": "39b81b5d015c96fc70a567447322ac45ef5cc9e0dda995cee93bf729656d4c43",
+      "url": "https://linuxontab.com/packages/wolf3d-1.4-20011028-r3.tar.gz",
+      "size": 779725,
+      "sha256": "f04a0a45d2f9917261aa9573bc03b0af47160036a68d8d5cf12ddb084123414c",
       "bins": [
         "wolf3d"
       ],
@@ -845,11 +845,11 @@
       "status": "available"
     },
     "netsurf": {
-      "version": "3.11-r3",
+      "version": "3.11-r4",
       "description": "NetSurf 3.11 web browser on the X desktop \u2014 HTML/CSS, HTTPS, PNG/JPEG/GIF/SVG, basic JavaScript (run xtiny first)",
-      "url": "https://linuxontab.com/packages/netsurf-3.11-r3.tar.gz",
-      "size": 4113778,
-      "sha256": "8344290cd217ca23ff24c37bb543b2b8502f0325d2dad280cc074120f1acd656",
+      "url": "https://linuxontab.com/packages/netsurf-3.11-r4.tar.gz",
+      "size": 4115462,
+      "sha256": "9e5c5801836dce922bd4edb79feb357e04e7565fff1812bc14e995350ac6b830",
       "bins": [
         "netsurf"
       ],
@@ -875,11 +875,11 @@
       "status": "available"
     },
     "zsh": {
-      "version": "5.9",
+      "version": "5.9-r1",
       "description": "Z shell 5.9 \u2014 also a POSIX sh for scripts busybox hush can't run (zsh --emulate sh)",
-      "url": "https://linuxontab.com/packages/zsh-5.9.tar.gz",
-      "size": 867535,
-      "sha256": "03c2066ae98fdf24f5f485909134c65e5468d21b68bcf2c74e5d95b3cf2b8ed2",
+      "url": "https://linuxontab.com/packages/zsh-5.9-r1.tar.gz",
+      "size": 850589,
+      "sha256": "4aeba302b27701a42c4d7e34b3e02d8b8f083f74ab08c02623e4ded80ac4d366",
       "bins": [
         "zsh"
       ],
@@ -887,11 +887,11 @@
       "status": "available"
     },
     "xtiny-apps": {
-      "version": "1.0.0",
+      "version": "1.0.0-r1",
       "description": "Text editor, calculator and date/time dialog for the xtiny desktop",
-      "url": "https://linuxontab.com/packages/xtiny-apps-1.0.0.tar.gz",
-      "size": 295242,
-      "sha256": "77770483b5234abe432203c8432cfd2cdf016d138808e2188a23f107e96f7027",
+      "url": "https://linuxontab.com/packages/xtiny-apps-1.0.0-r1.tar.gz",
+      "size": 295285,
+      "sha256": "91520b6004ca55f0a6455db5f0edc508a4856fd31d3544308b94973e2cc34016",
       "bins": [
         "lot-textedit",
         "lot-calc",
@@ -901,11 +901,11 @@
       "status": "available"
     },
     "lotplay": {
-      "version": "1.1.0",
+      "version": "1.1.0-r1",
       "description": "Video player for the X desktop (ffmpeg decode, with sound via xtiny) \u2014 Apps menu \u2192 Videos",
-      "url": "https://linuxontab.com/packages/lotplay-1.1.0.tar.gz",
-      "size": 2888051,
-      "sha256": "3987eb2d018a7a5ad8367bb5c91e3d6a09c86fa60862d8538677e2713948179d",
+      "url": "https://linuxontab.com/packages/lotplay-1.1.0-r1.tar.gz",
+      "size": 2888122,
+      "sha256": "f7a7671076193f1b847041eecbe689a5466392f3f675e5ab3d25c4bac90fdbe1",
       "bins": [
         "lotplay"
       ],
@@ -915,11 +915,11 @@
       "status": "available"
     },
     "xfe": {
-      "version": "2.1.11",
+      "version": "2.1.11-r1",
       "description": "Xfe file manager (X File Explorer on FOX 1.6) for the xtiny desktop",
-      "url": "https://linuxontab.com/packages/xfe-2.1.11.tar.gz",
-      "size": 3532086,
-      "sha256": "df6ab353b308bec55a5669005152f9be13bfcdf5ad7d86ce1610277e47675549",
+      "url": "https://linuxontab.com/packages/xfe-2.1.11-r1.tar.gz",
+      "size": 3534158,
+      "sha256": "67c5a33827c1f7bfb9cbf3e2685a0bba90e6d312f75d30739547e2c106e005c3",
       "bins": [
         "xfe"
       ],

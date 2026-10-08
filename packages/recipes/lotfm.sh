@@ -7,7 +7,7 @@
 # beyond musl. Source lives in-repo: packages/src/lotfm.c
 
 NAME="lotfm"
-VERSION="1.0"
+VERSION="1.0-r1"   # r1: relinked on the binary128 long-double libc (printf %f, strtod)
 DESCRIPTION="Tiny two-pane file manager (ANSI/termios, no ncurses)"
 SOURCE_URL="file:///Users/kilian/.ai/LinuxOnTab-kernel/packages/lotfm-src-1.0.tar.gz"
 SOURCE_SHA256=""

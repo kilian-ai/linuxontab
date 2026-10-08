@@ -20,9 +20,9 @@
 # Makefile rule is rewritten to build it with the host cc.
 
 NAME="httpd"
-VERSION="2.4.62"
+VERSION="2.4.62-r1"   # r1: relinked on the binary128 long-double libc (printf %f, strtod)
 DESCRIPTION="Apache httpd 2.4 web server — serves /var/www/lot with httpd-demo (web view, port 8081)"
-SOURCE_URL="https://archive.apache.org/dist/httpd/httpd-${VERSION}.tar.gz"
+SOURCE_URL="https://archive.apache.org/dist/httpd/httpd-2.4.62.tar.gz"
 SOURCE_SHA256=""
 
 build() {

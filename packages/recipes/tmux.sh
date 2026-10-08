@@ -7,9 +7,9 @@
 # the build is the first milestone; running is the real test.
 
 NAME="tmux"
-VERSION="3.5a"
+VERSION="3.5a-r1"   # r1: relinked on the binary128 long-double libc (printf %f, strtod)
 DESCRIPTION="Terminal multiplexer"
-SOURCE_URL="https://github.com/tmux/tmux/releases/download/${VERSION}/tmux-${VERSION}.tar.gz"
+SOURCE_URL="https://github.com/tmux/tmux/releases/download/3.5a/tmux-3.5a.tar.gz"
 SOURCE_SHA256=""
 
 NCURSES_VER="6.5"

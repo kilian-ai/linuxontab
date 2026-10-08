@@ -6,7 +6,7 @@
 # then generates src/src-conf.mk from it.
 
 NAME="vitetris"
-VERSION="0.59.1"
+VERSION="0.59.1-r1"   # r1: relinked on the binary128 long-double libc (printf %f, strtod)
 DESCRIPTION="Terminal Tetris — colors, 30 block styles, high scores"
 SOURCE_URL="https://github.com/vicgeralds/vitetris/archive/refs/tags/v0.59.1.tar.gz"
 SOURCE_SHA256=""

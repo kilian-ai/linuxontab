@@ -27,7 +27,8 @@
 
 NAME="ffmpeg7"
 FFMPEG_UPSTREAM="7.0.2"
-VERSION="${FFMPEG_UPSTREAM}-r4"   # r1: fixed-sysroot brk, heap no longer capped at ~60 MB
+VERSION="${FFMPEG_UPSTREAM}-r5"   # r5: relinked on the binary128 long-double libc (exact printf rounding)
+                  # r1: fixed-sysroot brk, heap no longer capped at ~60 MB
                                   # r2: locked dlmalloc (wasm_dlmalloc_mt), per-thread TLS
                                   # r3: same code, EXPERIMENTAL dropped (kernel futex fix)
                                   # r4: libc.a whose pthread_create zeroes TLS/TSD (017c113)

@@ -5,7 +5,7 @@
 # No libjpeg/libpng required — RAW encoding only.
 
 NAME="x11vnc"
-VERSION="1.0.0"
+VERSION="1.0.0-r1"   # r1: relinked on the binary128 long-double libc (printf %f, strtod)
 DESCRIPTION="Minimal X11-to-VNC bridge (RAW RFB 3.8)"
 # x11vnc captures an X display, so it needs the Xvfb server running.
 DEPENDS="xvfb"

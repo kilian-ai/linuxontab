@@ -13,7 +13,8 @@
 # python3 recipes: no asm, no threads/atomics, no engines) and reused.
 
 NAME="curl"
-VERSION="8.13.0-r1"   # r1: HTTPS (OpenSSL)
+VERSION="8.13.0-r2"   # r2: relinked on the binary128 long-double libc (exact printf rounding)
+                  # r1: HTTPS (OpenSSL)
 DESCRIPTION="Command-line tool for transferring data with URLs (HTTP and HTTPS)"
 SOURCE_URL="https://curl.se/download/curl-8.13.0.tar.gz"
 SOURCE_SHA256="c261a4db579b289a7501565497658bbd52d3138fdbaccf1490fa918129ab45bc"

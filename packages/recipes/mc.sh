@@ -29,7 +29,7 @@
 #     cloned children a real memory copy, same mechanism busybox hush uses.
 
 NAME="mc"
-VERSION="4.8.33"
+VERSION="4.8.33-r1"   # r1: relinked on the binary128 long-double libc (printf %f, strtod)
 DESCRIPTION="GNU Midnight Commander — visual file manager"
 # upstream ftp.midnight-commander.org has a broken TLS cert; Debian mirrors
 # the pristine upstream tarball

@@ -2,13 +2,13 @@
 # Recipe: xeyes — simple X11 eye-follow demo app
 
 NAME="xeyes"
-VERSION="1.3.0"
+VERSION="1.3.0-r1"   # r1: relinked on the binary128 long-double libc (printf %f, strtod)
 DESCRIPTION="X11 eye-follow demo"
 # Runtime deps resolved by the in-guest `apk`: xeyes needs an X server to draw
 # into (Xvfb) and a way to see it in the browser (x11vnc). Static binary, so
 # these are service deps, not shared libs.
 DEPENDS="xvfb x11vnc"
-SOURCE_URL="https://www.x.org/archive/individual/app/xeyes-${VERSION}.tar.gz"
+SOURCE_URL="https://www.x.org/archive/individual/app/xeyes-1.3.0.tar.gz"
 SOURCE_SHA256=""
 
 XORGPROTO_VER="2024.1"

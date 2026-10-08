@@ -27,7 +27,8 @@
 #          compare it with the test card's timecode to judge A/V sync)
 # (baseline profile: no CABAC/B-frames, the cheapest H.264 to decode).
 NAME="lotplay"
-VERSION="1.1.0"   # 1.1.0: sound (aac/mp3/vorbis/opus/flac/ac3 → xtiny's sound socket)
+VERSION="1.1.0-r1"   # r1: relinked on the binary128 long-double libc (exact printf rounding)
+                  # 1.1.0: sound (aac/mp3/vorbis/opus/flac/ac3 → xtiny's sound socket)
 DESCRIPTION="Video player for the X desktop (ffmpeg decode, with sound via xtiny) — Apps menu → Videos"
 FFMPEG_UPSTREAM="5.1.6"
 SOURCE_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_UPSTREAM}.tar.gz"

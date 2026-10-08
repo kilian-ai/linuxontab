@@ -6,7 +6,7 @@
 # The readline interface is disabled (uses basic line input instead).
 
 NAME="lua"
-VERSION="5.4.7"
+VERSION="5.4.7-r1"   # r1: relinked on the binary128 long-double libc (printf %f, strtod)
 DESCRIPTION="Lightweight embeddable scripting language"
 SOURCE_URL="https://www.lua.org/ftp/lua-5.4.7.tar.gz"
 SOURCE_SHA256="9fbf5e28ef86c69858f6d3d34eccc32e911c1a28b4120ff3e84aaa70cfbf1e30"

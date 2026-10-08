@@ -25,7 +25,8 @@
 
 NAME="ffmpeg"
 FFMPEG_UPSTREAM="5.1.6"
-VERSION="${FFMPEG_UPSTREAM}-r1"   # r1: fixed-sysroot brk, heap no longer capped at ~60 MB
+VERSION="${FFMPEG_UPSTREAM}-r2"   # r2: relinked on the binary128 long-double libc (exact printf rounding)
+                  # r1: fixed-sysroot brk, heap no longer capped at ~60 MB
 DESCRIPTION="ffmpeg + ffprobe — demux/remux/decode any format (no asm, single-threaded)"
 SOURCE_URL="https://ffmpeg.org/releases/ffmpeg-${FFMPEG_UPSTREAM}.tar.gz"
 SOURCE_SHA256=""

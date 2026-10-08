@@ -4,7 +4,7 @@
 # straight from this kernel's /proc. Reuses the nano/mc ncursesw prefix.
 
 NAME="htop"
-VERSION="3.3.0"
+VERSION="3.3.0-r1"   # r1: relinked on the binary128 long-double libc (exact printf rounding)
 DESCRIPTION="Interactive colorful process viewer (reads the wasm kernel's /proc)"
 SOURCE_URL="https://github.com/htop-dev/htop/releases/download/3.3.0/htop-3.3.0.tar.xz"
 SOURCE_SHA256=""

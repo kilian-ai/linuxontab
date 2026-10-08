@@ -7,7 +7,7 @@
 # packaged X11 client libraries. Pure core protocol, like everything xtiny runs.
 
 NAME="xtiny-apps"
-VERSION="1.0.0"
+VERSION="1.0.0-r1"   # r1: relinked on the binary128 long-double libc (printf %f, strtod)
 DESCRIPTION="Text editor, calculator and date/time dialog for the xtiny desktop"
 SOURCE_URL="local:"
 DEPENDS=""
