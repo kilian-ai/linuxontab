@@ -1,6 +1,6 @@
 --- a/src/linux/brk.c
 +++ b/src/linux/brk.c
-@@ -7,30 +7,29 @@
+@@ -7,30 +7,33 @@
  #include "pthread_impl.h"
  
  extern void __heap_end; // synthesised by linker
@@ -30,7 +30,11 @@
 +	 * pages = 256 MiB) 4x early, memory_grow started failing, and
 +	 * mallocng a_crash()ed — python/pip died with "Segmentation fault"
 +	 * at ~1/2 of the memory they should have had. Do everything in WASM
-+	 * page units instead and consult the real memory size directly. */
++	 * page units instead and consult the real memory size directly.
++	 * The break itself stays PAGE_SIZE-aligned, as the original kept it
++	 * inside the initial memory: zsh's nested command substitution came
++	 * back empty with a byte-exact break (its forks rely on it somewhere). */
++	end = (void *)(((uintptr_t)end + PAGE_SIZE - 1) & -(uintptr_t)PAGE_SIZE);
 +	void *mem_end = (void *)(__builtin_wasm_memory_size(0) * 65536ul);
 +	if (end > mem_end) {
 +		size_t need = (uintptr_t)end - (uintptr_t)mem_end;
