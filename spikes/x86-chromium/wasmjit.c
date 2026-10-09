@@ -94,7 +94,7 @@
 #include "blink/x86.h"
 
 #define NR_LOT_WASM_LOAD 10001
-#define WJ_HOT    256         /* block starts before translating (BLINK_WASMJIT_HOT): a
+#define WJ_HOT    128         /* block starts before translating (BLINK_WASMJIT_HOT): a
                                * module costs ~30-40 us to compile, so only
                                * blocks that run often enough pay that back */
 #define WJ_MAXOPS 192         /* instructions per block */
@@ -164,7 +164,12 @@ static _Atomic(u32) g_wj_haspages;
 
 /* stats (approximate, unlocked) */
 static long s_blocks, s_failed, s_calls, s_flushes, s_opsum, s_interp, s_inlined, s_links;
-static bool g_wj_stats;
+static int g_wj_stats;
+/* BLINK_WASMJIT_STATS=2: opcode histograms of the instructions run by the
+   interpreter (dynamic) and of the handler calls left in translated blocks
+   (static, per translation), plus why instructions were interpreted */
+static long h_interp[1024], h_called[1024];
+static long r_cold, r_midblock, r_rec;
 
 static void WjLock(void) {
   int z = 0;
@@ -172,8 +177,27 @@ static void WjLock(void) {
 }
 static void WjUnlock(void) { atomic_store(&g_wj_lock, 0); }
 
+static void WjTop(const char *what, long *h) {
+  fprintf(stderr, "[wasmjit] top %s:", what);
+  for (int k = 0; k < 16; k++) {
+    int best = -1;
+    for (int i = 0; i < 1024; i++) if (h[i] && (best < 0 || h[i] > h[best])) best = i;
+    if (best < 0) break;
+    fprintf(stderr, " %03x:%ld", best, h[best]);
+    h[best] = -h[best];
+  }
+  for (int i = 0; i < 1024; i++) if (h[i] < 0) h[i] = -h[i];
+  fprintf(stderr, "\n");
+}
+
 void WasmJitAtExit(void) {
   if (!g_wj_stats) return;
+  if (g_wj_stats >= 2) {
+    WjTop("interpreted", h_interp);
+    WjTop("handler calls in blocks (static)", h_called);
+    fprintf(stderr, "[wasmjit] interpreted because: cold block %ld, mid-block %ld, recording %ld\n",
+            r_cold, r_midblock, r_rec);
+  }
   fprintf(stderr,
           "[wasmjit] blocks=%ld (avg %.1f ops, %ld inline) failed=%ld "
           "block-calls=%ld interpreted=%ld links=%ld flushes=%ld\n",
@@ -186,7 +210,7 @@ static bool WjEnabled(void) {
     const char *e = getenv("BLINK_WASMJIT");
     g_wj_mode = !(e && *e == '0');
     const char *st = getenv("BLINK_WASMJIT_STATS");
-    g_wj_stats = g_wj_mode && st && *st == '1';
+    g_wj_stats = g_wj_mode && st ? atoi(st) : 0;
     const char *h = getenv("BLINK_WASMJIT_HOT");
     if (h && atoi(h) > 0) g_wj_hot = atoi(h);
   }
@@ -339,7 +363,9 @@ enum { LGET = 0x20, LSET = 0x21, I32C = 0x41, I64C = 0x42, I64LD = 0x29,
        I32ADD = 0x6a, I32MUL = 0x6c, I32NE = 0x47, I64ST32 = 0x3e,
        I64LD8U = 0x31, I64LD16U = 0x33, I64ST8 = 0x3c, I64ST16 = 0x3d,
        I64EXT8S = 0xc2, I64EXT16S = 0xc3, I64EXT32S = 0xc4,
-       I32EQ = 0x46, I32LTU = 0x49, I32SUB = 0x6b };
+       I32EQ = 0x46, I32LTU = 0x49, I32SUB = 0x6b, I64SHRS = 0x87,
+       I64ROTL = 0x89, I64ROTR = 0x8a, I32ROTL = 0x77, I32ROTR = 0x78,
+       I64EXTU = 0xad, I64EXTS = 0xac, I64MUL = 0x7e };
 
 /* function locals after the 4 params: five i64 scratch values (operands,
    result, effective address, TLB entry), four i32 (flags, TLB slot address,
@@ -616,6 +642,128 @@ static void PushFast(struct Wj *w, size_t *n, struct WjOp *o, u64 pc, u32 l, int
   MemEnd(w, n, o, pc);
 }
 
+/* shifts and rotates of a 32/64-bit operand, as blink/alu.c's Shl/Shr/Sar/
+   Rol/Ror: the count is masked to 5/6 bits; with a count of 0 nothing
+   changes but the (re)write of the operand. x: register offset or SRC_PRE
+   (LX set); count: constant k >= 0, or -1 for CL; result to a register
+   offset or DST_MEM. */
+static void EmitShift(struct Wj *w, size_t *n, int kind, int bits, int xr, int k, int dst) {
+  int cm = bits == 64 ? 63 : 31;
+  u64 mask = Mask(bits);
+  if (xr >= 0) { LoadReg(w, n, xr, bits); Set(w, n, LX); }
+  if (k >= 0) K64(w, n, k & cm);
+  else { LoadReg(w, n, RB(1), 8); K64(w, n, cm); Op(w, n, I64AND); }    /* cl */
+  Set(w, n, LY);
+  bool rot = kind == 0 || kind == 1;
+  switch (kind) {
+    case 4: case 6:                                              /* shl */
+      Get(w, n, LX); Get(w, n, LY); Op(w, n, I64SHL); break;
+    case 5:                                                      /* shr */
+      Get(w, n, LX); Get(w, n, LY); Op(w, n, I64SHRU); break;
+    case 7:                                                      /* sar */
+      Get(w, n, LX); if (bits == 32) Op(w, n, I64EXT32S);
+      Get(w, n, LY); Op(w, n, I64SHRS); break;
+    case 0: case 1:                                              /* rol, ror */
+      if (bits == 64) { Get(w, n, LX); Get(w, n, LY); Op(w, n, kind ? I64ROTR : I64ROTL); }
+      else {
+        Get(w, n, LX); Op(w, n, I32WRAP); Get(w, n, LY); Op(w, n, I32WRAP);
+        Op(w, n, kind ? I32ROTR : I32ROTL); Op(w, n, I64EXTU);
+      }
+      break;
+  }
+  if (bits < 64) { K64(w, n, (i64)mask); Op(w, n, I64AND); }
+  Set(w, n, LZ);
+  if (dst >= 0) StoreRegFrom(w, n, dst, LZ, bits);
+  else StoreMem(w, n, bits, LZ);
+  if (k >= 0 && !(k & cm)) return;                             /* count 0: no flags */
+  if (k < 0) { Get(w, n, LY); Op(w, n, I64EQZ); Op(w, n, EQZ32); B(w, n, IF); B(w, n, 0x40); }
+  Get(w, n, 0);
+  Get(w, n, 0); Mem(w, n, I32LD, 2, OFLAGS);
+  K32(w, n, (i32) ~(u32)(rot ? (CF | OF) : (CF | ZF | SF | OF | AF | 0xFF000000u)));
+  Op(w, n, I32AND);
+  /* cf */
+  switch (kind) {
+    case 4: case 6:  /* (x >> (bits - c)) & 1 */
+      Get(w, n, LX); K64(w, n, bits); Get(w, n, LY); Op(w, n, I64SUB); Op(w, n, I64SHRU); break;
+    case 5:          /* (x >> (c - 1)) & 1 */
+      Get(w, n, LX); Get(w, n, LY); K64(w, n, 1); Op(w, n, I64SUB); Op(w, n, I64SHRU); break;
+    case 7:          /* (sx >> (c - 1)) & 1 */
+      Get(w, n, LX); if (bits == 32) Op(w, n, I64EXT32S);
+      Get(w, n, LY); K64(w, n, 1); Op(w, n, I64SUB); Op(w, n, I64SHRS); break;
+    case 0:          /* z & 1 */
+      Get(w, n, LZ); break;
+    case 1:          /* z >> (bits - 1) */
+      Get(w, n, LZ); K64(w, n, bits - 1); Op(w, n, I64SHRU); break;
+  }
+  Op(w, n, I32WRAP); K32(w, n, 1); Op(w, n, I32AND); Set(w, n, LF);
+  Get(w, n, LF); Op(w, n, I32OR);
+  /* of */
+  switch (kind) {
+    case 4: case 6:  /* (z >> (bits - 1)) ^ cf */
+      Get(w, n, LZ); K64(w, n, bits - 1); Op(w, n, I64SHRU); Op(w, n, I32WRAP);
+      Get(w, n, LF); Op(w, n, I32XOR); break;
+    case 5:          /* ((z << 1) ^ z) >> (bits - 1) */
+      Get(w, n, LZ); K64(w, n, 1); Op(w, n, I64SHL); Get(w, n, LZ); Op(w, n, I64XOR);
+      K64(w, n, bits - 1); Op(w, n, I64SHRU); Op(w, n, I32WRAP); break;
+    case 7: K32(w, n, 0); break;
+    case 0:          /* (z >> (bits - 1)) ^ z */
+      Get(w, n, LZ); K64(w, n, bits - 1); Op(w, n, I64SHRU); Get(w, n, LZ); Op(w, n, I64XOR);
+      Op(w, n, I32WRAP); break;
+    case 1:          /* (z >> (bits - 1)) ^ (z >> (bits - 2)) */
+      Get(w, n, LZ); K64(w, n, bits - 1); Op(w, n, I64SHRU);
+      Get(w, n, LZ); K64(w, n, bits - 2); Op(w, n, I64SHRU); Op(w, n, I64XOR);
+      Op(w, n, I32WRAP); break;
+  }
+  K32(w, n, 1); Op(w, n, I32AND); K32(w, n, FLAGS_OF); Op(w, n, I32SHL); Op(w, n, I32OR);
+  if (!rot) {          /* sf, zf, pf byte; af = 0 */
+    Get(w, n, LZ); K64(w, n, bits - 1); Op(w, n, I64SHRU); Op(w, n, I32WRAP);
+    K32(w, n, 1); Op(w, n, I32AND); K32(w, n, FLAGS_SF); Op(w, n, I32SHL); Op(w, n, I32OR);
+    Get(w, n, LZ); Op(w, n, I64EQZ); K32(w, n, FLAGS_ZF); Op(w, n, I32SHL); Op(w, n, I32OR);
+    Get(w, n, LZ); Op(w, n, I32WRAP); K32(w, n, 24); Op(w, n, I32SHL); Op(w, n, I32OR);
+  }
+  Mem(w, n, I32ST, 2, OFLAGS);
+  if (k < 0) B(w, n, END);
+}
+
+/* neg as blink/alu.c: af = cf = x != 0, of = x == sign bit, z = -x */
+static void EmitNeg(struct Wj *w, size_t *n, int bits, int xr, int dst) {
+  u64 mask = Mask(bits);
+  if (xr >= 0) { LoadReg(w, n, xr, bits); Set(w, n, LX); }
+  K64(w, n, 0); Get(w, n, LX); Op(w, n, I64SUB);
+  if (bits < 64) { K64(w, n, (i64)mask); Op(w, n, I64AND); }
+  Set(w, n, LZ);
+  if (dst >= 0) StoreRegFrom(w, n, dst, LZ, bits); else StoreMem(w, n, bits, LZ);
+  Get(w, n, 0);
+  Get(w, n, 0); Mem(w, n, I32LD, 2, OFLAGS);
+  K32(w, n, (i32) ~(u32)(CF | ZF | SF | OF | AF | 0xFF000000u)); Op(w, n, I32AND);
+  Get(w, n, LX); Op(w, n, I64EQZ); Op(w, n, EQZ32); Set(w, n, LF);
+  Get(w, n, LF); Op(w, n, I32OR);                                  /* cf */
+  Get(w, n, LF); K32(w, n, FLAGS_AF); Op(w, n, I32SHL); Op(w, n, I32OR);
+  Get(w, n, LX); K64(w, n, (i64)(1ull << (bits - 1))); Op(w, n, I64EQ);
+  K32(w, n, FLAGS_OF); Op(w, n, I32SHL); Op(w, n, I32OR);
+  Get(w, n, LZ); K64(w, n, bits - 1); Op(w, n, I64SHRU); Op(w, n, I32WRAP);
+  K32(w, n, 1); Op(w, n, I32AND); K32(w, n, FLAGS_SF); Op(w, n, I32SHL); Op(w, n, I32OR);
+  Get(w, n, LZ); Op(w, n, I64EQZ); K32(w, n, FLAGS_ZF); Op(w, n, I32SHL); Op(w, n, I32OR);
+  Get(w, n, LZ); Op(w, n, I32WRAP); K32(w, n, 24); Op(w, n, I32SHL); Op(w, n, I32OR);
+  Mem(w, n, I32ST, 2, OFLAGS);
+}
+
+/* 32-bit imul as blink/divmul.c's AluImul: z = (i64)(i32)a * (i32)b, the
+   register gets (u32)z, CF = OF = (z != (i32)z); other flags unchanged.
+   LX = a, LY = b (zero-extended 32-bit values). */
+static void EmitImul32(struct Wj *w, size_t *n, int dst) {
+  Get(w, n, LX); Op(w, n, I64EXT32S); Get(w, n, LY); Op(w, n, I64EXT32S); Op(w, n, I64MUL);
+  Set(w, n, LE);
+  Get(w, n, LE); K64(w, n, 0xffffffff); Op(w, n, I64AND); Set(w, n, LZ);
+  StoreRegFrom(w, n, dst, LZ, 32);
+  Get(w, n, 0);
+  Get(w, n, 0); Mem(w, n, I32LD, 2, OFLAGS); K32(w, n, (i32) ~(u32)(CF | OF)); Op(w, n, I32AND);
+  Get(w, n, LE); Get(w, n, LE); Op(w, n, I64EXT32S); Op(w, n, I64NE); Set(w, n, LF);
+  Get(w, n, LF); Op(w, n, I32OR);
+  Get(w, n, LF); K32(w, n, FLAGS_OF); Op(w, n, I32SHL); Op(w, n, I32OR);
+  Mem(w, n, I32ST, 2, OFLAGS);
+}
+
 /* An operand of an Eb/Ev op: a register offset, or memory (MEM). */
 #define MEM (-100)
 
@@ -851,6 +999,119 @@ static bool WjInline(struct Wj *w, size_t *n, struct WjOp *o, u64 pcnext,
       *setsip = true;
       return true;
     }
+    case 0xC1: case 0xD1: case 0xD3: {                         /* shift Ev */
+      int kind = ModrmReg(rde);
+      if (kind == 2 || kind == 3 || wb == 16) return false;
+      int k = mop == 0xC1 ? (int)(o->uimm0 & 255) : mop == 0xD1 ? 1 : -1;
+      if (erm == MEM) {
+        if (!memok) return false;
+        MemBegin(w, n, o, pcnext, wb / 8, true, true);
+          LoadMem(w, n, wb, LX);
+          EmitShift(w, n, kind, wb, SRC_PRE, k, DST_MEM);
+        MemEnd(w, n, o, pcnext);
+        *setsip = true;
+      } else {
+        EmitShift(w, n, kind, wb, erm, k, erm);
+      }
+      return true;
+    }
+    case 0xF6: case 0xF7: {                                    /* test/not/neg E */
+      int r = ModrmReg(rde);
+      int b = mop == 0xF6 ? 8 : wb, e = mop == 0xF6 ? brm : erm;
+      if (r > 3) return false;                                 /* mul/div: handler */
+      if (e == MEM && !memok) return false;
+      if (e == MEM) {
+        MemBegin(w, n, o, pcnext, b / 8, r >= 2, true);
+          LoadMem(w, n, b, LX);
+      }
+      int x = e == MEM ? SRC_PRE : e, d = e == MEM ? DST_MEM : e;
+      if (r <= 1) {
+        EmitAlu(w, n, K_TEST, b, x, SRC_IMM, o->uimm0, DST_NONE);
+      } else if (r == 2) {                                     /* not: no flags */
+        if (x >= 0) { LoadReg(w, n, x, b); Set(w, n, LX); }
+        Get(w, n, LX); K64(w, n, (i64)Mask(b)); Op(w, n, I64XOR); Set(w, n, LZ);
+        if (d >= 0) StoreRegFrom(w, n, d, LZ, b); else StoreMem(w, n, b, LZ);
+      } else {
+        EmitNeg(w, n, b, x, d);
+      }
+      if (e == MEM) { MemEnd(w, n, o, pcnext); *setsip = true; }
+      return true;
+    }
+    case 0x1AF: case 0x69: case 0x6B: {                        /* imul (32-bit) */
+      if (wb != 32) return false;
+      if (erm == MEM && !memok) return false;
+      if (erm == MEM) {
+        MemBegin(w, n, o, pcnext, 4, false, true);
+          LoadMem(w, n, 32, mop == 0x1AF ? LY : LX);
+      } else {
+        LoadReg(w, n, erm, 32); Set(w, n, mop == 0x1AF ? LY : LX);
+      }
+      if (mop == 0x1AF) { LoadReg(w, n, ereg, 32); Set(w, n, LX); }
+      else { K64(w, n, (i64)(u32)o->uimm0); Set(w, n, LY); }
+      EmitImul32(w, n, ereg);
+      if (erm == MEM) { MemEnd(w, n, o, pcnext); *setsip = true; }
+      return true;
+    }
+    case 0x190: case 0x191: case 0x192: case 0x193: case 0x194: case 0x195:
+    case 0x196: case 0x197: case 0x198: case 0x199: case 0x19C: case 0x19D:
+    case 0x19E: case 0x19F:                                    /* setcc Eb */
+      if (brm == MEM && !memok) return false;
+      EmitCond(w, n, mop & 15); Op(w, n, I64EXTU); Set(w, n, LZ);
+      if (brm == MEM) {
+        MemBegin(w, n, o, pcnext, 1, true, true);
+          StoreMem(w, n, 8, LZ);
+        MemEnd(w, n, o, pcnext);
+        *setsip = true;
+      } else {
+        StoreRegFrom(w, n, brm, LZ, 8);
+      }
+      return true;
+    case 0x140: case 0x141: case 0x142: case 0x143: case 0x144: case 0x145:
+    case 0x146: case 0x147: case 0x148: case 0x149: case 0x14C: case 0x14D:
+    case 0x14E: case 0x14F:                                    /* cmovcc (register) */
+      if (erm == MEM) return false;      /* reads memory only if taken: handler */
+      LoadReg(w, n, erm, 64); LoadReg(w, n, ereg, 64); EmitCond(w, n, mop & 15);
+      Op(w, n, SELECT);
+      if (wb < 64) { K64(w, n, (i64)Mask(wb)); Op(w, n, I64AND); }
+      Set(w, n, LZ);
+      StoreRegFrom(w, n, ereg, LZ, wb);
+      return true;
+    case 0x98:                                                 /* cbw/cwde/cdqe */
+      if (wb == 64) { LoadReg(w, n, RW(0), 32); Op(w, n, I64EXT32S); }
+      else if (wb == 32) { LoadReg(w, n, RW(0), 16); Op(w, n, I64EXT16S); K64(w, n, 0xffffffff); Op(w, n, I64AND); }
+      else { LoadReg(w, n, RW(0), 8); Op(w, n, I64EXT8S); }
+      Set(w, n, LZ);
+      StoreRegFrom(w, n, RW(0), LZ, wb);
+      return true;
+    case 0x99:                                                 /* cwd/cdq/cqo */
+      LoadReg(w, n, RW(0), wb); K64(w, n, wb - 1); Op(w, n, I64SHRU);
+      Set(w, n, LZ); K64(w, n, 0); Get(w, n, LZ); Op(w, n, I64SUB);   /* -sign: 0 or ~0 */
+      if (wb < 64) { K64(w, n, (i64)Mask(wb)); Op(w, n, I64AND); }
+      Set(w, n, LZ);
+      StoreRegFrom(w, n, RW(2), LZ, wb);
+      return true;
+    case 0x68: case 0x6A:                                      /* push imm */
+      if (Osz(rde)) return false;
+      K64(w, n, (i64)o->uimm0); Set(w, n, LZ);
+      PushFast(w, n, o, pcnext, LZ, -1);
+      *setsip = true;
+      return true;
+    case 0xC9:                                                 /* leave */
+      if (Osz(rde)) return false;
+      LoadReg(w, n, RW(5), 64); Set(w, n, LA);                 /* the pop reads [rbp] */
+      MemBegin(w, n, o, pcnext, 8, false, false);
+        LoadMem(w, n, 64, LZ);
+        Get(w, n, LA); K64(w, n, 8); Op(w, n, I64ADD); Set(w, n, LE);
+        StoreRegFrom(w, n, RW(4), LE, 64);
+        StoreRegFrom(w, n, RW(5), LZ, 64);
+      MemEnd(w, n, o, pcnext);
+      *setsip = true;
+      return true;
+    case 0x11F:                                                /* nop Ev */
+      switch (Modrm(rde)) {
+        case 0105: case 0007: case 0107: case 0207: return false;   /* Blink's hooks */
+        default: return true;                                  /* nothing to do */
+      }
     case 0xEB: case 0xE9:                                      /* jmp rel */
       Get(w, n, 0); K64(w, n, (i64)(pcnext + (u64)o->disp));
       Mem(w, n, I64ST, 3, offsetof(struct Machine, ip));
@@ -958,6 +1219,7 @@ static void EmitBody(struct Wj *w, size_t *n) {
       continue;
     }
     ipset = true;
+    if (g_wj_stats >= 2) h_called[Mopcode(o->rde) & 1023]++;
     EmitHandler(w, n, o, pc, true);
   }
   if (!ipset) {   /* ended on an inline op that left m->ip behind */
@@ -1095,8 +1357,13 @@ void WasmJitDispatch(struct Machine *m) {
     }
   }
   s_interp++;
+  bool cold = w->atstart;
   LoadInstruction(m, GetPc(m));
   u64 rde = m->xedd->op.rde;
+  if (g_wj_stats >= 2) {
+    h_interp[Mopcode(rde) & 1023]++;
+    if (w->rec) r_rec++; else if (cold) r_cold++; else r_midblock++;
+  }
   i64 disp = m->xedd->op.disp;
   u64 uimm0 = m->xedd->op.uimm0;
   int cls = ClassifyOp(rde);

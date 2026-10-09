@@ -182,7 +182,7 @@ Debugging aids that found them:
 Blink on wasm32 is a pure interpreter (its JIT emits native code). `wasmjit.c`
 (+ `blink-wasmjit.patch`, built in with `WASMJIT=1 sh build.sh`; opt-in
 while it settles) is a call-threaded backend: a block start reached
-`BLINK_WASMJIT_HOT` times (default 256) is recorded while it runs, then
+`BLINK_WASMJIT_HOT` times (default 128) is recorded while it runs, then
 emitted as one wasm function that sets `ip`/`oplen`, calls each op's handler
 through Blink's own function table, commits stashed writes and returns to the
 interpreter as soon as `ip` leaves the straight line. The runtime compiles it
@@ -199,7 +199,9 @@ The most common integer ops are emitted inline instead of calling their
 handlers: mov, add/or/and/sub/xor, cmp/test (register, immediate and the
 al/eax forms), inc/dec, mov reg,imm, movzx/movsx/movsxd, lea, push/pop,
 jcc/jmp, call/ret and call/jmp/push through a register or memory (0xFF /2
-/4 /6), at 8, 16, 32 and 64 bits (byte registers through Blink's kByteReg, so
+/4 /6), shifts and rotates (imm, 1, cl), test imm/not/neg, 32-bit imul,
+setcc, register cmovcc, cbw..cqo, push imm, leave and nop, at 8, 16, 32
+and 64 bits (byte registers through Blink's kByteReg, so
 ah..bh without REX work). They can't fault, so
 they skip the ip/oplen bookkeeping, and they compute flags exactly as
 blink/alu.c does (CF ZF SF OF AF, plus the result's low byte in bits 24-31
@@ -217,8 +219,10 @@ instead. `mem.c` (the memory-form counterpart of `alu.c`, incl. FS-relative
 TLS and page-crossing accesses) and `narrow.c` (byte/word forms, ah/bh,
 sil/dil, movzx/movsx/movsxd, inc/dec keeping CF, al/eax-imm forms) and
 `callret.c` (recursion, indirect calls through registers and tables, a
-switch jump table, push/pop of memory, jmp *reg) also hash the same under
-old and new Blink.
+switch jump table, push/pop of memory, jmp *reg) and `ops2.c` (shift
+counts incl. 0 and > width, neg of 0/INT_MIN, imul overflow, every
+setcc/cmovcc condition, cbw..cqo, push imm, leave) also hash the same
+under old and new Blink.
 
 Blocks chain: each translation owns two successor cells {pc, slot, epoch};
 at its end a block calls a linked successor directly when m->ip matches, the
@@ -235,21 +239,24 @@ differential ones print a hash that must match under the old Blink.
 
 Measured in the guest (same binaries, old vs new Blink, interleaved):
 
-| workload | interpreter | calls only | + inline ops | + memory operands | + byte/word, movzx/movsx, inc/dec | + call/ret, 0xFF group | + chaining |
-|---|---|---|---|---|---|---|---|
-| primes < 200000 (spikes/x86-blink/bench.c) | 1.81 s | 1.23 s | 0.72 s | 0.74 s | 0.74 s | 0.74 s | 0.59 s |
-| hashing + qsort + snprintf (mix.c) | 2.93 s | 1.83 s | 1.22 s | 0.82 s | 0.72 s | 0.65 s | 0.50 s |
-| Node 24 Sparkplug (default), small JS workload | 3.65 s | 2.29 s | 1.76 s | 1.20 s | 1.12 s | 1.09 s | 0.93 s |
-| Node 24 `--jitless`, same | 4.11 s | 2.54 s | 1.87 s | 1.10 s | 0.98 s | 0.99 s | 0.88 s |
-| nodetest.js (11/11), start-up bound | 3.51 s | 3.34 s | 2.68 s | 2.23 s | 2.35 s | 2.43 s | 2.24 s |
+| workload | interpreter | calls only | + inline ops | + memory operands | + byte/word, movzx/movsx, inc/dec | + call/ret, 0xFF group | + chaining | + shifts, setcc/cmov, neg/not, imul32 |
+|---|---|---|---|---|---|---|---|---|
+| primes < 200000 (spikes/x86-blink/bench.c) | 1.81 s | 1.23 s | 0.72 s | 0.74 s | 0.74 s | 0.74 s | 0.59 s | 0.56 s |
+| hashing + qsort + snprintf (mix.c) | 2.93 s | 1.83 s | 1.22 s | 0.82 s | 0.72 s | 0.65 s | 0.50 s | 0.43 s |
+| Node 24 Sparkplug (default), small JS workload | 3.65 s | 2.29 s | 1.76 s | 1.20 s | 1.12 s | 1.09 s | 0.93 s | 0.78 s |
+| Node 24 `--jitless`, same | 4.11 s | 2.54 s | 1.87 s | 1.10 s | 0.98 s | 0.99 s | 0.88 s | 0.78 s |
+| nodetest.js (11/11), start-up bound | 3.51 s | 3.34 s | 2.68 s | 2.23 s | 2.35 s | 2.43 s | 2.24 s | 2.18 s |
 
 Correctness: same outputs, `sha256sum` matches native, threads, fork+threads,
 faulttest 7/7, sigchld, nodetest 11/11 (also with BLINK_WASMJIT_HOT=2..4, where
 almost everything is translated: 61k blocks for nodetest). A module costs ~30-40 us to compile, which
-sets the threshold: at 32 start-up-bound runs got slower. Next: the ~20M
-instructions a Node run still interprets (shifts, setcc/cmovcc, string ops,
-SSE), more successor cells for returns/indirect calls, several blocks per
-module. Code V8 generates stays interpreted (its pages stay writable).
+sets the threshold: at 32 start-up-bound runs got slower. 97% of the ops in Node's translated blocks are now inline;
+what's left in handlers is mostly SSE moves, mul/div, bt and 64-bit imul
+(BLINK_WASMJIT_STATS=2 prints opcode histograms). The ~20M instructions a
+Node run still interprets are not missing ops but cold code: V8 start-up
+runs thousands of blocks fewer than 128 times each. Next: cheaper
+compilation (several blocks per module, so the threshold can drop),
+more successor cells for returns/indirect calls, SSE moves. Code V8 generates stays interpreted (its pages stay writable).
 
 ## Open
 
