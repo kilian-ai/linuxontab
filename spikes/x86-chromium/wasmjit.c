@@ -311,7 +311,9 @@ enum { LGET = 0x20, LSET = 0x21, I32C = 0x41, I64C = 0x42, I64LD = 0x29,
        I64XOR = 0x85, I64SHL = 0x86, I64SHRU = 0x88, I32WRAP = 0xa7,
        I32OR = 0x72, I32XOR = 0x73, I32SHL = 0x74, I32SHRU = 0x76,
        SELECT = 0x1b, ELSE = 0x05, LTEE = 0x22, I64LEU = 0x58,
-       I32ADD = 0x6a, I32MUL = 0x6c, I32NE = 0x47, I64ST32 = 0x3e };
+       I32ADD = 0x6a, I32MUL = 0x6c, I32NE = 0x47, I64ST32 = 0x3e,
+       I64LD8U = 0x31, I64LD16U = 0x33, I64ST8 = 0x3c, I64ST16 = 0x3d,
+       I64EXT8S = 0xc2, I64EXT16S = 0xc3, I64EXT32S = 0xc4 };
 
 /* function locals after the 4 params: five i64 scratch values (operands,
    result, effective address, TLB entry), four i32 (flags, TLB slot address,
@@ -324,6 +326,12 @@ static void Mem(struct Wj *w, size_t *n, u8 op, u32 align, u32 off) {
 
 
 /* ── inline ops ─────────────────────────────────────────────────────────── */
+/* Operands are 8, 16, 32 or 64 bits wide. Registers are named by their byte
+   offset in struct Machine: a word register r is weg[r]; a byte register
+   comes from Blink's kByteReg table (AH..BH without a REX prefix), so the
+   offsets match ByteRexrReg/ByteRexbRm exactly. Writes follow
+   WriteRegister: 64 and 32 store all 8 bytes (32 zero-extended), 16 and 8
+   store just their bytes. */
 static u32 OREG, OFLAGS;
 
 static void Op(struct Wj *w, size_t *n, u8 op) { B(w, n, op); }
@@ -332,56 +340,91 @@ static void Set(struct Wj *w, size_t *n, u32 l) { B(w, n, LSET); U(w, n, l); }
 static void K64(struct Wj *w, size_t *n, i64 v) { B(w, n, I64C); S(w, n, v); }
 static void K32(struct Wj *w, size_t *n, i32 v) { B(w, n, I32C); S(w, n, v); }
 
-/* push register r (zero-extended to i64 when 32-bit) */
-static void LoadReg(struct Wj *w, size_t *n, int r, int bits) {
+static int RW(int r) { return (int)(OREG + 8 * r); }            /* weg[r] */
+static int RB(int k) { return (int)(OREG + kByteReg[k]); }      /* byte reg, k = RexRex*() */
+static u64 Mask(int bits) { return bits == 64 ? ~0ull : (1ull << bits) - 1; }
+
+/* push the register at offset off, zero-extended to i64 */
+static void LoadReg(struct Wj *w, size_t *n, int off, int bits) {
   Get(w, n, 0);
-  if (bits == 64) Mem(w, n, I64LD, 3, OREG + 8 * r);
-  else Mem(w, n, I64LD32U, 2, OREG + 8 * r);
+  switch (bits) {
+    case 64: Mem(w, n, I64LD, 3, off); break;
+    case 32: Mem(w, n, I64LD32U, 2, off); break;
+    case 16: Mem(w, n, I64LD16U, 1, off); break;
+    default: Mem(w, n, I64LD8U, 0, off); break;
+  }
 }
-/* register r = local l (already zero-extended for 32-bit writes) */
-static void StoreRegFrom(struct Wj *w, size_t *n, int r, u32 l) {
-  Get(w, n, 0); Get(w, n, l); Mem(w, n, I64ST, 3, OREG + 8 * r);
+/* register at offset off = local l (zero-extended already) */
+static void StoreRegFrom(struct Wj *w, size_t *n, int off, u32 l, int bits) {
+  Get(w, n, 0); Get(w, n, l);
+  switch (bits) {
+    case 64: case 32: Mem(w, n, I64ST, 3, off); break;
+    case 16: Mem(w, n, I64ST16, 1, off); break;
+    default: Mem(w, n, I64ST8, 0, off); break;
+  }
 }
 
-enum { K_ADD = 0, K_OR = 1, K_AND = 4, K_SUB = 5, K_XOR = 6, K_CMP = 7, K_TEST = 8 };
-
+enum { K_ADD = 0, K_OR = 1, K_AND = 4, K_SUB = 5, K_XOR = 6, K_CMP = 7,
+       K_TEST = 8, K_INC = 10, K_DEC = 11 };
 enum { SRC_IMM = -1, SRC_PRE = -2 };   /* operand: imm / already in LX|LY */
 enum { DST_NONE = -1, DST_MEM = -2 };  /* result: dropped / stored at LH */
 
 static void StoreMem(struct Wj *w, size_t *n, int bits, u32 l) {
   Get(w, n, LH); Get(w, n, l);
-  if (bits == 64) Mem(w, n, I64ST, 0, 0); else Mem(w, n, I64ST32, 0, 0);
+  switch (bits) {
+    case 64: Mem(w, n, I64ST, 0, 0); break;
+    case 32: Mem(w, n, I64ST32, 0, 0); break;
+    case 16: Mem(w, n, I64ST16, 0, 0); break;
+    default: Mem(w, n, I64ST8, 0, 0); break;
+  }
+}
+/* local l = the memory operand at LH, zero-extended */
+static void LoadMem(struct Wj *w, size_t *n, int bits, u32 l) {
+  Get(w, n, LH);
+  switch (bits) {
+    case 64: Mem(w, n, I64LD, 0, 0); break;
+    case 32: Mem(w, n, I64LD32U, 0, 0); break;
+    case 16: Mem(w, n, I64LD16U, 0, 0); break;
+    default: Mem(w, n, I64LD8U, 0, 0); break;
+  }
+  Set(w, n, l);
 }
 
-/* x op y; x is a register or SRC_PRE (LX set), y a register, SRC_IMM or
-   SRC_PRE (LY set); the result goes to register dst, DST_MEM or nowhere */
+/* x op y, flags as blink/alu.c computes them. x is a register offset or
+   SRC_PRE (LX set); y a register offset, SRC_IMM or SRC_PRE (LY set); the
+   result goes to a register offset, DST_MEM or nowhere. INC/DEC ignore y
+   and keep CF (BumpFlags); like Blink's, INC's AF is always 0 and both use
+   (z^1)/(x^1) in their OF terms. */
 static void EmitAlu(struct Wj *w, size_t *n, int kind, int bits, int xr, int yr,
                     u64 imm, int dst) {
-  u64 mask = bits == 64 ? ~0ull : 0xffffffffull;
+  u64 mask = Mask(bits);
+  bool bump = kind == K_INC || kind == K_DEC;
   bool arith = kind == K_ADD || kind == K_SUB || kind == K_CMP;
   bool sub = kind == K_SUB || kind == K_CMP;
   if (xr >= 0) { LoadReg(w, n, xr, bits); Set(w, n, LX); }
-  if (yr != SRC_PRE) {
+  if (bump) { K64(w, n, 1); Set(w, n, LY); }
+  else if (yr != SRC_PRE) {
     if (yr >= 0) LoadReg(w, n, yr, bits);
     else K64(w, n, (i64)(imm & mask));
     Set(w, n, LY);
   }
   Get(w, n, LX); Get(w, n, LY);
   switch (kind) {
-    case K_ADD: Op(w, n, I64ADD); break;
-    case K_SUB: case K_CMP: Op(w, n, I64SUB); break;
+    case K_ADD: case K_INC: Op(w, n, I64ADD); break;
+    case K_SUB: case K_CMP: case K_DEC: Op(w, n, I64SUB); break;
     case K_AND: case K_TEST: Op(w, n, I64AND); break;
     case K_OR: Op(w, n, I64OR); break;
     case K_XOR: Op(w, n, I64XOR); break;
   }
-  if (bits == 32) { K64(w, n, 0xffffffff); Op(w, n, I64AND); }
+  if (bits < 64) { K64(w, n, (i64)mask); Op(w, n, I64AND); }
   Set(w, n, LZ);
-  if (dst >= 0) StoreRegFrom(w, n, dst, LZ);
+  if (dst >= 0) StoreRegFrom(w, n, dst, LZ, bits);
   else if (dst == DST_MEM) StoreMem(w, n, bits, LZ);
-  /* m->flags = (m->flags & ~(CF|ZF|SF|OF|AF|0xff000000)) | ... */
+  /* m->flags = (m->flags & ~(ZF|SF|OF|AF|0xff000000 [|CF])) | ... */
   Get(w, n, 0);
   Get(w, n, 0); Mem(w, n, I32LD, 2, OFLAGS);
-  K32(w, n, (i32) ~(u32)(CF | ZF | SF | OF | AF | 0xFF000000u)); Op(w, n, I32AND);
+  K32(w, n, (i32) ~(u32)(ZF | SF | OF | AF | 0xFF000000u | (bump ? 0 : CF)));
+  Op(w, n, I32AND);
   Get(w, n, LZ); K64(w, n, bits - 1); Op(w, n, I64SHRU); Op(w, n, I32WRAP);
   K32(w, n, 1); Op(w, n, I32AND); K32(w, n, FLAGS_SF); Op(w, n, I32SHL); Op(w, n, I32OR);
   Get(w, n, LZ); Op(w, n, I64EQZ); K32(w, n, FLAGS_ZF); Op(w, n, I32SHL); Op(w, n, I32OR);
@@ -390,16 +433,23 @@ static void EmitAlu(struct Wj *w, size_t *n, int kind, int bits, int xr, int yr,
     /* cf: add z < y, sub x < z */
     if (sub) { Get(w, n, LX); Get(w, n, LZ); } else { Get(w, n, LZ); Get(w, n, LY); }
     Op(w, n, I64LTU); Op(w, n, I32OR);
-    /* af: add (z&15) < (y&15), sub (x&15) < (z&15) */
-    if (sub) { Get(w, n, LX); K64(w, n, 15); Op(w, n, I64AND); Get(w, n, LZ); }
+  }
+  if (arith || kind == K_DEC) {
+    /* af: add (z&15) < (y&15), sub/dec (x&15) < (z&15); inc: 0 */
+    if (sub || kind == K_DEC) { Get(w, n, LX); K64(w, n, 15); Op(w, n, I64AND); Get(w, n, LZ); }
     else { Get(w, n, LZ); K64(w, n, 15); Op(w, n, I64AND); Get(w, n, LY); }
     K64(w, n, 15); Op(w, n, I64AND); Op(w, n, I64LTU);
     K32(w, n, FLAGS_AF); Op(w, n, I32SHL); Op(w, n, I32OR);
-    /* of: add ((z^x)&(z^y)), sub ((x^y)&(z^x)), top bit */
+  }
+  if (arith || bump) {
+    /* of: add (z^x)&(z^y), sub (x^y)&(z^x), inc (z^x)&(z^1), dec (z^x)&(x^1) */
     if (sub) {
       Get(w, n, LX); Get(w, n, LY); Op(w, n, I64XOR);
       Get(w, n, LZ); Get(w, n, LX); Op(w, n, I64XOR);
-    } else {
+    } else if (kind == K_DEC) {
+      Get(w, n, LZ); Get(w, n, LX); Op(w, n, I64XOR);
+      Get(w, n, LX); K64(w, n, 1); Op(w, n, I64XOR);
+    } else {      /* add, inc (LY = 1) */
       Get(w, n, LZ); Get(w, n, LX); Op(w, n, I64XOR);
       Get(w, n, LZ); Get(w, n, LY); Op(w, n, I64XOR);
     }
@@ -408,7 +458,6 @@ static void EmitAlu(struct Wj *w, size_t *n, int kind, int bits, int xr, int yr,
   }
   Mem(w, n, I32ST, 2, OFLAGS);
 }
-
 
 /* ── memory operands ─────────────────────────────────────────────────────── */
 static u32 OTLB, OINV, OSEGB[8];
@@ -429,17 +478,17 @@ static void EmitEa(struct Wj *w, size_t *n, struct WjOp *o, u64 pcnext) {
       K64(w, n, (i64)(pcnext + (u64)o->disp));
     } else {
       K64(w, n, o->disp);
-      LoadReg(w, n, RexbRm(rde), 64); Op(w, n, I64ADD);
+      LoadReg(w, n, RW(RexbRm(rde)), 64); Op(w, n, I64ADD);
       if (RexbRm(rde) == 4 || RexbRm(rde) == 5) seg = 2;       /* SS */
     }
   } else {
     K64(w, n, o->disp);
     if (SibHasBase(rde)) {
-      LoadReg(w, n, RexbBase(rde), 64); Op(w, n, I64ADD);
+      LoadReg(w, n, RW(RexbBase(rde)), 64); Op(w, n, I64ADD);
       if (RexbBase(rde) == 4 || RexbBase(rde) == 5) seg = 2;
     }
     if (SibHasIndex(rde)) {
-      LoadReg(w, n, Rexx(rde) << 3 | SibIndex(rde), 64);
+      LoadReg(w, n, RW(Rexx(rde) << 3 | SibIndex(rde)), 64);
       K64(w, n, SibScale(rde)); Op(w, n, I64SHL); Op(w, n, I64ADD);
     }
   }
@@ -505,90 +554,6 @@ static void MemEnd(struct Wj *w, size_t *n, struct WjOp *o, u64 pc) {
   B(w, n, END);
 }
 
-/* LX or LY = the memory operand at LH */
-static void LoadMem(struct Wj *w, size_t *n, int bits, u32 l) {
-  Get(w, n, LH);
-  if (bits == 64) Mem(w, n, I64LD, 0, 0); else Mem(w, n, I64LD32U, 0, 0);
-  Set(w, n, l);
-}
-
-/* memory forms; *setsip is always true (MemBegin stored ip) */
-static bool WjInlineMem(struct Wj *w, size_t *n, struct WjOp *o, u64 pc) {
-  u64 rde = o->rde;
-  long mop = Mopcode(rde);
-  int lg = RegLog2(rde), bits = lg == 3 ? 64 : 32, size = bits / 8;
-  bool word = (lg == 3 || lg == 2) && !Osz(rde) && Mode(rde) == XED_MODE_LONG;
-  if (mop >= 0x50 && mop <= 0x5F) {                            /* push / pop r64 */
-    int r = RexbSrm(rde);
-    if (Osz(rde) || Mode(rde) != XED_MODE_LONG) return false;
-    if (mop < 0x58) {
-      LoadReg(w, n, r, 64); Set(w, n, LZ);                     /* value first */
-      LoadReg(w, n, 4, 64); K64(w, n, 8); Op(w, n, I64SUB); Set(w, n, LA);
-      MemBegin(w, n, o, pc, 8, true, false);
-        StoreRegFrom(w, n, 4, LA);
-        StoreMem(w, n, 64, LZ);
-      MemEnd(w, n, o, pc);
-    } else {
-      LoadReg(w, n, 4, 64); Set(w, n, LA);
-      MemBegin(w, n, o, pc, 8, false, false);
-        LoadMem(w, n, 64, LZ);
-        Get(w, n, LA); K64(w, n, 8); Op(w, n, I64ADD); Set(w, n, LE);
-        StoreRegFrom(w, n, 4, LE);
-        StoreRegFrom(w, n, r, LZ);
-      MemEnd(w, n, o, pc);
-    }
-    return true;
-  }
-  if (!word || !MemOk(rde) || Lock(rde)) return false;
-  switch (mop) {
-    case 0x8B:                                                   /* mov Gv, M */
-      MemBegin(w, n, o, pc, size, false, true);
-        LoadMem(w, n, bits, LZ); StoreRegFrom(w, n, RexrReg(rde), LZ);
-      MemEnd(w, n, o, pc);
-      return true;
-    case 0x89:                                                   /* mov M, Gv */
-      MemBegin(w, n, o, pc, size, true, true);
-        LoadReg(w, n, RexrReg(rde), bits); Set(w, n, LZ); StoreMem(w, n, bits, LZ);
-      MemEnd(w, n, o, pc);
-      return true;
-    case 0xC7:                                                   /* mov M, imm */
-      if (ModrmReg(rde)) return false;
-      MemBegin(w, n, o, pc, size, true, true);
-        K64(w, n, (i64)(bits == 64 ? o->uimm0 : (u32)o->uimm0)); Set(w, n, LZ);
-        StoreMem(w, n, bits, LZ);
-      MemEnd(w, n, o, pc);
-      return true;
-    case 0x03: case 0x0B: case 0x23: case 0x2B: case 0x33:       /* Gv op= M */
-    case 0x3B:                                                   /* cmp Gv, M */
-      MemBegin(w, n, o, pc, size, false, true);
-        LoadMem(w, n, bits, LY);
-        EmitAlu(w, n, mop == 0x3B ? K_CMP : (Opcode(rde) & 070) >> 3, bits,
-                RexrReg(rde), SRC_PRE, 0, mop == 0x3B ? DST_NONE : RexrReg(rde));
-      MemEnd(w, n, o, pc);
-      return true;
-    case 0x01: case 0x09: case 0x21: case 0x29: case 0x31:       /* M op= Gv */
-    case 0x39: case 0x85: {                                      /* cmp/test M, Gv */
-      bool ro = mop == 0x39 || mop == 0x85;
-      int k = mop == 0x39 ? K_CMP : mop == 0x85 ? K_TEST : (Opcode(rde) & 070) >> 3;
-      MemBegin(w, n, o, pc, size, !ro, true);
-        LoadMem(w, n, bits, LX);
-        EmitAlu(w, n, k, bits, SRC_PRE, RexrReg(rde), 0, ro ? DST_NONE : DST_MEM);
-      MemEnd(w, n, o, pc);
-      return true;
-    }
-    case 0x81: case 0x83: {                                      /* op M, imm */
-      int k = ModrmReg(rde);
-      if (k == 2 || k == 3) return false;
-      MemBegin(w, n, o, pc, size, k != K_CMP, true);
-        LoadMem(w, n, bits, LX);
-        EmitAlu(w, n, k, bits, SRC_PRE, SRC_IMM, o->uimm0, k == K_CMP ? DST_NONE : DST_MEM);
-      MemEnd(w, n, o, pc);
-      return true;
-    }
-    default:
-      return false;
-  }
-}
 
 /* push the condition (i32 0/1) of jcc code 0..15 (not 0xA/0xB), from the
    flags the way blink/uop.c's Jo..Jg read them */
@@ -610,97 +575,208 @@ static void EmitCond(struct Wj *w, size_t *n, int code) {
   if (code & 1) Op(w, n, EQZ32);                                /* the negation */
 }
 
+/* An operand of an Eb/Ev op: a register offset, or memory (MEM). */
+#define MEM (-100)
+
+/* Width of the Ev/Gv operand: 64 with REX.W, 16 with 0x66, else 32. */
+static int WordBits(u64 rde) { return Rexw(rde) ? 64 : Osz(rde) ? 16 : 32; }
+
 /* Emits op o inline if it is one we know; pcnext = address after it.
-   *setsip: it wrote m->ip (jcc/jmp). */
+   *setsip: m->ip is valid afterwards (jcc/jmp, or a memory op's prologue). */
 static bool WjInline(struct Wj *w, size_t *n, struct WjOp *o, u64 pcnext,
                      bool *setsip) {
   u64 rde = o->rde;
   long mop = Mopcode(rde);
-  int lg = RegLog2(rde), bits = lg == 3 ? 64 : 32;
-  bool word = (lg == 3 || lg == 2) && !Osz(rde) && Mode(rde) == XED_MODE_LONG;
+  bool lng = Mode(rde) == XED_MODE_LONG;
   bool regf = IsModrmRegister(rde);
+  int wb = WordBits(rde);
   *setsip = false;
-  if (WjInlineMem(w, n, o, pcnext)) {
-    *setsip = true;
+  if (!lng || Lock(rde)) return false;
+  bool memok = MemOk(rde);   /* a memory operand we can address inline */
+  /* operand descriptors for the modrm forms */
+  int erm = regf ? RW(RexbRm(rde)) : MEM;          /* Ev */
+  int brm = regf ? RB(RexRexb(rde)) : MEM;         /* Eb */
+  int ereg = RW(RexrReg(rde));                     /* Gv */
+  int breg = RB(RexRexr(rde));                     /* Gb */
+  int bits = 0, x = 0, y = 0, dst = DST_NONE, kind = -1;
+  bool imm = false, write = false;
+
+  /* ALU family: decide kind, width and operands, then emit once below */
+  switch (mop) {
+    case 0x00: case 0x08: case 0x20: case 0x28: case 0x30:     /* Eb op= Gb */
+      kind = (Opcode(rde) & 070) >> 3; bits = 8; x = brm; y = breg; dst = brm; break;
+    case 0x01: case 0x09: case 0x21: case 0x29: case 0x31:     /* Ev op= Gv */
+      kind = (Opcode(rde) & 070) >> 3; bits = wb; x = erm; y = ereg; dst = erm; break;
+    case 0x02: case 0x0A: case 0x22: case 0x2A: case 0x32:     /* Gb op= Eb */
+      kind = (Opcode(rde) & 070) >> 3; bits = 8; x = breg; y = brm; dst = breg; break;
+    case 0x03: case 0x0B: case 0x23: case 0x2B: case 0x33:     /* Gv op= Ev */
+      kind = (Opcode(rde) & 070) >> 3; bits = wb; x = ereg; y = erm; dst = ereg; break;
+    case 0x38: kind = K_CMP; bits = 8; x = brm; y = breg; break;
+    case 0x39: kind = K_CMP; bits = wb; x = erm; y = ereg; break;
+    case 0x3A: kind = K_CMP; bits = 8; x = breg; y = brm; break;
+    case 0x3B: kind = K_CMP; bits = wb; x = ereg; y = erm; break;
+    case 0x84: kind = K_TEST; bits = 8; x = brm; y = breg; break;
+    case 0x85: kind = K_TEST; bits = wb; x = erm; y = ereg; break;
+    case 0x80: case 0x81: case 0x83:                           /* op E, imm */
+      kind = ModrmReg(rde);
+      if (kind == 2 || kind == 3) return false;
+      bits = mop == 0x80 ? 8 : wb; x = mop == 0x80 ? brm : erm; imm = true;
+      if (kind != K_CMP) dst = x;
+      break;
+    case 0x04: case 0x0C: case 0x24: case 0x2C: case 0x34:     /* op al, imm */
+      kind = (Opcode(rde) & 070) >> 3; bits = 8; x = RB(0); imm = true; dst = x; break;
+    case 0x05: case 0x0D: case 0x25: case 0x2D: case 0x35:     /* op eax, imm */
+      kind = (Opcode(rde) & 070) >> 3; bits = wb; x = RW(0); imm = true; dst = x; break;
+    case 0x3C: kind = K_CMP; bits = 8; x = RB(0); imm = true; break;
+    case 0x3D: kind = K_CMP; bits = wb; x = RW(0); imm = true; break;
+    case 0xA8: kind = K_TEST; bits = 8; x = RB(0); imm = true; break;
+    case 0xA9: kind = K_TEST; bits = wb; x = RW(0); imm = true; break;
+    case 0xFE: case 0xFF:                                      /* inc/dec E */
+      if (ModrmReg(rde) > 1) break;
+      kind = ModrmReg(rde) ? K_DEC : K_INC;
+      bits = mop == 0xFE ? 8 : wb; x = mop == 0xFE ? brm : erm; dst = x;
+      break;
+  }
+  if (kind >= 0) {
+    if (kind == 2 || kind == 3) return false;                  /* adc/sbb */
+    write = dst == MEM;
+    if (x == MEM || y == MEM) {
+      if (!memok) return false;
+      MemBegin(w, n, o, pcnext, bits / 8, write, true);
+        LoadMem(w, n, bits, x == MEM ? LX : LY);
+        EmitAlu(w, n, kind, bits, x == MEM ? SRC_PRE : x,
+                imm ? SRC_IMM : y == MEM ? SRC_PRE : y, o->uimm0,
+                dst == MEM ? DST_MEM : dst);
+      MemEnd(w, n, o, pcnext);
+      *setsip = true;
+    } else {
+      EmitAlu(w, n, kind, bits, x, imm ? SRC_IMM : y, o->uimm0, dst);
+    }
     return true;
   }
+
   switch (mop) {
-    case 0x01: case 0x09: case 0x21: case 0x29: case 0x31: {   /* Ev op= Gv */
-      if (!word || !regf || Lock(rde)) return false;
-      EmitAlu(w, n, (Opcode(rde) & 070) >> 3, bits, RexbRm(rde), RexrReg(rde), 0, RexbRm(rde));
+    case 0x88: case 0x89:                                      /* mov E, G */
+    case 0x8A: case 0x8B: {                                    /* mov G, E */
+      bits = mop & 1 ? wb : 8;
+      int e = mop & 1 ? erm : brm, g = mop & 1 ? ereg : breg;
+      bool toe = mop == 0x88 || mop == 0x89;
+      if (e == MEM && !memok) return false;
+      if (e == MEM) {
+        MemBegin(w, n, o, pcnext, bits / 8, toe, true);
+          if (toe) { LoadReg(w, n, g, bits); Set(w, n, LZ); StoreMem(w, n, bits, LZ); }
+          else { LoadMem(w, n, bits, LZ); StoreRegFrom(w, n, g, LZ, bits); }
+        MemEnd(w, n, o, pcnext);
+        *setsip = true;
+      } else {
+        LoadReg(w, n, toe ? g : e, bits); Set(w, n, LZ);
+        StoreRegFrom(w, n, toe ? e : g, LZ, bits);
+      }
       return true;
     }
-    case 0x03: case 0x0B: case 0x23: case 0x2B: case 0x33: {   /* Gv op= Ev */
-      if (!word || !regf) return false;
-      EmitAlu(w, n, (Opcode(rde) & 070) >> 3, bits, RexrReg(rde), RexbRm(rde), 0, RexrReg(rde));
+    case 0xC6: case 0xC7: {                                    /* mov E, imm */
+      if (ModrmReg(rde)) return false;
+      bits = mop == 0xC6 ? 8 : wb;
+      int e = mop == 0xC6 ? brm : erm;
+      if (e == MEM && !memok) return false;
+      K64(w, n, (i64)(o->uimm0 & Mask(bits))); Set(w, n, LZ);
+      if (e == MEM) {
+        MemBegin(w, n, o, pcnext, bits / 8, true, true);
+          StoreMem(w, n, bits, LZ);
+        MemEnd(w, n, o, pcnext);
+        *setsip = true;
+      } else {
+        StoreRegFrom(w, n, e, LZ, bits);
+      }
       return true;
     }
-    case 0x39:                                                   /* cmp Ev, Gv */
-      if (!word || !regf) return false;
-      EmitAlu(w, n, K_CMP, bits, RexbRm(rde), RexrReg(rde), 0, -1);
+    case 0xB0: case 0xB1: case 0xB2: case 0xB3:                /* mov r8, imm */
+    case 0xB4: case 0xB5: case 0xB6: case 0xB7:
+      K64(w, n, (i64)(o->uimm0 & 0xff)); Set(w, n, LZ);
+      StoreRegFrom(w, n, RB(RexRexbSrm(rde)), LZ, 8);
       return true;
-    case 0x3B:                                                   /* cmp Gv, Ev */
-      if (!word || !regf) return false;
-      EmitAlu(w, n, K_CMP, bits, RexrReg(rde), RexbRm(rde), 0, -1);
+    case 0xB8: case 0xB9: case 0xBA: case 0xBB:                /* mov r, imm */
+    case 0xBC: case 0xBD: case 0xBE: case 0xBF:
+      K64(w, n, (i64)(o->uimm0 & Mask(wb))); Set(w, n, LZ);
+      StoreRegFrom(w, n, RW(RexbSrm(rde)), LZ, wb);
       return true;
-    case 0x85:                                                   /* test Ev, Gv */
-      if (!word || !regf) return false;
-      EmitAlu(w, n, K_TEST, bits, RexbRm(rde), RexrReg(rde), 0, -1);
-      return true;
-    case 0x81: case 0x83: {                                      /* op Ev, imm */
-      int k = ModrmReg(rde);
-      if (!word || !regf || Lock(rde) || k == 2 || k == 3) return false;
-      EmitAlu(w, n, k, bits, RexbRm(rde), -1, o->uimm0, k == K_CMP ? -1 : RexbRm(rde));
+    case 0x1B6: case 0x1B7: case 0x1BE: case 0x1BF:            /* movzx / movsx */
+    case 0x63: {                                               /* movsxd */
+      int sb = mop == 0x63 ? 32 : (mop & 1) ? 16 : 8;
+      bool sx = mop == 0x1BE || mop == 0x1BF || (mop == 0x63 && Rexw(rde));
+      int src = mop == 0x63 || (mop & 1) ? erm : brm;
+      if (mop == 0x63 && !Rexw(rde)) sx = false;               /* plain 32-bit move */
+      if (src == MEM && !memok) return false;
+      if (src == MEM) {
+        MemBegin(w, n, o, pcnext, sb / 8, false, true);
+          LoadMem(w, n, sb, LZ);
+      } else {
+        LoadReg(w, n, src, sb); Set(w, n, LZ);
+      }
+      if (sx) {
+        Get(w, n, LZ);
+        Op(w, n, sb == 8 ? I64EXT8S : sb == 16 ? I64EXT16S : I64EXT32S);
+        if (wb < 64) { K64(w, n, (i64)Mask(wb)); Op(w, n, I64AND); }
+        Set(w, n, LZ);
+      }
+      StoreRegFrom(w, n, ereg, LZ, wb);
+      if (src == MEM) { MemEnd(w, n, o, pcnext); *setsip = true; }
       return true;
     }
-    case 0x89:                                                   /* mov Ev, Gv */
-    case 0x8B: {                                                 /* mov Gv, Ev */
-      if (!word || !regf) return false;
-      int src = mop == 0x89 ? RexrReg(rde) : RexbRm(rde);
-      int dst = mop == 0x89 ? RexbRm(rde) : RexrReg(rde);
-      LoadReg(w, n, src, bits); Set(w, n, LZ);
-      StoreRegFrom(w, n, dst, LZ);
-      return true;
-    }
-    case 0xB8: case 0xB9: case 0xBA: case 0xBB:                  /* mov r, imm */
-    case 0xBC: case 0xBD: case 0xBE: case 0xBF: {
-      if (!word) return false;
-      K64(w, n, (i64)(bits == 64 ? o->uimm0 : (u32)o->uimm0)); Set(w, n, LZ);
-      StoreRegFrom(w, n, RexbSrm(rde), LZ);
-      return true;
-    }
-    case 0x8D: {                                                 /* lea Gv, M */
+    case 0x8D: {                                               /* lea Gv, M */
       int ea = Eamode(rde);
-      if (!word || regf || (ea != XED_MODE_LONG && ea != XED_MODE_LEGACY)) return false;
+      if (regf || wb == 16 || (ea != XED_MODE_LONG && ea != XED_MODE_LEGACY)) return false;
       if (!SibExists(rde)) {
         if (IsRipRelative(rde)) {
           K64(w, n, (i64)(pcnext + (u64)o->disp));
         } else {
           K64(w, n, o->disp);
-          LoadReg(w, n, RexbRm(rde), 64); Op(w, n, I64ADD);
+          LoadReg(w, n, RW(RexbRm(rde)), 64); Op(w, n, I64ADD);
         }
       } else {
         K64(w, n, o->disp);
-        if (SibHasBase(rde)) { LoadReg(w, n, RexbBase(rde), 64); Op(w, n, I64ADD); }
+        if (SibHasBase(rde)) { LoadReg(w, n, RW(RexbBase(rde)), 64); Op(w, n, I64ADD); }
         if (SibHasIndex(rde)) {
-          LoadReg(w, n, Rexx(rde) << 3 | SibIndex(rde), 64);
+          LoadReg(w, n, RW(Rexx(rde) << 3 | SibIndex(rde)), 64);
           K64(w, n, SibScale(rde)); Op(w, n, I64SHL); Op(w, n, I64ADD);
         }
       }
-      if (ea == XED_MODE_LEGACY || bits == 32) { K64(w, n, 0xffffffff); Op(w, n, I64AND); }
+      if (ea == XED_MODE_LEGACY || wb == 32) { K64(w, n, 0xffffffff); Op(w, n, I64AND); }
       Set(w, n, LZ);
-      StoreRegFrom(w, n, RexrReg(rde), LZ);
+      StoreRegFrom(w, n, ereg, LZ, wb);
       return true;
     }
-    case 0xEB: case 0xE9:                                        /* jmp rel */
-      if (Mode(rde) != XED_MODE_LONG) return false;
+    case 0x50: case 0x51: case 0x52: case 0x53:                /* push r64 */
+    case 0x54: case 0x55: case 0x56: case 0x57:
+      if (Osz(rde)) return false;
+      LoadReg(w, n, RW(RexbSrm(rde)), 64); Set(w, n, LZ);      /* value first */
+      LoadReg(w, n, RW(4), 64); K64(w, n, 8); Op(w, n, I64SUB); Set(w, n, LA);
+      MemBegin(w, n, o, pcnext, 8, true, false);
+        StoreRegFrom(w, n, RW(4), LA, 64);
+        StoreMem(w, n, 64, LZ);
+      MemEnd(w, n, o, pcnext);
+      *setsip = true;
+      return true;
+    case 0x58: case 0x59: case 0x5A: case 0x5B:                /* pop r64 */
+    case 0x5C: case 0x5D: case 0x5E: case 0x5F:
+      if (Osz(rde)) return false;
+      LoadReg(w, n, RW(4), 64); Set(w, n, LA);
+      MemBegin(w, n, o, pcnext, 8, false, false);
+        LoadMem(w, n, 64, LZ);
+        Get(w, n, LA); K64(w, n, 8); Op(w, n, I64ADD); Set(w, n, LE);
+        StoreRegFrom(w, n, RW(4), LE, 64);
+        StoreRegFrom(w, n, RW(RexbSrm(rde)), LZ, 64);
+      MemEnd(w, n, o, pcnext);
+      *setsip = true;
+      return true;
+    case 0xEB: case 0xE9:                                      /* jmp rel */
       Get(w, n, 0); K64(w, n, (i64)(pcnext + (u64)o->disp));
       Mem(w, n, I64ST, 3, offsetof(struct Machine, ip));
       *setsip = true;
       return true;
     default:
       if (((mop >= 0x70 && mop <= 0x7F) || (mop >= 0x180 && mop <= 0x18F)) &&
-          (mop & 15) != 0xA && (mop & 15) != 0xB && Mode(rde) == XED_MODE_LONG) {
+          (mop & 15) != 0xA && (mop & 15) != 0xB) {
         Get(w, n, 0);
         K64(w, n, (i64)(pcnext + (u64)o->disp));
         K64(w, n, (i64)pcnext);
