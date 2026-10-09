@@ -240,8 +240,10 @@ case "$_CMDLINE" in
 	;;
 esac
 
-# sshd only if installed (apk add openssh / dropbear installs then this
-# starts it on next boot; the stub path handles first-use in-session).
+# sshd only if installed (apk add openssh; with a persisted disk, ?persist=1,
+# this starts it on every later boot). In-session the page's "remote" button
+# installs and starts it. openssh gets no auto-install stubs (SKIP_PKGS below): a stub at
+# /sbin/sshd would pass this -x test and download the package every boot.
 if [ -x /usr/local/libexec/sshd-session ] || [ -x /sbin/sshd ]; then
 	(while true; do
 		if [ -x /sbin/sshd ]; then
@@ -328,7 +330,8 @@ pkgs = index.get("packages", {})
 
 BIN_DIRS = ("bin/", "sbin/", "usr/bin/", "usr/sbin/",
             "usr/local/bin/", "usr/local/sbin/")
-SKIP_PKGS = {"busybox"}          # core of the lean image itself
+SKIP_PKGS = {"busybox",          # core of the lean image itself
+             "openssh"}          # /etc/rc tests -x /sbin/sshd: a stub would install it every boot
 stub_count = 0
 per_pkg = []
 for name, meta in sorted(pkgs.items()):

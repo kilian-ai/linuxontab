@@ -5115,9 +5115,14 @@ $('tn-run-btn').onclick = () => {
       // between connections.
       let up = false;
       for (let i = 0; i < 3 && !up; i++) { if (i) await new Promise(r => setTimeout(r, 2000)); up = await probeSshd(); }
+      // No sshd (the lean image ships without it): install the openssh package
+      // if needed (apk update first when the baked index predates it), and
+      // start sshd below once the password and host key are in place.
+      const startSshd = !up;
       if (!up) {
-        status('No SSH server is answering on port 22 in this tab. The full disk (?disk=full) runs one; on the lean image try `apk add openssh` first.', 'err');
-        return;
+        status('no SSH server running: installing/starting OpenSSH (apk add openssh)…');
+        const inst = await guestRun('[ -x /sbin/sshd ] || apk add openssh || { apk update && apk add openssh; }', 180000);
+        if (!inst) { status('Could not install OpenSSH (apk add openssh failed — see the terminal).', 'err'); return; }
       }
       const pw = rand(8, 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789');
       const salt = rand(2, 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./');
@@ -5141,7 +5146,16 @@ $('tn-run-btn').onclick = () => {
       // handler sits at wasm table index 1, which the kernel reads as SIG_IGN.
       // On SIGTERM rc's loop serves one connection with sshd-session (which
       // reads the key files itself) and then restarts the daemon.
-      const keyCmd = hk ? ` && chmod 600 /tmp/.lot-hostkey && mv /tmp/.lot-hostkey /etc/ssh/ssh_host_ed25519_key && echo '${hk.pub}' > /etc/ssh/ssh_host_ed25519_key.pub && (kill $(cat /run/sshd.pid 2>/dev/null) 2>/dev/null; true)` : '';
+      const installKey = hk ? ` && chmod 600 /tmp/.lot-hostkey && mv /tmp/.lot-hostkey /etc/ssh/ssh_host_ed25519_key && echo '${hk.pub}' > /etc/ssh/ssh_host_ed25519_key.pub` : '';
+      // Not running: start it the way /etc/rc does (respawn loop, privsep dir
+      // owned by root). Running: restart it for the new key (rc's loop
+      // respawns it).
+      const sshdCmd = startSshd
+        ? ` && mkdir -p /run/sshd /var/empty && chown root:root /var/empty && chmod 755 /var/empty && { (while true; do /sbin/sshd -D -e -f /etc/ssh/sshd_config >>/tmp/sshd.log 2>&1; sleep 1; done) & }`
+        // read + kill, not kill $(cat …): the lean image's hush can't parse
+        // $(…) inside a (…) subshell.
+        : (hk ? ` && { { read -r P < /run/sshd.pid; } 2>/dev/null && kill "$P" 2>/dev/null; true; }` : '');
+      const keyCmd = installKey + sshdCmd;
       // authorized_keys: sshd's StrictModes wants root's home and ~/.ssh owned
       // by root (the image carries the builder's uid); keep earlier keys,
       // drop duplicates.
@@ -5149,9 +5163,9 @@ $('tn-run-btn').onclick = () => {
       const akCmd = ak.keys.length ? ` && mkdir -p /root/.ssh && chown root:root /root /root/.ssh && chmod 700 /root/.ssh && touch ${akf} && base64 -d /tmp/.lot-ak.b64 >> ${akf} && awk '!s[$0]++' ${akf} > /tmp/.lot-ak && mv /tmp/.lot-ak ${akf} && chown root:root ${akf} && chmod 600 ${akf} && rm -f /tmp/.lot-ak.b64` : '';
       const ok = await guestRun(`sed -i "s#^root:[^:]*:#root:$(cryptpw -m des '${pw}' '${salt}'):#" /etc/shadow${akCmd}${keyCmd}`);
       if (!ok) { status('Could not set the password: is the guest shell at a prompt? Try again from an idle shell.', 'err'); return; }
-      if (hk) {
+      if (hk || startSshd) {
         // Use up rc's one-connection fallback, then wait for the daemon.
-        status('restarting sshd with the new host key…');
+        status(startSshd ? 'starting sshd…' : 'restarting sshd with the new host key…');
         await new Promise((r) => setTimeout(r, 1500));
         await probeSshd();
         let back = false;
