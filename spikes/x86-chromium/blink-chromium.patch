@@ -1047,7 +1047,7 @@ index 54eea75..f9586b2 100644
        diremain = 4096 - (diactual & 4095);
        diremain = MIN(diremain, 65536 - dilow);
 diff --git a/blink/syscall.c b/blink/syscall.c
-index 7ccfa52..bbf41f9 100644
+index 5bcc1e1..c25e184 100644
 --- a/blink/syscall.c
 +++ b/blink/syscall.c
 @@ -369,6 +369,13 @@ _Noreturn void SysExitGroup(struct Machine *m, int rc) {
@@ -1387,7 +1387,7 @@ index 7ccfa52..bbf41f9 100644
  }
  
  static i64 SysBrk(struct Machine *m, i64 addr) {
-@@ -1518,6 +1604,30 @@ static i64 SysMmapImpl(struct Machine *m, i64 virt, i64 size, int prot,
+@@ -1518,6 +1604,35 @@ static i64 SysMmapImpl(struct Machine *m, i64 virt, i64 size, int prot,
        errno = EACCES;
        return -1;
      }
@@ -1400,7 +1400,11 @@ index 7ccfa52..bbf41f9 100644
 +    // mapped, and so is shared memory (below).
 +    // Shared-memory files (Chromium's tiles live in /tmp/.org.chromium.*,
 +    // still linked while mapped) must keep working: only named files
-+    // outside /tmp and /dev/shm are refused.
++    // outside /tmp and /dev/shm are refused. So must SQLite's WAL index
++    // (<db>-shm): it has no pread fallback (WAL mode fails with
++    // SQLITE_IOERR_SHMMAP, openclaw's state db did), and SQLite only ever
++    // touches it through the mapping, one mapping per region per process,
++    // which lot_mmap's per-file shared buffer keeps coherent.
 +    if ((flags & MAP_SHARED_LINUX) && (oflags & O_ACCMODE) != O_RDONLY) {
 +      struct stat st;
 +      char link[64], path[512];
@@ -1409,7 +1413,8 @@ index 7ccfa52..bbf41f9 100644
 +      if (!fstat(fildes, &st) && S_ISREG(st.st_mode) && st.st_nlink > 0 &&
 +          (n = readlink(link, path, sizeof(path) - 1)) > 0) {
 +        path[n] = 0;
-+        if (strncmp(path, "/tmp/", 5) && strncmp(path, "/dev/shm/", 9)) {
++        if (strncmp(path, "/tmp/", 5) && strncmp(path, "/dev/shm/", 9) &&
++            !(n > 4 && !strcmp(path + n - 4, "-shm"))) {
 +          return enodev();
 +        }
 +      }
@@ -1418,7 +1423,7 @@ index 7ccfa52..bbf41f9 100644
    }
    newautomap = -1;
    fixedmap = false;
-@@ -1650,7 +1760,9 @@ static int XlatMsyncFlags(int flags) {
+@@ -1650,7 +1765,9 @@ static int XlatMsyncFlags(int flags) {
  }
  
  static int SysMsync(struct Machine *m, i64 virt, u64 size, int flags) {
@@ -1429,7 +1434,7 @@ index 7ccfa52..bbf41f9 100644
    if ((flags = XlatMsyncFlags(flags)) == -1) return -1;
    return SyncVirtual(m->system, virt, size, flags);
  }
-@@ -2551,6 +2663,9 @@ static int SysConnect(struct Machine *m, int fd, i64 aa, u32 as) {
+@@ -2551,6 +2668,9 @@ static int SysConnect(struct Machine *m, int fd, i64 aa, u32 as) {
  static int UnXlatSocketType(int x) {
    if (x == SOCK_STREAM) return SOCK_STREAM_LINUX;
    if (x == SOCK_DGRAM) return SOCK_DGRAM_LINUX;
@@ -1439,7 +1444,7 @@ index 7ccfa52..bbf41f9 100644
    LOGF("%s %d not supported yet", "socket type", x);
    return einval();
  }
-@@ -3656,14 +3771,35 @@ static int SysFcntl(struct Machine *m, i32 fildes, i32 cmd, i64 arg) {
+@@ -3656,14 +3776,35 @@ static int SysFcntl(struct Machine *m, i32 fildes, i32 cmd, i64 arg) {
    return rc;
  }
  
@@ -1475,7 +1480,7 @@ index 7ccfa52..bbf41f9 100644
    if (!(buf = (char *)AddToFreeList(m, malloc(bufsiz)))) return -1;
    if ((rc = VfsReadlink(GetDirFildes(dirfd), LoadStr(m, path), buf, bufsiz)) !=
        -1) {
-@@ -4063,11 +4199,13 @@ static int SysPrlimit(struct Machine *m, i32 pid, i32 resource,
+@@ -4063,11 +4204,13 @@ static int SysPrlimit(struct Machine *m, i32 pid, i32 resource,
  #ifndef TINY
    if ((old_rlimit_addr &&
         !IsValidMemory(m, old_rlimit_addr, sizeof(struct rlimit_linux),
