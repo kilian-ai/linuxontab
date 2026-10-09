@@ -72,10 +72,9 @@ git apply "$BLINKSPIKE/blink-lot.patch"
 git apply "$HERE/blink-chromium.patch"
 # wasmjit (#14): hot x86 blocks become wasm functions loaded through the
 # runtime's lot_wasm_load (needs --growable-table, above; off by itself on a
-# runtime without it, or with BLINK_WASMJIT=0). Opt in with WASMJIT=1 while
-# it settles.
+# runtime without it, or with BLINK_WASMJIT=0). WASMJIT=0 builds without it.
 WJFLAG=""
-if [ "${WASMJIT:-0}" = 1 ]; then
+if [ "${WASMJIT:-1}" = 1 ]; then
   git apply "$HERE/blink-wasmjit.patch"
   cp "$HERE/wasmjit.c" blink/wasmjit.c
   WJFLAG="-DLOT_WASMJIT"

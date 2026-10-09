@@ -180,8 +180,8 @@ Debugging aids that found them:
 ## Translating hot x86 blocks to wasm (wasmjit, #14)
 
 Blink on wasm32 is a pure interpreter (its JIT emits native code). `wasmjit.c`
-(+ `blink-wasmjit.patch`, built in with `WASMJIT=1 sh build.sh`; opt-in
-while it settles) is a call-threaded backend: a block start reached
+(+ `blink-wasmjit.patch`, built in by default; `WASMJIT=0 sh build.sh`
+leaves it out) is a call-threaded backend: a block start reached
 `BLINK_WASMJIT_HOT` times (default 32) is recorded while it runs, then
 emitted as one wasm function that sets `ip`/`oplen`, calls each op's handler
 through Blink's own function table, commits stashed writes and returns to the
