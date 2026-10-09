@@ -204,21 +204,30 @@ for PF), so handler ops after them see the same state. `alu.c` (an x86 test
 that runs each of these with random operands and hashes results + pushfq
 flags) prints the same hash under the old and the new Blink.
 
+Memory operands of those ops (loads, stores, read-modify-write, cmp/test
+against memory, mov M,imm) and push/pop take Blink's TLB fast path in wasm:
+the per-thread 32-entry TLB slot must hold the page with V|U|HOST (+RW for a
+write), the TLB must not be invalidated and the access must not cross the
+page; the host address is then `g_hostpages.p[entry >> 12] + offset`. A miss,
+fault, copy-on-write page or page-crossing access calls the op's handler
+instead. `mem.c` (the memory-form counterpart of `alu.c`, incl. FS-relative
+TLS and page-crossing accesses) also hashes the same under old and new Blink.
+
 Measured in the guest (same binaries, old vs new Blink, interleaved):
 
-| workload | interpreter | wasmjit, calls only | + inline ops |
-|---|---|---|---|
-| primes < 200000 (spikes/x86-blink/bench.c) | 1.83 s | 1.23 s | 0.72 s |
-| hashing + qsort + snprintf (mix.c) | 3.00 s | 1.83 s | 1.22 s |
-| Node 24 Sparkplug (default), small JS workload | 3.69 s | 2.29 s | 1.76 s |
-| Node 24 `--jitless`, same | 4.11 s | 2.54 s | 1.87 s |
-| nodetest.js (11/11), start-up bound | 3.48 s | 3.34 s | 2.68 s |
+| workload | interpreter | calls only | + inline ops | + memory operands |
+|---|---|---|---|---|
+| primes < 200000 (spikes/x86-blink/bench.c) | 1.81 s | 1.23 s | 0.72 s | 0.74 s |
+| hashing + qsort + snprintf (mix.c) | 2.93 s | 1.83 s | 1.22 s | 0.82 s |
+| Node 24 Sparkplug (default), small JS workload | 3.65 s | 2.29 s | 1.76 s | 1.20 s |
+| Node 24 `--jitless`, same | 4.11 s | 2.54 s | 1.87 s | 1.10 s |
+| nodetest.js (11/11), start-up bound | 3.51 s | 3.34 s | 2.68 s | 2.23 s |
 
 Correctness: same outputs, `sha256sum` matches native, threads, fork+threads,
-faulttest 7/7, sigchld, nodetest 11/11 (also with BLINK_WASMJIT_HOT=2, where
-almost everything is translated). A module costs ~30-40 us to compile, which
-sets the threshold: at 32 start-up-bound runs got slower. Next: memory
-operands inline (the TLB fast path), chaining blocks, several blocks per
+faulttest 7/7, sigchld, nodetest 11/11 (also with BLINK_WASMJIT_HOT=2..4, where
+almost everything is translated: 61k blocks for nodetest). A module costs ~30-40 us to compile, which
+sets the threshold: at 32 start-up-bound runs got slower. Next: movzx/movsx
+and the byte/word forms, call/ret, chaining blocks, several blocks per
 module. Code V8 generates stays interpreted (its pages stay writable).
 
 ## Open

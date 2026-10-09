@@ -34,8 +34,16 @@
  * the way blink/alu.c does (CF ZF SF OF AF, and the result's low byte in
  * bits 24-31 for PF), so handler ops that follow read the same state.
  *
- * What it does not do (yet): memory operands inline, chain blocks, batch
- * several blocks into one module, compile off the hot path.
+ * Memory operands of those ops (and push/pop) take Blink's TLB fast path in
+ * wasm: tlb[(page >> 12) & 31] must hold the page with V|U|HOST (+RW for a
+ * write), the TLB must not be invalidated, and the access must not cross
+ * the page; the host address is then g_hostpages.p[entry >> 12] + offset
+ * (FindHostPage). Anything else — a miss, a fault, a copy-on-write page, a
+ * page-crossing access — calls the op's handler instead, which does it the
+ * usual way. ip/oplen are stored first so that handler can fault.
+ *
+ * What it does not do (yet): chain blocks, batch several blocks into one
+ * module, compile off the hot path.
  *
  * State is per thread (_Thread_local): every host thread is its own wasm
  * instance with its own function table, so a slot is only valid on the
@@ -302,10 +310,13 @@ enum { LGET = 0x20, LSET = 0x21, I32C = 0x41, I64C = 0x42, I64LD = 0x29,
        I64ADD = 0x7c, I64SUB = 0x7d, I64AND = 0x83, I64OR = 0x84,
        I64XOR = 0x85, I64SHL = 0x86, I64SHRU = 0x88, I32WRAP = 0xa7,
        I32OR = 0x72, I32XOR = 0x73, I32SHL = 0x74, I32SHRU = 0x76,
-       SELECT = 0x1b };
+       SELECT = 0x1b, ELSE = 0x05, LTEE = 0x22, I64LEU = 0x58,
+       I32ADD = 0x6a, I32MUL = 0x6c, I32NE = 0x47, I64ST32 = 0x3e };
 
-/* function locals after the 4 params: three i64 scratch values, one i32 */
-enum { LX = 4, LY = 5, LZ = 6, LF = 7 };
+/* function locals after the 4 params: five i64 scratch values (operands,
+   result, effective address, TLB entry), four i32 (flags, TLB slot address,
+   host page, host address) */
+enum { LX = 4, LY = 5, LZ = 6, LA = 7, LE = 8, LF = 9, LT = 10, LP = 11, LH = 12 };
 
 static void Mem(struct Wj *w, size_t *n, u8 op, u32 align, u32 off) {
   B(w, n, op); U(w, n, align); U(w, n, off);
@@ -334,16 +345,27 @@ static void StoreRegFrom(struct Wj *w, size_t *n, int r, u32 l) {
 
 enum { K_ADD = 0, K_OR = 1, K_AND = 4, K_SUB = 5, K_XOR = 6, K_CMP = 7, K_TEST = 8 };
 
-/* x (reg) op y (reg, or imm when yr < 0); result to dst unless dst < 0 */
+enum { SRC_IMM = -1, SRC_PRE = -2 };   /* operand: imm / already in LX|LY */
+enum { DST_NONE = -1, DST_MEM = -2 };  /* result: dropped / stored at LH */
+
+static void StoreMem(struct Wj *w, size_t *n, int bits, u32 l) {
+  Get(w, n, LH); Get(w, n, l);
+  if (bits == 64) Mem(w, n, I64ST, 0, 0); else Mem(w, n, I64ST32, 0, 0);
+}
+
+/* x op y; x is a register or SRC_PRE (LX set), y a register, SRC_IMM or
+   SRC_PRE (LY set); the result goes to register dst, DST_MEM or nowhere */
 static void EmitAlu(struct Wj *w, size_t *n, int kind, int bits, int xr, int yr,
                     u64 imm, int dst) {
   u64 mask = bits == 64 ? ~0ull : 0xffffffffull;
   bool arith = kind == K_ADD || kind == K_SUB || kind == K_CMP;
   bool sub = kind == K_SUB || kind == K_CMP;
-  LoadReg(w, n, xr, bits); Set(w, n, LX);
-  if (yr >= 0) LoadReg(w, n, yr, bits);
-  else K64(w, n, (i64)(imm & mask));
-  Set(w, n, LY);
+  if (xr >= 0) { LoadReg(w, n, xr, bits); Set(w, n, LX); }
+  if (yr != SRC_PRE) {
+    if (yr >= 0) LoadReg(w, n, yr, bits);
+    else K64(w, n, (i64)(imm & mask));
+    Set(w, n, LY);
+  }
   Get(w, n, LX); Get(w, n, LY);
   switch (kind) {
     case K_ADD: Op(w, n, I64ADD); break;
@@ -355,6 +377,7 @@ static void EmitAlu(struct Wj *w, size_t *n, int kind, int bits, int xr, int yr,
   if (bits == 32) { K64(w, n, 0xffffffff); Op(w, n, I64AND); }
   Set(w, n, LZ);
   if (dst >= 0) StoreRegFrom(w, n, dst, LZ);
+  else if (dst == DST_MEM) StoreMem(w, n, bits, LZ);
   /* m->flags = (m->flags & ~(CF|ZF|SF|OF|AF|0xff000000)) | ... */
   Get(w, n, 0);
   Get(w, n, 0); Mem(w, n, I32LD, 2, OFLAGS);
@@ -384,6 +407,187 @@ static void EmitAlu(struct Wj *w, size_t *n, int kind, int bits, int xr, int yr,
     K32(w, n, 1); Op(w, n, I32AND); K32(w, n, FLAGS_OF); Op(w, n, I32SHL); Op(w, n, I32OR);
   }
   Mem(w, n, I32ST, 2, OFLAGS);
+}
+
+
+/* ── memory operands ─────────────────────────────────────────────────────── */
+static u32 OTLB, OINV, OSEGB[8];
+static u32 HOSTPAGES;                 /* address of g_hostpages.p */
+
+static bool MemOk(u64 rde) {
+  int ea = Eamode(rde);
+  return !IsModrmRegister(rde) && Mode(rde) == XED_MODE_LONG &&
+         (ea == XED_MODE_LONG || ea == XED_MODE_LEGACY);
+}
+
+/* LA = ComputeAddress(): LoadEffectiveAddress() + segment base */
+static void EmitEa(struct Wj *w, size_t *n, struct WjOp *o, u64 pcnext) {
+  u64 rde = o->rde;
+  int seg = 3;                                     /* DS (seg[] index) */
+  if (!SibExists(rde)) {
+    if (IsRipRelative(rde)) {
+      K64(w, n, (i64)(pcnext + (u64)o->disp));
+    } else {
+      K64(w, n, o->disp);
+      LoadReg(w, n, RexbRm(rde), 64); Op(w, n, I64ADD);
+      if (RexbRm(rde) == 4 || RexbRm(rde) == 5) seg = 2;       /* SS */
+    }
+  } else {
+    K64(w, n, o->disp);
+    if (SibHasBase(rde)) {
+      LoadReg(w, n, RexbBase(rde), 64); Op(w, n, I64ADD);
+      if (RexbBase(rde) == 4 || RexbBase(rde) == 5) seg = 2;
+    }
+    if (SibHasIndex(rde)) {
+      LoadReg(w, n, Rexx(rde) << 3 | SibIndex(rde), 64);
+      K64(w, n, SibScale(rde)); Op(w, n, I64SHL); Op(w, n, I64ADD);
+    }
+  }
+  if (Eamode(rde) == XED_MODE_LEGACY) { K64(w, n, 0xffffffff); Op(w, n, I64AND); }
+  if (Sego(rde)) seg = Sego(rde) - 1;
+  Get(w, n, 0); Mem(w, n, I64LD, 3, OSEGB[seg]); Op(w, n, I64ADD);
+  Set(w, n, LA);
+}
+
+/* LH = host address of [LA, LA+size) through the TLB, or 0 */
+static void EmitXlat(struct Wj *w, size_t *n, int size, bool write) {
+  u64 need = PAGE_V | PAGE_U | PAGE_HOST | (write ? PAGE_RW : 0);
+  /* LT = m + ((LA >> 12) & 31) * 16 */
+  Get(w, n, 0);
+  Get(w, n, LA); K64(w, n, 12); Op(w, n, I64SHRU); Op(w, n, I32WRAP);
+  K32(w, n, 31); Op(w, n, I32AND); K32(w, n, 16); Op(w, n, I32MUL); Op(w, n, I32ADD);
+  Set(w, n, LT);
+  Get(w, n, LT); Mem(w, n, I64LD, 3, OTLB + 8); Set(w, n, LE);
+  /* tlb.page == (LA & -4096) */
+  Get(w, n, LT); Mem(w, n, I64LD, 3, OTLB);
+  Get(w, n, LA); K64(w, n, -4096); Op(w, n, I64AND); Op(w, n, I64EQ);
+  /* (entry & need) == need */
+  Get(w, n, LE); K64(w, n, (i64)need); Op(w, n, I64AND); K64(w, n, (i64)need); Op(w, n, I64EQ);
+  Op(w, n, I32AND);
+  /* (LA & 4095) <= 4096 - size */
+  Get(w, n, LA); K64(w, n, 4095); Op(w, n, I64AND); K64(w, n, 4096 - size); Op(w, n, I64LEU);
+  Op(w, n, I32AND);
+  /* !m->invalidated */
+  Get(w, n, 0); Mem(w, n, I32LD8U, 0, OINV); Op(w, n, EQZ32);
+  Op(w, n, I32AND);
+  B(w, n, IF); B(w, n, 0x7f);
+    /* LP = g_hostpages.p[(entry & PAGE_TA) >> 12] */
+    K32(w, n, (i32)HOSTPAGES); Mem(w, n, I32LD, 2, 0);
+    Get(w, n, LE); K64(w, n, (i64)PAGE_TA); Op(w, n, I64AND); K64(w, n, 12); Op(w, n, I64SHRU);
+    Op(w, n, I32WRAP); K32(w, n, 2); Op(w, n, I32SHL); Op(w, n, I32ADD);
+    Mem(w, n, I32LD, 2, 0); B(w, n, LTEE); U(w, n, LP);
+    /* LP ? LP + (LA & 4095) : 0 */
+    Get(w, n, LA); Op(w, n, I32WRAP); K32(w, n, 4095); Op(w, n, I32AND); Op(w, n, I32ADD);
+    K32(w, n, 0);
+    Get(w, n, LP); K32(w, n, 0); Op(w, n, I32NE);
+    Op(w, n, SELECT);
+  B(w, n, ELSE);
+    K32(w, n, 0);
+  B(w, n, END);
+  Set(w, n, LH);
+}
+
+static void EmitHandler(struct Wj *w, size_t *n, struct WjOp *o, u64 pc, bool prologue);
+
+/* prologue, address, TLB; then `if (LH)` — the caller emits the fast path */
+static void MemBegin(struct Wj *w, size_t *n, struct WjOp *o, u64 pc, int size,
+                     bool write, bool ea) {
+  Get(w, n, 0); K64(w, n, (i64)pc); Mem(w, n, I64ST, 3, offsetof(struct Machine, ip));
+  Get(w, n, 0); K32(w, n, o->len); Mem(w, n, I32ST8, 0, offsetof(struct Machine, oplen));
+  if (ea) EmitEa(w, n, o, pc);
+  EmitXlat(w, n, size, write);
+  Get(w, n, LH); B(w, n, IF); B(w, n, 0x40);
+}
+/* `else` the op's handler `end` */
+static void MemEnd(struct Wj *w, size_t *n, struct WjOp *o, u64 pc) {
+  B(w, n, ELSE);
+  EmitHandler(w, n, o, pc, false);
+  B(w, n, END);
+}
+
+/* LX or LY = the memory operand at LH */
+static void LoadMem(struct Wj *w, size_t *n, int bits, u32 l) {
+  Get(w, n, LH);
+  if (bits == 64) Mem(w, n, I64LD, 0, 0); else Mem(w, n, I64LD32U, 0, 0);
+  Set(w, n, l);
+}
+
+/* memory forms; *setsip is always true (MemBegin stored ip) */
+static bool WjInlineMem(struct Wj *w, size_t *n, struct WjOp *o, u64 pc) {
+  u64 rde = o->rde;
+  long mop = Mopcode(rde);
+  int lg = RegLog2(rde), bits = lg == 3 ? 64 : 32, size = bits / 8;
+  bool word = (lg == 3 || lg == 2) && !Osz(rde) && Mode(rde) == XED_MODE_LONG;
+  if (mop >= 0x50 && mop <= 0x5F) {                            /* push / pop r64 */
+    int r = RexbSrm(rde);
+    if (Osz(rde) || Mode(rde) != XED_MODE_LONG) return false;
+    if (mop < 0x58) {
+      LoadReg(w, n, r, 64); Set(w, n, LZ);                     /* value first */
+      LoadReg(w, n, 4, 64); K64(w, n, 8); Op(w, n, I64SUB); Set(w, n, LA);
+      MemBegin(w, n, o, pc, 8, true, false);
+        StoreRegFrom(w, n, 4, LA);
+        StoreMem(w, n, 64, LZ);
+      MemEnd(w, n, o, pc);
+    } else {
+      LoadReg(w, n, 4, 64); Set(w, n, LA);
+      MemBegin(w, n, o, pc, 8, false, false);
+        LoadMem(w, n, 64, LZ);
+        Get(w, n, LA); K64(w, n, 8); Op(w, n, I64ADD); Set(w, n, LE);
+        StoreRegFrom(w, n, 4, LE);
+        StoreRegFrom(w, n, r, LZ);
+      MemEnd(w, n, o, pc);
+    }
+    return true;
+  }
+  if (!word || !MemOk(rde) || Lock(rde)) return false;
+  switch (mop) {
+    case 0x8B:                                                   /* mov Gv, M */
+      MemBegin(w, n, o, pc, size, false, true);
+        LoadMem(w, n, bits, LZ); StoreRegFrom(w, n, RexrReg(rde), LZ);
+      MemEnd(w, n, o, pc);
+      return true;
+    case 0x89:                                                   /* mov M, Gv */
+      MemBegin(w, n, o, pc, size, true, true);
+        LoadReg(w, n, RexrReg(rde), bits); Set(w, n, LZ); StoreMem(w, n, bits, LZ);
+      MemEnd(w, n, o, pc);
+      return true;
+    case 0xC7:                                                   /* mov M, imm */
+      if (ModrmReg(rde)) return false;
+      MemBegin(w, n, o, pc, size, true, true);
+        K64(w, n, (i64)(bits == 64 ? o->uimm0 : (u32)o->uimm0)); Set(w, n, LZ);
+        StoreMem(w, n, bits, LZ);
+      MemEnd(w, n, o, pc);
+      return true;
+    case 0x03: case 0x0B: case 0x23: case 0x2B: case 0x33:       /* Gv op= M */
+    case 0x3B:                                                   /* cmp Gv, M */
+      MemBegin(w, n, o, pc, size, false, true);
+        LoadMem(w, n, bits, LY);
+        EmitAlu(w, n, mop == 0x3B ? K_CMP : (Opcode(rde) & 070) >> 3, bits,
+                RexrReg(rde), SRC_PRE, 0, mop == 0x3B ? DST_NONE : RexrReg(rde));
+      MemEnd(w, n, o, pc);
+      return true;
+    case 0x01: case 0x09: case 0x21: case 0x29: case 0x31:       /* M op= Gv */
+    case 0x39: case 0x85: {                                      /* cmp/test M, Gv */
+      bool ro = mop == 0x39 || mop == 0x85;
+      int k = mop == 0x39 ? K_CMP : mop == 0x85 ? K_TEST : (Opcode(rde) & 070) >> 3;
+      MemBegin(w, n, o, pc, size, !ro, true);
+        LoadMem(w, n, bits, LX);
+        EmitAlu(w, n, k, bits, SRC_PRE, RexrReg(rde), 0, ro ? DST_NONE : DST_MEM);
+      MemEnd(w, n, o, pc);
+      return true;
+    }
+    case 0x81: case 0x83: {                                      /* op M, imm */
+      int k = ModrmReg(rde);
+      if (k == 2 || k == 3) return false;
+      MemBegin(w, n, o, pc, size, k != K_CMP, true);
+        LoadMem(w, n, bits, LX);
+        EmitAlu(w, n, k, bits, SRC_PRE, SRC_IMM, o->uimm0, k == K_CMP ? DST_NONE : DST_MEM);
+      MemEnd(w, n, o, pc);
+      return true;
+    }
+    default:
+      return false;
+  }
 }
 
 /* push the condition (i32 0/1) of jcc code 0..15 (not 0xA/0xB), from the
@@ -416,6 +620,10 @@ static bool WjInline(struct Wj *w, size_t *n, struct WjOp *o, u64 pcnext,
   bool word = (lg == 3 || lg == 2) && !Osz(rde) && Mode(rde) == XED_MODE_LONG;
   bool regf = IsModrmRegister(rde);
   *setsip = false;
+  if (WjInlineMem(w, n, o, pcnext)) {
+    *setsip = true;
+    return true;
+  }
   switch (mop) {
     case 0x01: case 0x09: case 0x21: case 0x29: case 0x31: {   /* Ev op= Gv */
       if (!word || !regf || Lock(rde)) return false;
@@ -506,18 +714,50 @@ static bool WjInline(struct Wj *w, size_t *n, struct WjOp *o, u64 pcnext,
   }
 }
 
-static void EmitBody(struct Wj *w, size_t *n) {
+/* the op's handler, as JitlessDispatch would run it, then
+   `if (m->ip != pc) { m->oplen = 0; return; }` */
+static void EmitHandler(struct Wj *w, size_t *n, struct WjOp *o, u64 pc, bool prologue) {
   const u32 OIP = offsetof(struct Machine, ip);
   const u32 OLEN = offsetof(struct Machine, oplen);
   const u32 OSTASH = offsetof(struct Machine, stashaddr);
   const u32 COMMIT = (u32)(uintptr_t)CommitStash;
+  if (prologue) {               /* m->ip = pc; m->oplen = len */
+    Get(w, n, 0); K64(w, n, (i64)pc); Mem(w, n, I64ST, 3, OIP);
+    Get(w, n, 0); K32(w, n, o->len); Mem(w, n, I32ST8, 0, OLEN);
+  }
+  /* op(m, rde, disp, uimm0) */
+  Get(w, n, 0);
+  K64(w, n, (i64)o->rde); K64(w, n, o->disp); K64(w, n, (i64)o->uimm0);
+  K32(w, n, (i32)o->fn);
+  B(w, n, CALLI); U(w, n, 0); U(w, n, 0);
+  /* if (m->stashaddr) CommitStash(m) */
+  Get(w, n, 0); Mem(w, n, I64LD, 3, OSTASH); Op(w, n, I64EQZ); Op(w, n, EQZ32);
+  B(w, n, IF); B(w, n, 0x40);
+    Get(w, n, 0); K32(w, n, (i32)COMMIT); B(w, n, CALLI); U(w, n, 1); U(w, n, 0);
+  B(w, n, END);
+  Get(w, n, 0); Mem(w, n, I64LD, 3, OIP); K64(w, n, (i64)pc); Op(w, n, I64NE);
+  B(w, n, IF); B(w, n, 0x40);
+    Get(w, n, 0); K32(w, n, 0); Mem(w, n, I32ST8, 0, OLEN);
+    Op(w, n, RET);
+  B(w, n, END);
+}
+
+static void EmitBody(struct Wj *w, size_t *n) {
+  const u32 OIP = offsetof(struct Machine, ip);
+  const u32 OLEN = offsetof(struct Machine, oplen);
   const u32 OATT = offsetof(struct Machine, attention);
   u64 pc = w->start;
   bool ipset = true;      /* m->ip holds the right value at this point */
   OREG = offsetof(struct Machine, weg);
   OFLAGS = offsetof(struct Machine, flags);
-  /* locals: 3 x i64 (LX LY LZ), 1 x i32 (LF) */
-  B(w, n, 2); B(w, n, 3); B(w, n, 0x7e); B(w, n, 1); B(w, n, 0x7f);
+  OTLB = offsetof(struct Machine, tlb);
+  OINV = offsetof(struct Machine, invalidated);
+  for (int k = 0; k < 8; k++)
+    OSEGB[k] = offsetof(struct Machine, seg) + k * sizeof(struct DescriptorCache) +
+               offsetof(struct DescriptorCache, base);
+  HOSTPAGES = (u32)(uintptr_t)&g_hostpages.p;
+  /* locals: 5 x i64 (LX LY LZ LA LE), 4 x i32 (LF LT LP LH) */
+  B(w, n, 2); B(w, n, 5); B(w, n, 0x7e); B(w, n, 4); B(w, n, 0x7f);
   B(w, n, LOOP); B(w, n, 0x40);
   for (int i = 0; i < w->nops; i++) {
     struct WjOp *o = &w->ops[i];
@@ -529,31 +769,7 @@ static void EmitBody(struct Wj *w, size_t *n) {
       continue;
     }
     ipset = true;
-    /* m->ip = pc; m->oplen = len */
-    B(w, n, LGET); U(w, n, 0); B(w, n, I64C); S(w, n, (i64)pc); Mem(w, n, I64ST, 3, OIP);
-    B(w, n, LGET); U(w, n, 0); B(w, n, I32C); S(w, n, o->len); Mem(w, n, I32ST8, 0, OLEN);
-    /* op(m, rde, disp, uimm0) */
-    B(w, n, LGET); U(w, n, 0);
-    B(w, n, I64C); S(w, n, (i64)o->rde);
-    B(w, n, I64C); S(w, n, o->disp);
-    B(w, n, I64C); S(w, n, (i64)o->uimm0);
-    B(w, n, I32C); S(w, n, (i32)o->fn);
-    B(w, n, CALLI); U(w, n, 0); U(w, n, 0);
-    /* if (m->stashaddr) CommitStash(m) */
-    B(w, n, LGET); U(w, n, 0); Mem(w, n, I64LD, 3, OSTASH);
-    B(w, n, I64EQZ); B(w, n, EQZ32);
-    B(w, n, IF); B(w, n, 0x40);
-    B(w, n, LGET); U(w, n, 0); B(w, n, I32C); S(w, n, (i32)COMMIT);
-    B(w, n, CALLI); U(w, n, 1); U(w, n, 0);
-    B(w, n, END);
-    if (i + 1 < w->nops) {     /* if (m->ip != pc) { m->oplen = 0; return; } */
-      B(w, n, LGET); U(w, n, 0); Mem(w, n, I64LD, 3, OIP);
-      B(w, n, I64C); S(w, n, (i64)pc); B(w, n, I64NE);
-      B(w, n, IF); B(w, n, 0x40);
-      B(w, n, LGET); U(w, n, 0); B(w, n, I32C); S(w, n, 0); Mem(w, n, I32ST8, 0, OLEN);
-      B(w, n, RET);
-      B(w, n, END);
-    }
+    EmitHandler(w, n, o, pc, true);
   }
   if (!ipset) {   /* ended on an inline op that left m->ip behind */
     B(w, n, LGET); U(w, n, 0); B(w, n, I64C); S(w, n, (i64)pc); Mem(w, n, I64ST, 3, OIP);
