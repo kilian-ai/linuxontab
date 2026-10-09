@@ -63,6 +63,17 @@
  * inside the wasm function while m->attention is clear, so signals still
  * get through between iterations.
  *
+ * Blocks chain: each translation owns two successor cells (WjExits) in
+ * linear memory, {pc, slot, epoch}. At its end a block compares m->ip with
+ * them and, when one matches, the chain epoch is current, m->attention is
+ * clear and the per-thread depth is under WJ_MAXDEPTH, calls that block
+ * directly; otherwise it leaves its cells in w->lastexit and returns, and
+ * the dispatcher links the next translated block it finds into a free cell.
+ * Cells are keyed by pc, so any link is correct; a translated page changing
+ * bumps the chain epoch, which retires every link at once. Calls nest (no
+ * tail calls), so a chain returns to the dispatcher every WJ_MAXDEPTH
+ * blocks; the dispatcher resets the depth, which a fault's longjmp skips.
+ *
  * BLINK_WASMJIT=0 in the environment turns it off; BLINK_WASMJIT_STATS=1
  * prints counters at exit (SysExitGroup calls WasmJitAtExit).
  */
@@ -88,6 +99,14 @@
                                * blocks that run often enough pay that back */
 #define WJ_MAXOPS 192         /* instructions per block */
 #define WJ_MAXFNS 200000      /* translated blocks per thread (table slots) */
+#define WJ_MAXDEPTH 128       /* chained calls before returning to the dispatcher */
+
+struct WjExits {              /* a block's successor cells (see EmitChain) */
+  u64 pc[2];
+  u32 slot[2];
+  u32 epoch[2];
+  u32 next;                   /* which cell to replace when both are used */
+};
 
 struct WjOp {
   u64 rde;
@@ -124,9 +143,13 @@ struct Wj {
   u8 *code;
   size_t codecap;
   u32 nfns;
+  struct WjExits *lastexit;   /* written by blocks that didn't chain */
+  u32 depth;                  /* chained-call depth (read/written by blocks) */
+  struct WjExits *curexits;   /* the block being emitted */
 };
 
 static _Thread_local struct Wj *g_wj;
+static _Atomic(u32) g_wj_chain = 1;        /* chain epoch: links made in another are dead */
 static int g_wj_mode = -1;                 /* -1 unknown, 0 off, 1 on */
 static u32 g_wj_hot = WJ_HOT;
 
@@ -140,7 +163,7 @@ static u32 g_wj_chunkleft;
 static _Atomic(u32) g_wj_haspages;
 
 /* stats (approximate, unlocked) */
-static long s_blocks, s_failed, s_calls, s_flushes, s_opsum, s_interp, s_inlined;
+static long s_blocks, s_failed, s_calls, s_flushes, s_opsum, s_interp, s_inlined, s_links;
 static bool g_wj_stats;
 
 static void WjLock(void) {
@@ -153,9 +176,9 @@ void WasmJitAtExit(void) {
   if (!g_wj_stats) return;
   fprintf(stderr,
           "[wasmjit] blocks=%ld (avg %.1f ops, %ld inline) failed=%ld "
-          "block-calls=%ld interpreted=%ld flushes=%ld\n",
+          "block-calls=%ld interpreted=%ld links=%ld flushes=%ld\n",
           s_blocks, s_blocks ? (double)s_opsum / s_blocks : 0.0, s_inlined,
-          s_failed, s_calls, s_interp, s_flushes);
+          s_failed, s_calls, s_interp, s_links, s_flushes);
 }
 
 static bool WjEnabled(void) {
@@ -264,6 +287,7 @@ void WasmJitPageChanged(i64 virt) {
   struct WjPage *p = WjPageLocked((u64)virt & -4096, false);
   if (p) {
     atomic_fetch_add_explicit(&p->gen, 1, memory_order_release);
+    atomic_fetch_add_explicit(&g_wj_chain, 1, memory_order_release);
     s_flushes++;
   }
   WjUnlock();
@@ -314,7 +338,8 @@ enum { LGET = 0x20, LSET = 0x21, I32C = 0x41, I64C = 0x42, I64LD = 0x29,
        SELECT = 0x1b, ELSE = 0x05, LTEE = 0x22, I64LEU = 0x58,
        I32ADD = 0x6a, I32MUL = 0x6c, I32NE = 0x47, I64ST32 = 0x3e,
        I64LD8U = 0x31, I64LD16U = 0x33, I64ST8 = 0x3c, I64ST16 = 0x3d,
-       I64EXT8S = 0xc2, I64EXT16S = 0xc3, I64EXT32S = 0xc4 };
+       I64EXT8S = 0xc2, I64EXT16S = 0xc3, I64EXT32S = 0xc4,
+       I32EQ = 0x46, I32LTU = 0x49, I32SUB = 0x6b };
 
 /* function locals after the 4 params: five i64 scratch values (operands,
    result, effective address, TLB entry), four i32 (flags, TLB slot address,
@@ -847,6 +872,37 @@ static bool WjInline(struct Wj *w, size_t *n, struct WjOp *o, u64 pcnext,
   }
 }
 
+/* the block's tail: call a linked successor, or leave our cells for the
+   dispatcher to link (see the header comment) */
+static void EmitChain(struct Wj *w, size_t *n) {
+  const u32 X = (u32)(uintptr_t)w->curexits;
+  const u32 DEPTH = (u32)(uintptr_t)&w->depth;
+  const u32 LAST = (u32)(uintptr_t)&w->lastexit;
+  const u32 EPOCH = (u32)(uintptr_t)&g_wj_chain;
+  Get(w, n, 0); Mem(w, n, I64LD, 3, offsetof(struct Machine, ip)); Set(w, n, LA);
+  for (int k = 0; k < 2; k++) {
+    K32(w, n, (i32)X); Mem(w, n, I64LD, 3, offsetof(struct WjExits, pc) + 8 * k);
+    Get(w, n, LA); Op(w, n, I64EQ);
+    K32(w, n, (i32)X); Mem(w, n, I32LD, 2, offsetof(struct WjExits, epoch) + 4 * k);
+    K32(w, n, (i32)EPOCH); Mem(w, n, I32LD, 2, 0); Op(w, n, I32EQ); Op(w, n, I32AND);
+    Get(w, n, 0); Mem(w, n, I32LD8U, 0, offsetof(struct Machine, attention));
+    Op(w, n, EQZ32); Op(w, n, I32AND);
+    K32(w, n, (i32)DEPTH); Mem(w, n, I32LD, 2, 0); K32(w, n, WJ_MAXDEPTH); Op(w, n, I32LTU);
+    Op(w, n, I32AND);
+    B(w, n, IF); B(w, n, 0x40);
+      K32(w, n, (i32)DEPTH); K32(w, n, (i32)DEPTH); Mem(w, n, I32LD, 2, 0);
+      K32(w, n, 1); Op(w, n, I32ADD); Mem(w, n, I32ST, 2, 0);
+      Get(w, n, 0); K64(w, n, 0); K64(w, n, 0); K64(w, n, 0);
+      K32(w, n, (i32)X); Mem(w, n, I32LD, 2, offsetof(struct WjExits, slot) + 4 * k);
+      B(w, n, CALLI); U(w, n, 0); U(w, n, 0);
+      K32(w, n, (i32)DEPTH); K32(w, n, (i32)DEPTH); Mem(w, n, I32LD, 2, 0);
+      K32(w, n, 1); Op(w, n, I32SUB); Mem(w, n, I32ST, 2, 0);
+      Op(w, n, RET);
+    B(w, n, END);
+  }
+  K32(w, n, (i32)LAST); K32(w, n, (i32)X); Mem(w, n, I32ST, 2, 0);
+}
+
 /* the op's handler, as JitlessDispatch would run it, then
    `if (m->ip != pc) { m->oplen = 0; return; }` */
 static void EmitHandler(struct Wj *w, size_t *n, struct WjOp *o, u64 pc, bool prologue) {
@@ -915,6 +971,7 @@ static void EmitBody(struct Wj *w, size_t *n) {
   B(w, n, BRIF); U(w, n, 0);
   B(w, n, END);                                 /* loop */
   B(w, n, LGET); U(w, n, 0); B(w, n, I32C); S(w, n, 0); Mem(w, n, I32ST8, 0, OLEN);
+  EmitChain(w, n);
   B(w, n, END);
 }
 
@@ -966,14 +1023,18 @@ static void WjFinish(struct Machine *m, struct Wj *w) {
     e->count = 0;                           /* page changed while recording */
     return;
   }
+  if (!(w->curexits = calloc(1, sizeof *w->curexits))) { e->state = 2; return; }
   size_t len = EmitModule(w);
   long slot = len ? syscall(NR_LOT_WASM_LOAD, w->code, len) : -1;
   if (slot <= 0) {
     if (errno == ENOSYS || errno == ENOSPC) g_wj_mode = 0;   /* runtime can't */
+    free(w->curexits);
+    w->curexits = 0;
     e->state = 2;
     s_failed++;
     return;
   }
+  w->curexits = 0;                 /* owned by the translation from now on */
   e->slot = (u32)slot;
   e->pg = w->recpg;
   e->gen = w->recgen;
@@ -991,11 +1052,22 @@ void WasmJitDispatch(struct Machine *m) {
     return;
   }
   u64 pc = m->ip;
+  struct WjExits *x = w->lastexit;
+  w->lastexit = 0;
+  w->depth = 0;                    /* a fault's longjmp skips the decrements */
   if (!w->rec && w->atstart) {
     struct WjEntry *e = WjFind(w, pc);
     if (e) {
       if (e->state == 1) {
         if (atomic_load_explicit(&e->pg->gen, memory_order_acquire) == e->gen) {
+          if (x) {                 /* link the block we came from to this one */
+            int k = x->pc[0] == pc ? 0 : x->pc[1] == pc ? 1 :
+                    !x->slot[0] ? 0 : !x->slot[1] ? 1 : (int)(x->next ^= 1);
+            x->pc[k] = pc;
+            x->slot[k] = e->slot;
+            x->epoch[k] = atomic_load_explicit(&g_wj_chain, memory_order_acquire);
+            s_links++;
+          }
           s_calls++;
           ((nexgen32e_f)(uintptr_t)e->slot)(DISPATCH_NOTHING);
           return;                           /* atstart stays true */

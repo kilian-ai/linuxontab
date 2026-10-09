@@ -220,23 +220,36 @@ sil/dil, movzx/movsx/movsxd, inc/dec keeping CF, al/eax-imm forms) and
 switch jump table, push/pop of memory, jmp *reg) also hash the same under
 old and new Blink.
 
+Blocks chain: each translation owns two successor cells {pc, slot, epoch};
+at its end a block calls a linked successor directly when m->ip matches, the
+chain epoch is current, m->attention is clear and the depth is below 128,
+and otherwise leaves its cells for the dispatcher to link the next
+translated block into. A translated page changing bumps the epoch and
+retires every link. Dispatcher round trips per Node run: ~46M -> ~1.5M.
+`smc.c` rewrites a hot, chained-to generated function through
+mprotect RW->RX and munmap/mmap and checks the new code runs.
+
+The test programs are in `wasmjit-tests/` (static x86-64, e.g. with
+`docker run --platform linux/amd64 alpine:3.20` + `gcc -O2 -static`); the
+differential ones print a hash that must match under the old Blink.
+
 Measured in the guest (same binaries, old vs new Blink, interleaved):
 
-| workload | interpreter | calls only | + inline ops | + memory operands | + byte/word, movzx/movsx, inc/dec | + call/ret, 0xFF group |
-|---|---|---|---|---|---|---|
-| primes < 200000 (spikes/x86-blink/bench.c) | 1.81 s | 1.23 s | 0.72 s | 0.74 s | 0.74 s | 0.74 s |
-| hashing + qsort + snprintf (mix.c) | 2.93 s | 1.83 s | 1.22 s | 0.82 s | 0.72 s | 0.65 s |
-| Node 24 Sparkplug (default), small JS workload | 3.65 s | 2.29 s | 1.76 s | 1.20 s | 1.12 s | 1.09 s |
-| Node 24 `--jitless`, same | 4.11 s | 2.54 s | 1.87 s | 1.10 s | 0.98 s | 0.99 s |
-| nodetest.js (11/11), start-up bound | 3.51 s | 3.34 s | 2.68 s | 2.23 s | 2.35 s | 2.43 s |
+| workload | interpreter | calls only | + inline ops | + memory operands | + byte/word, movzx/movsx, inc/dec | + call/ret, 0xFF group | + chaining |
+|---|---|---|---|---|---|---|---|
+| primes < 200000 (spikes/x86-blink/bench.c) | 1.81 s | 1.23 s | 0.72 s | 0.74 s | 0.74 s | 0.74 s | 0.59 s |
+| hashing + qsort + snprintf (mix.c) | 2.93 s | 1.83 s | 1.22 s | 0.82 s | 0.72 s | 0.65 s | 0.50 s |
+| Node 24 Sparkplug (default), small JS workload | 3.65 s | 2.29 s | 1.76 s | 1.20 s | 1.12 s | 1.09 s | 0.93 s |
+| Node 24 `--jitless`, same | 4.11 s | 2.54 s | 1.87 s | 1.10 s | 0.98 s | 0.99 s | 0.88 s |
+| nodetest.js (11/11), start-up bound | 3.51 s | 3.34 s | 2.68 s | 2.23 s | 2.35 s | 2.43 s | 2.24 s |
 
 Correctness: same outputs, `sha256sum` matches native, threads, fork+threads,
 faulttest 7/7, sigchld, nodetest 11/11 (also with BLINK_WASMJIT_HOT=2..4, where
 almost everything is translated: 61k blocks for nodetest). A module costs ~30-40 us to compile, which
-sets the threshold: at 32 start-up-bound runs got slower. Next: chaining blocks
-(46M dispatcher round trips per Node run), the ~20M instructions that are
-still interpreted (shifts, setcc/cmovcc, string ops, SSE), several blocks
-per module. Code V8 generates stays interpreted (its pages stay writable).
+sets the threshold: at 32 start-up-bound runs got slower. Next: the ~20M
+instructions a Node run still interprets (shifts, setcc/cmovcc, string ops,
+SSE), more successor cells for returns/indirect calls, several blocks per
+module. Code V8 generates stays interpreted (its pages stay writable).
 
 ## Open
 
