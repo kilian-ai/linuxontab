@@ -74,6 +74,14 @@
  * tail calls), so a chain returns to the dispatcher every WJ_MAXDEPTH
  * blocks; the dispatcher resets the depth, which a fault's longjmp skips.
  *
+ * Blocks are compiled in batches: a finished recording is queued (state
+ * pending, still interpreted meanwhile) and every WJ_BATCH queued blocks
+ * become ONE module with one exported function each, loaded with a single
+ * lot_wasm_load (consecutive slots, export order). Most of a load's cost is
+ * per module, not per function. A pending block that keeps being reached
+ * (WJ_PENDING more times) flushes the queue early, so hot code doesn't
+ * wait; a block whose page changed while queued is dropped at the flush.
+ *
  * BLINK_WASMJIT=0 in the environment turns it off; BLINK_WASMJIT_STATS=1
  * prints counters at exit (SysExitGroup calls WasmJitAtExit).
  */
@@ -94,12 +102,14 @@
 #include "blink/x86.h"
 
 #define NR_LOT_WASM_LOAD 10001
-#define WJ_HOT    128         /* block starts before translating (BLINK_WASMJIT_HOT): a
-                               * module costs ~30-40 us to compile, so only
-                               * blocks that run often enough pay that back */
+#define WJ_HOT    32          /* block starts before translating (BLINK_WASMJIT_HOT);
+                               * low because blocks compile in batches: a
+                               * module costs ~30-40 us, mostly per module */
 #define WJ_MAXOPS 192         /* instructions per block */
 #define WJ_MAXFNS 200000      /* translated blocks per thread (table slots) */
 #define WJ_MAXDEPTH 128       /* chained calls before returning to the dispatcher */
+#define WJ_BATCH  32          /* blocks per module (BLINK_WASMJIT_BATCH) */
+#define WJ_PENDING 32         /* reaching a queued block this often flushes the queue */
 
 struct WjExits {              /* a block's successor cells (see EmitChain) */
   u64 pc[2];
@@ -127,7 +137,16 @@ struct WjEntry {
   u32 gen;      /* page generation it was made at */
   struct WjPage *pg;
   u32 count;
-  u32 state;    /* 0 counting, 1 translated, 2 never */
+  u32 state;    /* 0 counting, 1 translated, 2 never, 3 queued for a module */
+};
+
+struct WjBlk {                /* a recorded block on its way to a module */
+  u64 start;
+  int nops;
+  struct WjOp *ops;
+  struct WjExits *x;
+  struct WjPage *pg;
+  u32 gen;
 };
 
 struct Wj {
@@ -145,13 +164,19 @@ struct Wj {
   u32 nfns;
   struct WjExits *lastexit;   /* written by blocks that didn't chain */
   u32 depth;                  /* chained-call depth (read/written by blocks) */
-  struct WjExits *curexits;   /* the block being emitted */
+  struct WjBlk *cur;          /* the block being emitted */
+  struct WjBlk q[WJ_BATCH];   /* queued blocks, and their ops */
+  int nq;
+  struct WjOp *qops;
+  u8 *mod;                    /* the assembled module */
+  size_t modcap;
 };
 
 static _Thread_local struct Wj *g_wj;
 static _Atomic(u32) g_wj_chain = 1;        /* chain epoch: links made in another are dead */
 static int g_wj_mode = -1;                 /* -1 unknown, 0 off, 1 on */
 static u32 g_wj_hot = WJ_HOT;
+static int g_wj_batch = WJ_BATCH;
 
 /* page records of translated code (global, all threads): an open-addressed
  * index of pointers into chunks that are never freed or moved */
@@ -163,7 +188,7 @@ static u32 g_wj_chunkleft;
 static _Atomic(u32) g_wj_haspages;
 
 /* stats (approximate, unlocked) */
-static long s_blocks, s_failed, s_calls, s_flushes, s_opsum, s_interp, s_inlined, s_links;
+static long s_blocks, s_failed, s_calls, s_flushes, s_opsum, s_interp, s_inlined, s_links, s_modules;
 static int g_wj_stats;
 /* BLINK_WASMJIT_STATS=2: opcode histograms of the instructions run by the
    interpreter (dynamic) and of the handler calls left in translated blocks
@@ -199,9 +224,9 @@ void WasmJitAtExit(void) {
             r_cold, r_midblock, r_rec);
   }
   fprintf(stderr,
-          "[wasmjit] blocks=%ld (avg %.1f ops, %ld inline) failed=%ld "
+          "[wasmjit] blocks=%ld in %ld modules (avg %.1f ops, %ld inline) failed=%ld "
           "block-calls=%ld interpreted=%ld links=%ld flushes=%ld\n",
-          s_blocks, s_blocks ? (double)s_opsum / s_blocks : 0.0, s_inlined,
+          s_blocks, s_modules, s_blocks ? (double)s_opsum / s_blocks : 0.0, s_inlined,
           s_failed, s_calls, s_interp, s_links, s_flushes);
 }
 
@@ -213,6 +238,8 @@ static bool WjEnabled(void) {
     g_wj_stats = g_wj_mode && st ? atoi(st) : 0;
     const char *h = getenv("BLINK_WASMJIT_HOT");
     if (h && atoi(h) > 0) g_wj_hot = atoi(h);
+    const char *bt = getenv("BLINK_WASMJIT_BATCH");
+    if (bt && atoi(bt) > 0) g_wj_batch = atoi(bt) < WJ_BATCH ? atoi(bt) : WJ_BATCH;
   }
   return g_wj_mode > 0;
 }
@@ -1136,7 +1163,7 @@ static bool WjInline(struct Wj *w, size_t *n, struct WjOp *o, u64 pcnext,
 /* the block's tail: call a linked successor, or leave our cells for the
    dispatcher to link (see the header comment) */
 static void EmitChain(struct Wj *w, size_t *n) {
-  const u32 X = (u32)(uintptr_t)w->curexits;
+  const u32 X = (u32)(uintptr_t)w->cur->x;
   const u32 DEPTH = (u32)(uintptr_t)&w->depth;
   const u32 LAST = (u32)(uintptr_t)&w->lastexit;
   const u32 EPOCH = (u32)(uintptr_t)&g_wj_chain;
@@ -1196,7 +1223,8 @@ static void EmitBody(struct Wj *w, size_t *n) {
   const u32 OIP = offsetof(struct Machine, ip);
   const u32 OLEN = offsetof(struct Machine, oplen);
   const u32 OATT = offsetof(struct Machine, attention);
-  u64 pc = w->start;
+  struct WjBlk *b = w->cur;
+  u64 pc = b->start;
   bool ipset = true;      /* m->ip holds the right value at this point */
   OREG = offsetof(struct Machine, weg);
   OFLAGS = offsetof(struct Machine, flags);
@@ -1209,8 +1237,8 @@ static void EmitBody(struct Wj *w, size_t *n) {
   /* locals: 5 x i64 (LX LY LZ LA LE), 4 x i32 (LF LT LP LH) */
   B(w, n, 2); B(w, n, 5); B(w, n, 0x7e); B(w, n, 4); B(w, n, 0x7f);
   B(w, n, LOOP); B(w, n, 0x40);
-  for (int i = 0; i < w->nops; i++) {
-    struct WjOp *o = &w->ops[i];
+  for (int i = 0; i < b->nops; i++) {
+    struct WjOp *o = &b->ops[i];
     bool setsip;
     pc += o->len;
     if (WjInline(w, n, o, pc, &setsip)) {
@@ -1227,7 +1255,7 @@ static void EmitBody(struct Wj *w, size_t *n) {
   }
   /* back to our own start (a loop) and nothing pending: go round again */
   B(w, n, LGET); U(w, n, 0); Mem(w, n, I64LD, 3, OIP);
-  B(w, n, I64C); S(w, n, (i64)w->start); B(w, n, I64EQ);
+  B(w, n, I64C); S(w, n, (i64)b->start); B(w, n, I64EQ);
   B(w, n, LGET); U(w, n, 0); Mem(w, n, I32LD8U, 0, OATT); B(w, n, EQZ32);
   B(w, n, I32AND);
   B(w, n, BRIF); U(w, n, 0);
@@ -1237,8 +1265,31 @@ static void EmitBody(struct Wj *w, size_t *n) {
   B(w, n, END);
 }
 
-/* Assemble the module into w->code; returns its size (0 on failure). */
-static size_t EmitModule(struct Wj *w) {
+/* append to w->mod */
+static bool ModPut(struct Wj *w, size_t *n, const void *p, size_t k) {
+  if (*n + k > w->modcap) {
+    size_t nc = w->modcap ? w->modcap * 2 : 65536;
+    while (nc < *n + k) nc *= 2;
+    u8 *nb = realloc(w->mod, nc);
+    if (!nb) return false;
+    w->mod = nb;
+    w->modcap = nc;
+  }
+  memcpy(w->mod + *n, p, k);
+  *n += k;
+  return true;
+}
+static bool ModU(struct Wj *w, size_t *n, u64 v) {
+  u8 t[10];
+  int k = 0;
+  do { u8 c = v & 0x7f; v >>= 7; if (v) c |= 0x80; t[k++] = c; } while (v);
+  return ModPut(w, n, t, k);
+}
+static int LebLen(u64 v) { int k = 1; while (v >>= 7) k++; return k; }
+
+/* One module holding blocks b[0..nb) as functions 0..nb-1, exported in
+   that order; returns its size in w->mod (0 on failure). */
+static size_t EmitModule(struct Wj *w, struct WjBlk **b, int nb) {
   static const u8 head[] = {
     0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
     /* types: 0 = (i32, i64, i64, i64) -> (), 1 = (i32) -> () */
@@ -1248,62 +1299,107 @@ static size_t EmitModule(struct Wj *w) {
     0x03, 'e', 'n', 'v', 0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x03, 0x00, 0x80, 0x80, 0x04,
     0x03, 'e', 'n', 'v', 0x19, '_', '_', 'i', 'n', 'd', 'i', 'r', 'e', 'c', 't', '_',
     'f', 'u', 'n', 'c', 't', 'i', 'o', 'n', '_', 't', 'a', 'b', 'l', 'e', 0x01, 0x70, 0x00, 0x00,
-    /* one function of type 0, exported as "b" */
-    0x03, 0x02, 0x01, 0x00,
-    0x07, 0x05, 0x01, 0x01, 'b', 0x00, 0x00,
   };
-  size_t n = 0, bn;
-  if (!Put(w, &n, head, sizeof head)) return 0;
-  /* the body goes after a scratch gap so its size is known up front */
-  size_t at = n + 16;
-  n = at;
-  EmitBody(w, &n);
+  size_t at[WJ_BATCH + 1], n = 0, m = 0, sz;
+  /* bodies, back to back, in w->code */
+  for (int i = 0; i < nb; i++) {
+    at[i] = n;
+    w->cur = b[i];
+    EmitBody(w, &n);
+  }
+  at[nb] = n;
+  w->cur = 0;
   if (n > w->codecap) return 0;
-  bn = n - at;
-  /* code section: id, size, count=1, body size, body */
-  u8 hdr[16];
-  size_t h = 0;
-  struct Wj tmp = { .code = hdr, .codecap = sizeof hdr };
-  size_t lb = 0;
-  { u8 t[8]; size_t k = 0; struct Wj t2 = { .code = t, .codecap = sizeof t }; U(&t2, &k, bn); lb = k; }
-  B(&tmp, &h, 0x0a);
-  U(&tmp, &h, 1 + lb + bn);
-  B(&tmp, &h, 1);
-  U(&tmp, &h, bn);
-  memmove(w->code + sizeof head + h, w->code + at, bn);
-  memcpy(w->code + sizeof head, hdr, h);
-  return sizeof head + h + bn;
+  if (!ModPut(w, &m, head, sizeof head)) return 0;
+  /* function section: nb x type 0 */
+  sz = LebLen(nb) + nb;
+  ModPut(w, &m, "\x03", 1); ModU(w, &m, sz); ModU(w, &m, nb);
+  for (int i = 0; i < nb; i++) ModPut(w, &m, "\0", 1);
+  /* export section: "0", "1", ... -> function i */
+  char name[12];
+  sz = LebLen(nb);
+  for (int i = 0; i < nb; i++) sz += 1 + snprintf(name, sizeof name, "%d", i) + 1 + LebLen(i);
+  ModPut(w, &m, "\x07", 1); ModU(w, &m, sz); ModU(w, &m, nb);
+  for (int i = 0; i < nb; i++) {
+    int k = snprintf(name, sizeof name, "%d", i);
+    ModU(w, &m, k); ModPut(w, &m, name, k); ModPut(w, &m, "\0", 1); ModU(w, &m, i);
+  }
+  /* code section */
+  sz = LebLen(nb);
+  for (int i = 0; i < nb; i++) sz += LebLen(at[i + 1] - at[i]) + (at[i + 1] - at[i]);
+  ModPut(w, &m, "\x0a", 1); ModU(w, &m, sz); ModU(w, &m, nb);
+  for (int i = 0; i < nb; i++) {
+    ModU(w, &m, at[i + 1] - at[i]);
+    if (!ModPut(w, &m, w->code + at[i], at[i + 1] - at[i])) return 0;
+  }
+  return m;
 }
 
+/* compile every queued block whose page didn't change into one module */
+static void WjFlush(struct Wj *w) {
+  struct WjBlk *keep[WJ_BATCH];
+  int nk = 0;
+  for (int i = 0; i < w->nq; i++) {
+    struct WjBlk *b = &w->q[i];
+    if (atomic_load_explicit(&b->pg->gen, memory_order_acquire) == b->gen) {
+      keep[nk++] = b;
+    } else {                                /* page changed while queued */
+      struct WjEntry *e = WjFind(w, b->start);
+      if (e && e->state == 3) { e->state = 0; e->count = 0; }
+      free(b->x);
+    }
+  }
+  w->nq = 0;
+  if (!nk) return;
+  size_t len = EmitModule(w, keep, nk);
+  long base = len ? syscall(NR_LOT_WASM_LOAD, w->mod, len) : -1;
+  if (base <= 0 && (errno == ENOSYS || errno == ENOSPC)) g_wj_mode = 0;   /* runtime can't */
+  for (int i = 0; i < nk; i++) {
+    struct WjBlk *b = keep[i];
+    struct WjEntry *e = WjFind(w, b->start);
+    if (base <= 0 || !e || e->state != 3) {
+      if (e && e->state == 3) e->state = 2;
+      free(b->x);
+      if (base <= 0) s_failed++;
+      continue;
+    }
+    e->slot = (u32)(base + i);              /* the cells now belong to the code */
+    e->pg = b->pg;
+    e->gen = b->gen;
+    e->state = 1;
+    w->nfns++;
+    s_blocks++;
+    s_opsum += b->nops;
+  }
+  if (base > 0) s_modules++;
+}
+
+/* the recording ended: queue it, and compile the queue once it is full */
 static void WjFinish(struct Machine *m, struct Wj *w) {
   w->rec = false;
   w->atstart = true;
   struct WjEntry *e = WjFind(w, w->start);
   if (!e) return;
-  if (!w->nops || w->nfns >= WJ_MAXFNS) { e->state = 2; return; }
+  if (!w->nops || w->nfns + w->nq >= WJ_MAXFNS) { e->state = 2; return; }
   if (atomic_load_explicit(&w->recpg->gen, memory_order_acquire) != w->recgen) {
     e->count = 0;                           /* page changed while recording */
     return;
   }
-  if (!(w->curexits = calloc(1, sizeof *w->curexits))) { e->state = 2; return; }
-  size_t len = EmitModule(w);
-  long slot = len ? syscall(NR_LOT_WASM_LOAD, w->code, len) : -1;
-  if (slot <= 0) {
-    if (errno == ENOSYS || errno == ENOSPC) g_wj_mode = 0;   /* runtime can't */
-    free(w->curexits);
-    w->curexits = 0;
+  if (!w->qops && !(w->qops = malloc(sizeof(struct WjOp) * WJ_BATCH * WJ_MAXOPS))) {
     e->state = 2;
-    s_failed++;
     return;
   }
-  w->curexits = 0;                 /* owned by the translation from now on */
-  e->slot = (u32)slot;
-  e->pg = w->recpg;
-  e->gen = w->recgen;
-  e->state = 1;
-  w->nfns++;
-  s_blocks++;
-  s_opsum += w->nops;
+  struct WjBlk *b = &w->q[w->nq];
+  if (!(b->x = calloc(1, sizeof *b->x))) { e->state = 2; return; }
+  b->start = w->start;
+  b->nops = w->nops;
+  b->ops = w->qops + w->nq * WJ_MAXOPS;
+  memcpy(b->ops, w->ops, w->nops * sizeof *w->ops);
+  b->pg = w->recpg;
+  b->gen = w->recgen;
+  e->state = 3;
+  e->count = g_wj_hot;                      /* counts on towards WJ_PENDING */
+  if (++w->nq >= g_wj_batch) WjFlush(w);
 }
 
 /* Runs one instruction or one translated block. */
@@ -1337,7 +1433,11 @@ void WasmJitDispatch(struct Machine *m) {
         e->state = 0;                       /* its page changed: count again */
         e->count = 0;
       }
-      if (e->state == 0 && ++e->count == g_wj_hot) {
+      if (e->state == 3 && ++e->count >= g_wj_hot + WJ_PENDING) {
+        WjFlush(w);                         /* hot while queued: compile now */
+        e = 0;                              /* (the flush may have moved it) */
+      }
+      if (e && e->state == 0 && ++e->count == g_wj_hot) {
         struct WjPage *pg = 0;
         if (WjTranslatable(m, pc)) {
           WjLock();

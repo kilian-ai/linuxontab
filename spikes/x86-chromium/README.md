@@ -182,7 +182,7 @@ Debugging aids that found them:
 Blink on wasm32 is a pure interpreter (its JIT emits native code). `wasmjit.c`
 (+ `blink-wasmjit.patch`, built in with `WASMJIT=1 sh build.sh`; opt-in
 while it settles) is a call-threaded backend: a block start reached
-`BLINK_WASMJIT_HOT` times (default 128) is recorded while it runs, then
+`BLINK_WASMJIT_HOT` times (default 32) is recorded while it runs, then
 emitted as one wasm function that sets `ip`/`oplen`, calls each op's handler
 through Blink's own function table, commits stashed writes and returns to the
 interpreter as soon as `ip` leaves the straight line. The runtime compiles it
@@ -237,26 +237,34 @@ The test programs are in `wasmjit-tests/` (static x86-64, e.g. with
 `docker run --platform linux/amd64 alpine:3.20` + `gcc -O2 -static`); the
 differential ones print a hash that must match under the old Blink.
 
+Blocks compile in batches: a finished recording is queued (still
+interpreted meanwhile) and every 32 queued blocks become one module, one
+exported function each, loaded with a single `lot_wasm_load`; a queued
+block reached 32 more times flushes the queue early, and one whose page
+changed is dropped. A load costs ~30-40 us, mostly per module, so this
+let the threshold drop from 128 to 32: a Node run now interprets ~6-8M
+instructions instead of ~20M (nodetest: 18.8k blocks in 18.8k modules ->
+1.1k modules, 2.31 -> 1.70 s at the same threshold).
+`BLINK_WASMJIT_BATCH=1` restores one block per module.
+
 Measured in the guest (same binaries, old vs new Blink, interleaved):
 
-| workload | interpreter | calls only | + inline ops | + memory operands | + byte/word, movzx/movsx, inc/dec | + call/ret, 0xFF group | + chaining | + shifts, setcc/cmov, neg/not, imul32 |
-|---|---|---|---|---|---|---|---|---|
-| primes < 200000 (spikes/x86-blink/bench.c) | 1.81 s | 1.23 s | 0.72 s | 0.74 s | 0.74 s | 0.74 s | 0.59 s | 0.56 s |
-| hashing + qsort + snprintf (mix.c) | 2.93 s | 1.83 s | 1.22 s | 0.82 s | 0.72 s | 0.65 s | 0.50 s | 0.43 s |
-| Node 24 Sparkplug (default), small JS workload | 3.65 s | 2.29 s | 1.76 s | 1.20 s | 1.12 s | 1.09 s | 0.93 s | 0.78 s |
-| Node 24 `--jitless`, same | 4.11 s | 2.54 s | 1.87 s | 1.10 s | 0.98 s | 0.99 s | 0.88 s | 0.78 s |
-| nodetest.js (11/11), start-up bound | 3.51 s | 3.34 s | 2.68 s | 2.23 s | 2.35 s | 2.43 s | 2.24 s | 2.18 s |
+| workload | interpreter | calls only | + inline ops | + memory operands | + byte/word, movzx/movsx, inc/dec | + call/ret, 0xFF group | + chaining | + shifts, setcc/cmov, neg/not, imul32 | + 32 blocks per module |
+|---|---|---|---|---|---|---|---|---|---|
+| primes < 200000 (spikes/x86-blink/bench.c) | 1.81 s | 1.23 s | 0.72 s | 0.74 s | 0.74 s | 0.74 s | 0.59 s | 0.56 s | 0.56 s |
+| hashing + qsort + snprintf (mix.c) | 2.93 s | 1.83 s | 1.22 s | 0.82 s | 0.72 s | 0.65 s | 0.50 s | 0.43 s | 0.39 s |
+| Node 24 Sparkplug (default), small JS workload | 3.65 s | 2.29 s | 1.76 s | 1.20 s | 1.12 s | 1.09 s | 0.93 s | 0.78 s | 0.72 s |
+| Node 24 `--jitless`, same | 4.11 s | 2.54 s | 1.87 s | 1.10 s | 0.98 s | 0.99 s | 0.88 s | 0.78 s | 0.68 s |
+| nodetest.js (11/11), start-up bound | 3.51 s | 3.34 s | 2.68 s | 2.23 s | 2.35 s | 2.43 s | 2.24 s | 2.18 s | 1.67-1.76 s |
 
 Correctness: same outputs, `sha256sum` matches native, threads, fork+threads,
 faulttest 7/7, sigchld, nodetest 11/11 (also with BLINK_WASMJIT_HOT=2..4, where
 almost everything is translated: 61k blocks for nodetest). A module costs ~30-40 us to compile, which
 sets the threshold: at 32 start-up-bound runs got slower. 97% of the ops in Node's translated blocks are now inline;
 what's left in handlers is mostly SSE moves, mul/div, bt and 64-bit imul
-(BLINK_WASMJIT_STATS=2 prints opcode histograms). The ~20M instructions a
-Node run still interprets are not missing ops but cold code: V8 start-up
-runs thousands of blocks fewer than 128 times each. Next: cheaper
-compilation (several blocks per module, so the threshold can drop),
-more successor cells for returns/indirect calls, SSE moves. Code V8 generates stays interpreted (its pages stay writable).
+(BLINK_WASMJIT_STATS=2 prints opcode histograms). Next: more
+successor cells for returns/indirect calls, SSE moves, 64-bit imul,
+compiling queued blocks off the hot path. Code V8 generates stays interpreted (its pages stay writable).
 
 ## Open
 
