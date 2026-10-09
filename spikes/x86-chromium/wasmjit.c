@@ -28,8 +28,9 @@
  *     C function pointer.
  *
  * The most common integer ops are emitted inline instead of calling their
- * handler (WjInline): 32/64-bit register forms of mov, add/or/and/sub/xor,
- * cmp/test (register and immediate), mov reg,imm, lea, jcc and jmp. They
+ * handler (WjInline): mov, the ALU ops, cmp/test, inc/dec, movzx/movsx, lea,
+ * push/pop, jcc/jmp, call/ret and call/jmp/push through a register or
+ * memory, at 8 to 64 bits. They
  * can't fault, so they skip the ip/oplen bookkeeping; flags are computed
  * the way blink/alu.c does (CF ZF SF OF AF, and the result's low byte in
  * bits 24-31 for PF), so handler ops that follow read the same state.
@@ -575,6 +576,21 @@ static void EmitCond(struct Wj *w, size_t *n, int code) {
   if (code & 1) Op(w, n, EQZ32);                                /* the negation */
 }
 
+/* m->ip = local l */
+static void SetIpFrom(struct Wj *w, size_t *n, u32 l) {
+  Get(w, n, 0); Get(w, n, l); Mem(w, n, I64ST, 3, offsetof(struct Machine, ip));
+}
+/* push the 64-bit local l (PushN in long mode: rsp -= 8, then the store),
+   then m->ip = local ipl unless ipl < 0; the handler on a TLB miss */
+static void PushFast(struct Wj *w, size_t *n, struct WjOp *o, u64 pc, u32 l, int ipl) {
+  LoadReg(w, n, RW(4), 64); K64(w, n, 8); Op(w, n, I64SUB); Set(w, n, LA);
+  MemBegin(w, n, o, pc, 8, true, false);
+    StoreRegFrom(w, n, RW(4), LA, 64);
+    StoreMem(w, n, 64, l);
+    if (ipl >= 0) SetIpFrom(w, n, ipl);
+  MemEnd(w, n, o, pc);
+}
+
 /* An operand of an Eb/Ev op: a register offset, or memory (MEM). */
 #define MEM (-100)
 
@@ -769,6 +785,47 @@ static bool WjInline(struct Wj *w, size_t *n, struct WjOp *o, u64 pcnext,
       MemEnd(w, n, o, pcnext);
       *setsip = true;
       return true;
+    case 0xE8:                                                 /* call rel */
+      if (Osz(rde)) return false;
+      K64(w, n, (i64)pcnext); Set(w, n, LZ);
+      K64(w, n, (i64)(pcnext + (u64)o->disp)); Set(w, n, LY);
+      PushFast(w, n, o, pcnext, LZ, LY);
+      *setsip = true;
+      return true;
+    case 0xC3:                                                 /* ret */
+      if (Osz(rde)) return false;
+      LoadReg(w, n, RW(4), 64); Set(w, n, LA);
+      MemBegin(w, n, o, pcnext, 8, false, false);
+        LoadMem(w, n, 64, LZ);
+        Get(w, n, LA); K64(w, n, 8); Op(w, n, I64ADD); Set(w, n, LE);
+        StoreRegFrom(w, n, RW(4), LE, 64);
+        SetIpFrom(w, n, LZ);
+      MemEnd(w, n, o, pcnext);
+      *setsip = true;
+      return true;
+    case 0xFF: {                       /* call / jmp / push Ev (inc/dec above) */
+      int r = ModrmReg(rde);
+      if ((r != 2 && r != 4 && r != 6) || Osz(rde)) return false;
+      if (erm == MEM && !memok) return false;
+      /* LX = the 64-bit Ev operand (read before rsp moves) */
+      if (erm != MEM) {
+        LoadReg(w, n, erm, 64); Set(w, n, LX);
+        if (r == 4) { SetIpFrom(w, n, LX); *setsip = true; return true; }
+      } else {
+        MemBegin(w, n, o, pcnext, 8, false, true);
+          LoadMem(w, n, 64, LX);
+          if (r == 4) SetIpFrom(w, n, LX);
+      }
+      if (r == 2) {                                            /* call */
+        K64(w, n, (i64)pcnext); Set(w, n, LZ);
+        PushFast(w, n, o, pcnext, LZ, LX);
+      } else if (r == 6) {                                     /* push */
+        PushFast(w, n, o, pcnext, LX, -1);
+      }
+      if (erm == MEM) MemEnd(w, n, o, pcnext);
+      *setsip = true;
+      return true;
+    }
     case 0xEB: case 0xE9:                                      /* jmp rel */
       Get(w, n, 0); K64(w, n, (i64)(pcnext + (u64)o->disp));
       Mem(w, n, I64ST, 3, offsetof(struct Machine, ip));
