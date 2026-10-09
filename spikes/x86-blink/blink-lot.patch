@@ -31,13 +31,14 @@ index 7d5cc93..464beef 100644
    }
  }
 diff --git a/blink/signal.c b/blink/signal.c
-index 4fe7ab3..b9ca37e 100644
+index 4fe7ab3..ed21b2a 100644
 --- a/blink/signal.c
 +++ b/blink/signal.c
-@@ -265,6 +265,37 @@ int ConsumeSignal(struct Machine *m, int *delivered, bool *restart) {
+@@ -265,7 +265,42 @@ int ConsumeSignal(struct Machine *m, int *delivered, bool *restart) {
  
  void EnqueueSignal(struct Machine *m, int sig) {
    if (m && (1 <= sig && sig <= 64)) {
+-    m->signals |= 1ul << (sig - 1);
 +#ifdef LOT_SYSCALLS
 +    // LinuxOnTab: the host hands a process-wide signal (SIGCHLD, a kill() to
 +    // the process) to whichever host thread does not block it, but guest
@@ -47,7 +48,7 @@ index 4fe7ab3..b9ca37e 100644
 +    // child_process never saw SIGCHLD. Linux would pick a thread that does
 +    // not block the signal, so do that, and poke it with SIGSYS so a blocking
 +    // host syscall returns EINTR. A handler context: only trylock.
-+    u64 bit = 1ul << (sig - 1);
++    u64 bit = (u64)1 << (sig - 1);
 +    if ((m->sigmask & bit) && sig != SIGSYS_LINUX && m->system &&
 +        !pthread_mutex_trylock(&m->system->machines_lock)) {
 +      struct Dll *e;
@@ -69,9 +70,14 @@ index 4fe7ab3..b9ca37e 100644
 +      if (t) return;
 +    }
 +#endif
-     m->signals |= 1ul << (sig - 1);
++    // LinuxOnTab: (u64), not 1ul: long is 32 bits on wasm32, where 1ul << 33
++    // wraps to 1 << 1, so the realtime signals 33-64 arrived as 1-32. musl's
++    // SIGSYNCCALL (34) became SIGINT: Node's SIGINT handler re-raised forever
++    // on every thread while dlopen's TLS barrier waited for them.
++    m->signals |= (u64)1 << (sig - 1);
      if ((m->signals & ~m->sigmask)) {
        atomic_store_explicit(&m->attention, true, memory_order_release);
+     }
 diff --git a/blink/stack.c b/blink/stack.c
 index 19bde1b..b6c04b3 100644
 --- a/blink/stack.c
@@ -89,7 +95,7 @@ index 19bde1b..b6c04b3 100644
 +  WriteMemWord(GetModrmRegisterWordPointerWrite(A, osz), rde, osz, x);
  }
 diff --git a/blink/syscall.c b/blink/syscall.c
-index 34cc01c..7ccfa52 100644
+index 34cc01c..5bcc1e1 100644
 --- a/blink/syscall.c
 +++ b/blink/syscall.c
 @@ -349,10 +349,17 @@ static void ClearChildTid(struct Machine *m) {
@@ -501,7 +507,40 @@ index 34cc01c..7ccfa52 100644
    LOCK(&m->system->exec_lock);
    ExecveBlink(m, prog, argv, envp);
    SYS_LOGF("execve(%s)", prog);
-@@ -5304,6 +5659,45 @@ static i32 SysEpollCreate1(struct Machine *m, i32 flags) {
+@@ -3749,6 +4104,32 @@ static i64 SysGetcwd(struct Machine *m, i64 bufaddr, i64 size) {
+   return res;
+ }
+ 
++#ifdef LOT_SYSCALLS
++// LinuxOnTab: membarrier(2). Without it, musl's dlopen of a library with TLS
++// (any Rust/C++ Node addon) falls back to tkill(SIGSYNCCALL) on every thread
++// and a semaphore wait for each, which costs a signal round trip per thread
++// and hangs when one never runs the handler (a thread that blocks it). Every
++// guest memory access is a host access from the host thread running that
++// guest thread, so a host fence is the barrier.
++static int SysMembarrier(struct Machine *m, int cmd, u32 flags) {
++  enum { kQuery = 0, kGlobal = 1, kPrivateExpedited = 8,
++         kRegisterPrivateExpedited = 16 };
++  if (flags) return einval();
++  switch (cmd) {
++    case kQuery:
++      return kGlobal | kPrivateExpedited | kRegisterPrivateExpedited;
++    case kGlobal:
++    case kPrivateExpedited:
++      atomic_thread_fence(memory_order_seq_cst);
++      return 0;
++    case kRegisterPrivateExpedited:
++      return 0;
++    default:
++      return einval();
++  }
++}
++#endif
++
+ static ssize_t SysGetrandom(struct Machine *m, i64 a, size_t n, int f) {
+   char *p;
+   ssize_t rc;
+@@ -5304,6 +5685,45 @@ static i32 SysEpollCreate1(struct Machine *m, i32 flags) {
    return fildes;
  }
  
@@ -547,7 +586,16 @@ index 34cc01c..7ccfa52 100644
  static i32 SysEpollCreate(struct Machine *m, i32 size) {
    if (size <= 0) return einval();
    return SysEpollCreate1(m, 0);
-@@ -5688,6 +6082,10 @@ void OpSyscall(P) {
+@@ -5682,12 +6102,19 @@ void OpSyscall(P) {
+     SYSCALL(5, 0x10F, "ppoll", SysPpoll, STRACE_5);
+     SYSCALL(5, 0x13C, "renameat2", SysRenameat2, STRACE_RENAMEAT2);
+     SYSCALL(3, 0x13E, "getrandom", SysGetrandom, STRACE_GETRANDOM);
++#ifdef LOT_SYSCALLS
++    SYSCALL(2, 0x144, "membarrier", SysMembarrier, STRACE_2);
++#endif
+     SYSCALL(5, 0x147, "preadv2", SysPreadv2, STRACE_PREADV2);
+     SYSCALL(5, 0x148, "pwritev2", SysPwritev2, STRACE_PWRITEV2);
+     SYSCALL(3, 0x1B4, "close_range", SysCloseRange, STRACE_3);
  #ifdef HAVE_EPOLL_PWAIT1
      SYSCALL(1, 0x0D5, "epoll_create", SysEpollCreate, STRACE_1);
      SYSCALL(1, 0x123, "epoll_create1", SysEpollCreate1, STRACE_1);
