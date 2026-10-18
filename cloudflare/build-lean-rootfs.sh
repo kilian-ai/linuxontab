@@ -56,6 +56,9 @@ cp -Rp "$ROOTFS/etc" "$STAGE/etc"
 # SSL_CERT_DIR (/etc/profile) points here; git can't track the empty dir, so a
 # clean checkout would otherwise build an image without it.
 mkdir -p "$STAGE/etc/ssl/certs"
+# Git keeps only the executable bit, so a fresh checkout has the host private
+# keys at 0644, and sshd refuses a key that others can read.
+chmod 600 "$STAGE"/etc/ssh/ssh_host_*_key "$STAGE"/etc/dropbear/dropbear_*_host_key 2>/dev/null || true
 
 cp -p "$ROOTFS/usr/bin/apk" "$STAGE/usr/bin/apk"
 chmod +x "$STAGE/usr/bin/apk"
