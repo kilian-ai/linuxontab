@@ -49,6 +49,7 @@ const { values: opt } = parseArgs({
     cpus: { type: "string", default: "1" },
     dns: { type: "string" },
     "no-net": { type: "boolean", default: false },
+    publish: { type: "string", short: "p", multiple: true, default: [] },
     timeout: { type: "string", default: "0" },
     time: { type: "boolean", default: false },
     log: { type: "string" },
@@ -67,6 +68,8 @@ if (opt.help) {
   --cpus <n>               virtual CPUs (default 1)
   --dns <ip|doh>           guest DNS: a resolver over TCP, or DoH (default: host resolver)
   --no-net                 no network device
+  -p, --publish [ip:]host:guest   forward a host TCP port into the guest (repeatable;
+                           ip defaults to 127.0.0.1, use 0.0.0.0 to listen on all)
   --timeout <s>            kill the guest after s seconds (0 = never)
   --time                   print boot and command timings to stderr
   --boot-log               show the kernel's early boot console on stderr
@@ -275,7 +278,8 @@ const pkgDropStorage = {
 };
 
 // Network: the page's WispSlirp on an in-process Wisp server.
-let netDev = null;
+let netDev = null, slirp = null;
+if (opt["no-net"] && opt.publish.length) throw new Error("--publish needs the network (drop --no-net)");
 if (!opt["no-net"]) {
   const { loadWispSlirp } = await import("./slirp.mjs");
   const { openLocalWisp } = await import("./local-wisp.mjs");
@@ -297,7 +301,7 @@ if (!opt["no-net"]) {
     } catch {}
   }
   note(`network: host sockets, DNS ${dns || "over HTTPS"}`);
-  const slirp = new WispSlirp("local:wisp", dns, null);
+  slirp = new WispSlirp("local:wisp", dns, null);
   const mac = crypto.getRandomValues(new Uint8Array(6));
   mac[0] = (mac[0] & 0xfe) | 0x02;   // unicast, locally administered
   const lan = ethernetNetwork();
@@ -364,6 +368,19 @@ machine.closed.then(() => { note("machine stopped"); finish(0); },
     finish(1);
   });
 if (tty) consoleDev.resize(cols, rows);
+if (opt.publish.length) {
+  const { parsePublish, publishPort } = await import("./publish.mjs");
+  for (const spec of opt.publish) {
+    const p = parsePublish(spec);
+    try {
+      const server = await publishPort(slirp, p, logLine);
+      note(`publish ${p.host}:${server.address().port} -> guest :${p.guestPort}`);
+    } catch (e) {
+      note(`publish ${spec} failed: ${e.message}`);
+      finish(1);
+    }
+  }
+}
 if (+opt.timeout > 0) setTimeout(() => { note(`timeout after ${opt.timeout}s`); finish(124); }, +opt.timeout * 1000).unref();
 
 // The shell's first prompt marks boot done (the page's ?cmd= runner uses the same test).

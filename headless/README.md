@@ -12,10 +12,12 @@ node headless/lot-run.mjs                      # interactive shell, lean image (
 node headless/lot-run.mjs -c 'uname -a'        # run a command, exit with its status
 echo 'apk add jq; jq --version' | node headless/lot-run.mjs   # piped stdin runs as a script
 node headless/lot-run.mjs --image full -c 'python3 --version' # full image, cached in ~/.cache/lot-run
+node headless/lot-run.mjs -p 8080:8080 -c 'python3 -m http.server 8080'   # serve from the guest
 node headless/bench.mjs                        # native vs guest benchmark table
 ```
 
-Options: `--mem <MiB>` (default 2048), `--cpus <n>`, `--rootfs <path|url>`,
+Options: `-p/--publish [ip:]hostPort:guestPort` (repeatable, binds 127.0.0.1
+unless an ip is given), `--mem <MiB>` (default 2048), `--cpus <n>`, `--rootfs <path|url>`,
 `--xdisk <path|url>` (read-only `/dev/vdc`), `--dns <ip|doh>`, `--no-net`,
 `--timeout <s>`, `--time`, `--boot-log`, `--log <file>`.
 
@@ -35,6 +37,7 @@ Files:
 - `shim.mjs`: gives Node workers the `self` global the browser bundle expects, and routes `console.*` away from stdout, which carries the guest console. Logs go to `--log <file>`; without it, warnings and errors go to stderr.
 - `local-wisp.mjs`: Wisp v2 (TCP + UDP) served onto real sockets. Its `allow(proto, host, port)` hook is where an egress policy, like security groups, plugs in.
 - `slirp.mjs`: slices `class WispSlirp` out of `shell/wasm.html` and evaluates it with the few browser globals it needs, so the runner always uses exactly the page's networking code.
+- `publish.mjs`: `-p` port forwarding. Each accepted host connection is opened inside the guest with `WispSlirp.injectConnect`, the same call the browser tunnel uses. Backpressure from the guest (`__pause__`/`__resume__`) pauses the host socket.
 - `bench.mjs`: runs the same workloads natively and in a guest.
 
 ## First benchmark (Apple M3, Node 26, lean image, 1 vCPU)
@@ -59,6 +62,14 @@ What this says:
 - **The network is not the bottleneck.** A 20 MB download runs at native speed, about 10x what the browser tab gets through the relay.
 - **Memory needs measuring on Linux.** On macOS the process peaks at 1–1.8 GiB during boot and installs (about 46 threads, one per guest process plus Node's own), then drops below 100 MiB when idle. macOS compresses idle pages, so its RSS overstates the drop. Density figures need an EC2/Linux run.
 
+## Port forwarding results
+
+Tested with `-p` on the same Mac:
+- **HTTP from the guest:** `python3 -m http.server` served a 5 MB file at 13.4 MB/s, with a matching SHA-256. 20 parallel 5 MB downloads and 40 parallel page requests all returned 200.
+- **SSH (full image, key auth):** logs in in 0.9 s, and 5 parallel sessions work. A 20 MB SFTP upload arrived intact.
+- **Edge cases:** a guest port with nothing listening, or a connection made before boot finishes, is accepted and then closed at once.
+- **Large SSH downloads fail.** The guest's `sshd-session` traps (`unreachable`) after about 0.6–2 MB of output to the client, both with `ssh ... cat bigfile` and with SFTP `get`. The fault is in that binary, not in the forward: HTTP downloads over the same path are fine. It is an old build (May) that probably lacks the large-allocation fix. It needs rebuilding on the current sysroot with dlmalloc.
+
 ## Known limits
 
 - The lean image's busybox shell (hush) can't parse `$(...)` in some places. Use the full image or install `zsh` for real scripts.
@@ -66,13 +77,12 @@ What this says:
 - `exit` in the guest shell doesn't stop the machine (init respawns the shell). Use `-c`, piped stdin, Ctrl-] or `--timeout`.
 - All disk writes are lost on exit, the same as a browser tab without `?persist=1`.
 - `--image full` downloads 768 MiB once (about 3.5 minutes here). The image route sends no length, doesn't support ranges and ignores `If-None-Match`. So the runner checks each download against the ext4 superblock, retries short ones, and revalidates the cache with a HEAD ETag check.
-- No inbound connections yet. The browser's SSH/port-forward relay path is not wired up here.
+- Forwards are TCP only and set at startup. Inbound UDP and adding forwards at runtime would come with a host agent API.
 
 ## Next steps (towards an EC2-style host)
 
-1. **Inbound ports.** Map host ports to guest ports through `WispSlirp.injectConnect` (it already exists for the tunnel), which gives SSH and web apps.
-2. **Persistent disks.** Write the copy-on-write overlay to a file or S3 chunks; snapshots become chunk lists.
-3. **IMDS.** Answer `169.254.169.254` inside the guest network with per-instance STS credentials, so the AWS CLI and SDKs work unchanged.
-4. **EFS / S3.** Serve a host directory into the guest over virtio-fs (`virtio/fs.ts`, already in the kernel package).
-5. **Density.** Measure on Linux, then cut the per-process worker cost: reuse workers, and share compiled user modules.
-6. Move `WispSlirp` into its own module shared by `wasm.html` and the runner.
+1. **Persistent disks.** Write the copy-on-write overlay to a file or S3 chunks; snapshots become chunk lists.
+2. **IMDS.** Answer `169.254.169.254` inside the guest network with per-instance STS credentials, so the AWS CLI and SDKs work unchanged.
+3. **EFS / S3.** Serve a host directory into the guest over virtio-fs (`virtio/fs.ts`, already in the kernel package).
+4. **Density.** Measure on Linux, then cut the per-process worker cost: reuse workers, and share compiled user modules.
+5. Move `WispSlirp` into its own module shared by `wasm.html` and the runner.
