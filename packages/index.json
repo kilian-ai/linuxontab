@@ -966,11 +966,11 @@
       "status": "available"
     },
     "openssh": {
-      "version": "9.9p2-r0",
+      "version": "9.9p2-r1",
       "description": "OpenSSH server (sshd + sftp-server, ed25519 only): ssh/sftp into this tab via the remote button",
-      "url": "https://linuxontab.com/packages/openssh-9.9p2-r0.tar.gz",
-      "size": 739220,
-      "sha256": "2232c303aad3a210fc9cce46b28b64c3c5d56e982a0dce43b6e82f6462b7b391",
+      "url": "https://linuxontab.com/packages/openssh-9.9p2-r1.tar.gz",
+      "size": 771767,
+      "sha256": "5f779b18ba0ac8052c813c42426a8935e0b5dc6389e22eb1356eeb59f430b48e",
       "bins": [
         "openssh"
       ],
