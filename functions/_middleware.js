@@ -50,8 +50,28 @@ async function validSession(request, secret) {
       encoder.encode("linuxontab-session-v1:" + expires));
   } catch { return false; }
 }
-async function sha256(value) {
-  return new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
+function fromHex(value) {
+  if (!/^[0-9a-f]{32,128}$/i.test(value) || value.length % 2 !== 0) return null;
+  const bytes = new Uint8Array(value.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(value.slice(i * 2, i * 2 + 2), 16);
+  return bytes;
+}
+async function verifyPassword(password, encodedHash) {
+  // Format: pbkdf2-sha256$iterations$salt-hex$derived-key-hex
+  const parts = encodedHash.split("$");
+  if (parts.length !== 4 || parts[0] !== "pbkdf2-sha256") return false;
+  const iterations = Number(parts[1]);
+  const salt = fromHex(parts[2]);
+  const expected = fromHex(parts[3]);
+  if (!Number.isSafeInteger(iterations) || iterations < 100000 || iterations > 600000 ||
+      !salt || salt.length < 16 || !expected || expected.length !== 32) return false;
+  try {
+    const key = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveBits"]);
+    const derived = new Uint8Array(await crypto.subtle.deriveBits(
+      { name: "PBKDF2", salt, iterations, hash: "SHA-256" }, key, 256
+    ));
+    return constantTimeEqual(derived, expected);
+  } catch { return false; }
 }
 function constantTimeEqual(a, b) {
   if (a.length !== b.length) return false;
@@ -122,8 +142,8 @@ export async function onRequest(context) {
   if(path==="/__auth/login") {
     if(request.method!=="POST") return json({error:"Method not allowed"},405,{Allow:"POST"});
     if(!originIsValid(request)) return json({error:"Invalid origin"},403);
-    if(!env.AUTH_USERNAME||!env.AUTH_PASSWORD||!env.SESSION_SECRET||env.SESSION_SECRET.length<32)
-      return json({error:"Authentication is not configured. Add AUTH_USERNAME, AUTH_PASSWORD and a 32+ character SESSION_SECRET in Cloudflare Pages settings."},503);
+    if(!env.AUTH_USERNAME||!env.AUTH_PASSWORD_HASH||!env.SESSION_SECRET||env.SESSION_SECRET.length<32)
+      return json({error:"Authentication is not configured. Add AUTH_USERNAME, AUTH_PASSWORD_HASH and a 32+ character SESSION_SECRET in Cloudflare Pages settings."},503);
     const length=Number(request.headers.get("Content-Length")||"0");
     if(length>4096) return json({error:"Request too large"},413);
     let form;
@@ -136,11 +156,12 @@ export async function onRequest(context) {
     const username=form.get("username")||"";
     const password=form.get("password")||"";
     if(username.length>128||password.length>1024) return json({error:"Invalid credentials"},401);
-    const [givenUser,wantedUser,givenPassword,wantedPassword]=await Promise.all([
-      sha256(username),sha256(env.AUTH_USERNAME),sha256(password),sha256(env.AUTH_PASSWORD)
+    const [givenUser,wantedUser,passwordMatches]=await Promise.all([
+      crypto.subtle.digest("SHA-256",encoder.encode(username)),
+      crypto.subtle.digest("SHA-256",encoder.encode(env.AUTH_USERNAME)),
+      verifyPassword(password,env.AUTH_PASSWORD_HASH)
     ]);
-    const userMatches=constantTimeEqual(givenUser,wantedUser);
-    const passwordMatches=constantTimeEqual(givenPassword,wantedPassword);
+    const userMatches=constantTimeEqual(new Uint8Array(givenUser),new Uint8Array(wantedUser));
     if(!(userMatches&&passwordMatches)) return json({error:"Invalid credentials"},401);
     const token=await createSession(env.SESSION_SECRET);
     return json({ok:true},200,{"Set-Cookie":COOKIE_NAME+"="+token+"; Path=/; Max-Age="+SESSION_SECONDS+"; Secure; HttpOnly; SameSite=Strict"});
@@ -154,7 +175,7 @@ export async function onRequest(context) {
     }});
   }
 
-  if(!env.AUTH_USERNAME||!env.AUTH_PASSWORD||!env.SESSION_SECRET||env.SESSION_SECRET.length<32)
+  if(!env.AUTH_USERNAME||!env.AUTH_PASSWORD_HASH||!env.SESSION_SECRET||env.SESSION_SECRET.length<32)
     return new Response("Authentication is not configured.",{status:503,headers:{"Content-Type":"text/plain; charset=utf-8","Cache-Control":"no-store"}});
 
   if(!(await validSession(request,env.SESSION_SECRET))) {
