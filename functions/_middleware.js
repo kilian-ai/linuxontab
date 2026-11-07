@@ -127,7 +127,11 @@ export async function onRequest(context) {
     const length=Number(request.headers.get("Content-Length")||"0");
     if(length>4096) return json({error:"Request too large"},413);
     let form;
-    try { form=new URLSearchParams(await request.text()); }
+    try {
+      const bodyText=await request.text();
+      if(new TextEncoder().encode(bodyText).byteLength>4096) return json({error:"Request too large"},413);
+      form=new URLSearchParams(bodyText);
+    }
     catch { return json({error:"Invalid request"},400); }
     const username=form.get("username")||"";
     const password=form.get("password")||"";
@@ -135,8 +139,9 @@ export async function onRequest(context) {
     const [givenUser,wantedUser,givenPassword,wantedPassword]=await Promise.all([
       sha256(username),sha256(env.AUTH_USERNAME),sha256(password),sha256(env.AUTH_PASSWORD)
     ]);
-    if(!(constantTimeEqual(givenUser,wantedUser)&&constantTimeEqual(givenPassword,wantedPassword)))
-      return json({error:"Invalid credentials"},401);
+    const userMatches=constantTimeEqual(givenUser,wantedUser);
+    const passwordMatches=constantTimeEqual(givenPassword,wantedPassword);
+    if(!(userMatches&&passwordMatches)) return json({error:"Invalid credentials"},401);
     const token=await createSession(env.SESSION_SECRET);
     return json({ok:true},200,{"Set-Cookie":COOKIE_NAME+"="+token+"; Path=/; Max-Age="+SESSION_SECONDS+"; Secure; HttpOnly; SameSite=Strict"});
   }
@@ -159,7 +164,7 @@ export async function onRequest(context) {
   }
 
   if(request.method==="GET"||request.method==="HEAD") {
-    if(path==="/shell/alpine.iso"||(path.startsWith("/packages/")&&path!=="/packages/index.html"))
+    if(path==="/shell/alpine.iso"||(path.startsWith("/packages/")&&path!=="/packages/"&&path!=="/packages/index.html"))
       return proxyLargeAsset(request,path);
   }
 
