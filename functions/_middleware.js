@@ -57,6 +57,9 @@ function fromHex(value) {
   return bytes;
 }
 async function verifyPassword(password, encodedHash) {
+  // Cloudflare secrets can accidentally include copied whitespace/newlines.
+  // The hash format itself contains no whitespace, so normalize it before parsing.
+  encodedHash = String(encodedHash || "").trim();
   // Format: pbkdf2-sha256$iterations$salt-hex$derived-key-hex
   const parts = encodedHash.split("$");
   if (parts.length !== 4 || parts[0] !== "pbkdf2-sha256") return false;
