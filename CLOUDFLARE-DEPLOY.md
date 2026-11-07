@@ -34,17 +34,30 @@ Open the Pages project → **Settings** → **Variables and Secrets**. Add these
 
 | Name | Value |
 |---|---|
-| \`AUTH_USERNAME\` | The username you want to use |
-| \`AUTH_PASSWORD\` | A long, unique password |
-| \`SESSION_SECRET\` | A random secret of at least 32 characters |
+| `AUTH_USERNAME` | The username you want to use |
+| `AUTH_PASSWORD_HASH` | A salted PBKDF2-SHA256 hash (instructions below) |
+| `SESSION_SECRET` | A random secret of at least 32 characters |
 
 Generate a session secret on Linux:
 
-\`\`\`sh
+```sh
 openssl rand -base64 48
-\`\`\`
+```
 
-Do not put these values in GitHub, source files, or chat. After adding or changing secrets, trigger a new deployment.
+Generate a password hash on Linux with Python 3. This prompts for the password without echoing it, then prints a salted PBKDF2-SHA256 hash:
+
+```sh
+python3 - <<'PY'
+import getpass, hashlib, secrets
+password = getpass.getpass("Password to protect LinuxOnTab: ")
+salt = secrets.token_bytes(16)
+iterations = 310_000
+derived = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
+print(f"pbkdf2-sha256${iterations}${salt.hex()}${derived.hex()}")
+PY
+```
+
+Copy the full output into the `AUTH_PASSWORD_HASH` secret. Keep `AUTH_USERNAME` as your chosen username, stored as an encrypted Cloudflare Secret. Do not put the plaintext password or hash in GitHub, source files, or chat. After adding or changing secrets, trigger a new deployment. The hash uses a random salt and 310,000 PBKDF2-SHA256 iterations.
 
 If you use Preview deployments, add the same secrets to the Preview environment only if you want previews to require the same login.
 
@@ -55,7 +68,7 @@ In Cloudflare Security → WAF → Rate limiting rules, add a rule for:
 - HTTP method equals \`POST\`
 - A low request threshold, such as 5 requests per minute per IP, then block for a short period.
 
-This reduces password-guessing attempts. The Pages Function also checks the request origin and compares credential hashes in constant time.
+This reduces password-guessing attempts. The Pages Function also checks the request origin and checks the username in constant time and verifies the password with salted PBKDF2-SHA256.
 
 ## 4. Optional custom domain
 
