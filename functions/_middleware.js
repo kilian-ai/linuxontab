@@ -165,7 +165,17 @@ export async function onRequest(context) {
       verifyPassword(password,env.AUTH_PASSWORD_HASH)
     ]);
     const userMatches=constantTimeEqual(new Uint8Array(givenUser),new Uint8Array(wantedUser));
-    if(!(userMatches&&passwordMatches)) return json({error:"Invalid credentials"},401);
+    if(!(userMatches&&passwordMatches)) {
+      // Temporary diagnostics: booleans only; never log credential material.
+      console.log("LinuxOnTab auth check failed", {
+        usernameConfigured: typeof env.AUTH_USERNAME === "string" && env.AUTH_USERNAME.length > 0,
+        hashConfigured: typeof env.AUTH_PASSWORD_HASH === "string" && env.AUTH_PASSWORD_HASH.length > 0,
+        hashPrefixValid: String(env.AUTH_PASSWORD_HASH || "").trim().startsWith("pbkdf2-sha256$"),
+        usernameMatches: userMatches,
+        passwordMatches
+      });
+      return json({error:"Invalid credentials"},401);
+    }
     const token=await createSession(env.SESSION_SECRET);
     return json({ok:true},200,{"Set-Cookie":COOKIE_NAME+"="+token+"; Path=/; Max-Age="+SESSION_SECONDS+"; Secure; HttpOnly; SameSite=Strict"});
   }
